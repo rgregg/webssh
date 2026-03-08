@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
 
 jobs:
   lint:
@@ -50,7 +50,7 @@ jobs:
         run: docker build --build-arg VERSION=${{ steps.version.outputs.value }} -t webssh .
 
       - name: Push to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker tag webssh ghcr.io/rgregg/webssh:latest
