@@ -34,20 +34,24 @@ class TestSanitizeUsername(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sanitize_username(name)
 
+    def test_rejects_dot_dot(self):
+        with self.assertRaises(ValueError):
+            sanitize_username('..')
+
+    def test_rejects_dot(self):
+        with self.assertRaises(ValueError):
+            sanitize_username('.')
+
+    def test_rejects_leading_dot(self):
+        with self.assertRaises(ValueError):
+            sanitize_username('.hidden')
+
 
 class TestGetUserKeyDir(unittest.TestCase):
 
     def test_returns_correct_path(self):
         result = get_user_key_dir('/tmp/keys', 'alice')
         self.assertEqual(result, os.path.realpath('/tmp/keys/alice'))
-
-    def test_rejects_dot_dot(self):
-        with self.assertRaises(ValueError):
-            get_user_key_dir('/tmp/keys', '..')
-
-    def test_rejects_dot(self):
-        with self.assertRaises(ValueError):
-            get_user_key_dir('/tmp/keys', '.')
 
 
 class TestKeyOperations(unittest.TestCase):

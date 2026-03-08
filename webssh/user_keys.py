@@ -15,6 +15,8 @@ USERNAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
 def sanitize_username(username):
     if not username or not USERNAME_RE.match(username):
         raise ValueError('Invalid username.')
+    if username in ('.', '..') or username.startswith('.'):
+        raise ValueError('Invalid username.')
     return username
 
 
@@ -72,27 +74,41 @@ def generate_key_pair(base_dir, username):
 
     # Write private key atomically with correct permissions from the start
     fd, tmp_priv = tempfile.mkstemp(dir=user_dir)
+    closed = False
     try:
         os.write(fd, pem)
         os.fchmod(fd, 0o600)
         os.close(fd)
+        closed = True
         os.rename(tmp_priv, priv_path)
     except Exception:
-        os.close(fd)
         os.unlink(tmp_priv)
         raise
+    finally:
+        if not closed:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     # Write public key atomically
     fd, tmp_pub = tempfile.mkstemp(dir=user_dir)
+    closed = False
     try:
         os.write(fd, (pub_key_str + '\n').encode())
         os.fchmod(fd, 0o644)
         os.close(fd)
+        closed = True
         os.rename(tmp_pub, pub_path)
     except Exception:
-        os.close(fd)
         os.unlink(tmp_pub)
         raise
+    finally:
+        if not closed:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     logging.info('Generated SSH key pair for user {!r}'.format(username))
     return pub_key_str

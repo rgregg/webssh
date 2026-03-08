@@ -323,9 +323,9 @@ jQuery(function($){
   function log_status(text, to_populate) {
     console.log(text);
     if (text) {
-      status.html(
-        $('<span>').text(text)
-      ).append('<button class="dismiss" title="Dismiss">&times;</button>');
+      status.empty()
+        .append($('<span>').text(text))
+        .append('<button class="dismiss" title="Dismiss">&times;</button>');
       status.addClass('visible');
     } else {
       status.empty().removeClass('visible');
@@ -638,7 +638,7 @@ jQuery(function($){
     if (key_source !== 'stored' && pk) {
       size = pk.size || pk.length;
       if (size > key_max_size) {
-        errors.push('Invalid private key: ' + pk.name || '');
+        errors.push('Invalid private key: ' + (pk.name || ''));
       }
     }
 

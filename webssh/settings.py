@@ -240,7 +240,7 @@ def _validate_host_key(host_key, hostname):
             'Invalid host_key type {!r} for {!r}'.format(key_type, hostname)
         )
     try:
-        base64.b64decode(parts[1])
+        base64.b64decode(parts[1], validate=True)
     except Exception:
         raise ValueError(
             'Invalid host_key base64 data for {!r}'.format(hostname)
@@ -273,10 +273,16 @@ def parse_allowed_hosts(data):
             )
         for k in raw_keys:
             _validate_host_key(k, entry['hostname'])
+        port = int(entry.get('port', 22))
+        if port < 1 or port > 65535:
+            raise ValueError(
+                'Invalid port {!r} for host {!r}; must be 1-65535'.format(
+                    port, entry['hostname'])
+            )
         host = {
             'name': entry.get('name', entry['hostname']),
             'hostname': entry['hostname'],
-            'port': int(entry.get('port', 22)),
+            'port': port,
             'host_keys': raw_keys,
         }
         result.append(host)
@@ -339,9 +345,9 @@ def check_user_key_dir(user_key_dir, tdstream=''):
     if not user_key_dir:
         return
     if not tdstream:
-        logging.warning(
-            'SECURITY WARNING: userkeydir is set but no trusted_proxies '
-            'configured. The user header can be spoofed by any client.'
+        raise ValueError(
+            'userkeydir is set but no trusted_proxies/tdstream configured; '
+            'the user header can be spoofed by any client'
         )
     if not os.path.exists(user_key_dir):
         os.makedirs(user_key_dir, mode=0o700)

@@ -355,3 +355,15 @@ class TestSettings(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             parse_allowed_hosts(data)
         self.assertIn('Invalid host_key', str(ctx.exception))
+
+    def test_parse_allowed_hosts_invalid_port(self):
+        for port in [0, -1, 65536, 99999]:
+            data = {
+                'hosts': [{
+                    'hostname': '10.0.1.5',
+                    'port': port,
+                }]
+            }
+            with self.assertRaises(ValueError) as ctx:
+                parse_allowed_hosts(data)
+            self.assertIn('Invalid port', str(ctx.exception))

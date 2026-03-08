@@ -454,12 +454,17 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             auth_username = self.request.headers.get(self.user_header, '')
             if not auth_username:
                 raise InvalidValueError('No authenticated user found.')
+            try:
+                user_keys.sanitize_username(auth_username)
+            except ValueError:
+                raise InvalidValueError('Invalid username.')
             if not user_keys.has_stored_key(self.user_key_dir, auth_username):
                 raise InvalidValueError('No stored key found.')
             privatekey = user_keys.read_private_key(
                 self.user_key_dir, auth_username
             )
             filename = 'stored_key'
+            passphrase = ''
         else:
             privatekey, filename = self.get_privatekey()
 
