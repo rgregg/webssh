@@ -56,6 +56,7 @@ jQuery(function($){
       key_max_size = 16384,
       fields = ['hostname', 'port', 'username'],
       form_keys = fields.concat(['password', 'totp']),
+      url_safe_keys = fields,
       opts_keys = ['bgcolor', 'title', 'encoding', 'command', 'term', 'fontsize', 'fontcolor', 'cursor'],
       url_form_data = {},
       url_opts_data = {},
@@ -120,17 +121,7 @@ jQuery(function($){
   }
 
 
-  function decode_password(encoded) {
-    try {
-      return window.atob(encoded);
-    } catch (e) {
-       console.error(e);
-    }
-    return null;
-  }
-
-
-  function parse_url_data(string, form_keys, opts_keys, form_map, opts_map) {
+  function parse_url_data(string, allowed_keys, opts_keys, form_map, opts_map) {
     var i, pair, key, val,
         arr = string.split('&');
 
@@ -139,15 +130,11 @@ jQuery(function($){
       key = pair[0].trim().toLowerCase();
       val = pair.slice(1).join('=').trim();
 
-      if (form_keys.indexOf(key) >= 0) {
+      if (allowed_keys.indexOf(key) >= 0) {
         form_map[key] = val;
       } else if (opts_keys.indexOf(key) >=0) {
         opts_map[key] = val;
       }
-    }
-
-    if (form_map.password) {
-      form_map.password = decode_password(form_map.password);
     }
   }
 
@@ -853,7 +840,7 @@ jQuery(function($){
 
   parse_url_data(
     decode_uri_component(window.location.search.substring(1)) + '&' + decode_uri_component(window.location.hash.substring(1)),
-    form_keys, opts_keys, url_form_data, url_opts_data
+    url_safe_keys, opts_keys, url_form_data, url_opts_data
   );
   // console.log(url_form_data);
   // console.log(url_opts_data);
@@ -862,16 +849,12 @@ jQuery(function($){
     term_type.val(url_opts_data.term);
   }
 
-  if (url_form_data.password === null) {
-    log_status('Password via url must be encoded in base64.');
+  if (get_object_length(url_form_data)) {
+    populate_form(wrap_object(url_form_data));
+    form_container.show();
   } else {
-    if (get_object_length(url_form_data)) {
-      waiter.show();
-      connect(url_form_data);
-    } else {
-      restore_items(fields);
-      form_container.show();
-    }
+    restore_items(fields);
+    form_container.show();
   }
 
 });
