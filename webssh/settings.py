@@ -345,9 +345,9 @@ def check_user_key_dir(user_key_dir, tdstream=''):
     if not user_key_dir:
         return
     if not tdstream:
-        raise ValueError(
-            'userkeydir is set but no trusted_proxies/tdstream configured; '
-            'the user header can be spoofed by any client'
+        logging.warning(
+            'SECURITY WARNING: userkeydir is set but no trusted_proxies '
+            'configured. The user header can be spoofed by any client.'
         )
     if not os.path.exists(user_key_dir):
         os.makedirs(user_key_dir, mode=0o700)
