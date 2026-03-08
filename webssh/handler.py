@@ -693,9 +693,10 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         )
         try:
             public_key = yield future
-        except ValueError as exc:
+        except Exception:
+            logging.exception('Failed to generate key pair for user %s', username)
             self.set_status(500)
-            self.write({'error': str(exc)})
+            self.write({'error': 'Failed to generate key pair.'})
             return
         self.write({
             'has_key': True,
@@ -777,6 +778,8 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if not isinstance(msg, dict):
             return
 
+        self._reset_idle_timeout()
+
         resize = msg.get('resize')
         if resize and len(resize) == 2:
             try:
@@ -788,7 +791,6 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if data and isinstance(data, UnicodeType):
             worker.data_to_dst.append(data)
             worker.on_write()
-            self._reset_idle_timeout()
 
     def on_close(self):
         if self._idle_timeout:

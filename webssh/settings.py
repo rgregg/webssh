@@ -326,7 +326,18 @@ def apply_config_settings(options):
     if options.userheader == 'X-Authentik-Username' and 'userheader' in config:
         options.userheader = config['userheader']
     if 'idle_timeout' in config:
-        options.idletimeout = int(config['idle_timeout'])
+        raw = config['idle_timeout']
+        try:
+            timeout = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                'Invalid idle_timeout value {!r} in config; must be a non-negative integer'.format(raw)
+            )
+        if timeout < 0:
+            raise ValueError(
+                'Invalid idle_timeout value {!r} in config; must be a non-negative integer'.format(raw)
+            )
+        options.idletimeout = timeout
     if 'trusted_proxies' in config:
         proxies = config['trusted_proxies']
         if not isinstance(proxies, list):
