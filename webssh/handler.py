@@ -687,7 +687,12 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         future = self.executor.submit(
             user_keys.generate_key_pair, self.user_key_dir, username
         )
-        public_key = yield future
+        try:
+            public_key = yield future
+        except ValueError as exc:
+            self.set_status(500)
+            self.write({'error': str(exc)})
+            return
         self.write({
             'has_key': True,
             'username': username,
