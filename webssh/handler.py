@@ -19,6 +19,7 @@ from webssh.utils import (
 )
 from webssh.worker import Worker, recycle_worker, clients
 from webssh import user_keys
+from webssh._version import __version__
 
 try:
     from json.decoder import JSONDecodeError
@@ -191,6 +192,24 @@ class MixinHandler(object):
     html = ('<html><head><title>{code} {reason}</title></head><body>{code} '
             '{reason}</body></html>')
 
+    proxy_error_html = (
+        '<html><head><title>403 Proxy Not Trusted</title>'
+        '<style>body{{font-family:monospace;background:#0a0e14;color:#e2e8f0;'
+        'display:flex;align-items:center;justify-content:center;min-height:100vh;'
+        'margin:0}}div{{max-width:480px;padding:32px;border:1px solid #1e2a3a;'
+        'border-radius:12px;background:#111720}}'
+        'h1{{color:#f87171;font-size:18px;margin:0 0 12px}}'
+        'p{{color:#8492a6;font-size:13px;line-height:1.6;margin:0 0 8px}}'
+        'code{{color:#2dd4a8;background:#0d1219;padding:2px 6px;border-radius:4px;'
+        'font-size:12px}}</style></head>'
+        '<body><div><h1>403 &mdash; Proxy Not Trusted</h1>'
+        '<p>Connection from <code>{ip}</code> was rejected because it is not '
+        'in the trusted downstream list.</p>'
+        '<p>Add this IP to <code>trusted_proxies</code> in your config, or pass '
+        '<code>--tdstream={ip}</code> on the command line.</p>'
+        '</div></body></html>'
+    )
+
     def initialize(self, loop=None):
         self.check_request()
         self.loop = loop
@@ -202,9 +221,14 @@ class MixinHandler(object):
         self._transforms = []
         if result:
             self.set_status(403)
-            self.finish(
-                self.html.format(code=self._status_code, reason=self._reason)
-            )
+            ip = getattr(self, '_untrusted_ip', None)
+            if ip:
+                self.finish(self.proxy_error_html.format(ip=ip))
+            else:
+                self.finish(
+                    self.html.format(
+                        code=self._status_code, reason=self._reason)
+                )
         elif result is False:
             to_url = self.get_redirect_url(
                 self.request.host_name, options.sslport, self.request.uri
@@ -244,6 +268,7 @@ class MixinHandler(object):
             logging.warning(
                 'IP {!r} not found in trusted downstream {!r}'.format(ip, lst)
             )
+            self._untrusted_ip = ip
             return True
 
         if context._orig_protocol == 'http':
@@ -582,7 +607,6 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             except ValueError:
                 pass
 
-        from webssh._version import __version__
         self.render('index.html', debug=self.debug, font=self.font,
                     allowed_hosts=self.allowed_hosts,
                     user_key_enabled=user_key_enabled,

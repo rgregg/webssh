@@ -1,5 +1,6 @@
 import logging
 import os.path
+import tornado.template
 import tornado.web
 import tornado.ioloop
 
@@ -78,6 +79,10 @@ def main():
     check_user_key_dir(options.userkeydir, options.tdstream)
     loop = tornado.ioloop.IOLoop.current()
     app = make_app(make_handlers(loop, options), get_app_settings(options))
+    # Pre-compile the template so the first request doesn't pay the cost
+    loader = tornado.template.Loader(app.settings['template_path'])
+    loader.load('index.html')
+    app.settings['template_loader'] = loader
     ssl_ctx = get_ssl_context(options)
     server_settings = get_server_settings(options)
     app_listen(app, options.port, options.address, server_settings)
