@@ -81,38 +81,66 @@ DEFAULT_CONFIG_PATH = '/data/config.yaml'
 
 
 def reload_config(config_path, live_config, host_keys_settings):
-    """Reload allowed_hosts and policy from the config file."""
+    """Reload allowed_hosts, policy, and idle_timeout from the config file.
+
+    Validates all values before applying any changes so a partial failure
+    does not leave live_config in an inconsistent state.
+    """
     try:
         data = load_config_file(config_path)
     except Exception as exc:
         logging.error('Failed to reload config: {}'.format(exc))
         return
 
+    # Stage all values before applying
+    updates = {}
+
     try:
-        allowed_hosts = parse_allowed_hosts(data)
-        live_config['allowed_hosts'] = allowed_hosts
-        logging.info('Reloaded allowed_hosts ({} hosts)'.format(
-            len(allowed_hosts)))
+        updates['allowed_hosts'] = parse_allowed_hosts(data)
     except ValueError as exc:
-        logging.error('Invalid hosts in config: {}'.format(exc))
+        logging.error('Invalid hosts in config reload: {}'.format(exc))
+        return
 
     if 'policy' in data:
         try:
+            from webssh.policy import check_policy_setting
             policy_class = get_policy_class(data['policy'])
-            live_config['policy'] = policy_class()
-            logging.info('Reloaded policy: {}'.format(
-                policy_class.__name__))
+            check_policy_setting(policy_class, host_keys_settings)
+            updates['policy'] = policy_class()
         except ValueError as exc:
-            logging.error('Invalid policy in config: {}'.format(exc))
+            logging.error('Invalid policy in config reload: {}'.format(exc))
+            return
 
+    new_idle_timeout = None
     if 'idle_timeout' in data:
         try:
-            timeout = int(data['idle_timeout'])
-            if timeout >= 0:
-                options.idletimeout = timeout
-                logging.info('Reloaded idle_timeout: {}'.format(timeout))
+            new_idle_timeout = int(data['idle_timeout'])
         except (TypeError, ValueError):
-            logging.error('Invalid idle_timeout in config')
+            logging.error(
+                'Invalid idle_timeout in config reload: {!r}'.format(
+                    data['idle_timeout']))
+            return
+        if new_idle_timeout < 0:
+            logging.error(
+                'Invalid idle_timeout (must be >= 0): {}'.format(
+                    new_idle_timeout))
+            return
+
+    # All validation passed — apply atomically
+    for key, value in updates.items():
+        live_config[key] = value
+
+    if new_idle_timeout is not None:
+        options.idletimeout = new_idle_timeout
+
+    parts = []
+    if 'allowed_hosts' in updates:
+        parts.append('{} hosts'.format(len(updates['allowed_hosts'])))
+    if 'policy' in updates:
+        parts.append('policy={}'.format(data['policy']))
+    if new_idle_timeout is not None:
+        parts.append('idle_timeout={}'.format(new_idle_timeout))
+    logging.info('Config reloaded: {}'.format(', '.join(parts)))
 
 
 def start_config_watcher(config_path, live_config, host_keys_settings,

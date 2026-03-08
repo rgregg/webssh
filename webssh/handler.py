@@ -344,7 +344,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                    user_key_dir='', user_header='X-Authentik-Username',
                    live_config=None):
         super(IndexHandler, self).initialize(loop)
-        self.live_config = live_config or {}
+        self.live_config = live_config if live_config is not None else {}
         self.policy = self.live_config.get('policy', policy)
         self.host_keys_settings = self.live_config.get(
             'host_keys_settings', host_keys_settings)
