@@ -314,14 +314,21 @@ jQuery(function($){
   }
 
 
+  function dismiss_status() {
+    status.removeClass('visible');
+  }
+
+  status.on('click', dismiss_status);
+
   function log_status(text, to_populate) {
     console.log(text);
-    status.text(text);
-
     if (text) {
+      status.html(
+        $('<span>').text(text)
+      ).append('<button class="dismiss" title="Dismiss">&times;</button>');
       status.addClass('visible');
     } else {
-      status.removeClass('visible');
+      status.empty().removeClass('visible');
     }
 
     if (to_populate && validated_form_data) {
@@ -679,7 +686,7 @@ jQuery(function($){
     enable_file_inputs(inputs);
 
     function ajax_post() {
-      status.text('').removeClass('visible');
+      status.empty().removeClass('visible');
       button.prop('disabled', true);
 
       $.ajax({

@@ -486,7 +486,7 @@
         z-index: 50;
         max-width: 480px;
         width: calc(100% - 48px);
-        padding: 12px 18px;
+        padding: 12px 40px 12px 18px;
         background: rgba(248, 113, 113, 0.12);
         border: 1px solid rgba(248, 113, 113, 0.2);
         border-radius: var(--radius);
@@ -500,10 +500,29 @@
         pointer-events: none;
         opacity: 0;
         transition: opacity 0.2s;
+        cursor: pointer;
       }
 
       #status.visible {
         pointer-events: auto;
+        opacity: 1;
+      }
+
+      #status .dismiss {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        background: none;
+        border: none;
+        color: var(--danger);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 0 4px;
+        line-height: 1;
+        opacity: 0.6;
+      }
+
+      #status .dismiss:hover {
         opacity: 1;
       }
 
