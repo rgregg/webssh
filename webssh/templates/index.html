@@ -162,13 +162,12 @@
         text-transform: uppercase;
       }
 
-      .card-header-title .version-label {
+      .version-label {
+        font-family: var(--font-mono);
         font-size: 10px;
         font-weight: 400;
         color: var(--text-muted);
-        text-transform: none;
-        letter-spacing: normal;
-        margin-left: 8px;
+        white-space: nowrap;
       }
 
       .card-header-title .cursor {
@@ -301,6 +300,40 @@
 
       input[type="file"].field-input::file-selector-button:hover {
         background: var(--border-subtle);
+      }
+
+      /* --- Advanced Toggle --- */
+      .advanced-toggle {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--text-muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        cursor: pointer;
+        padding: 8px 0;
+        margin-bottom: 8px;
+        user-select: none;
+        transition: color 0.15s;
+      }
+
+      .advanced-toggle:hover {
+        color: var(--text-secondary);
+      }
+
+      .advanced-toggle .advanced-arrow {
+        display: inline-block;
+        font-size: 9px;
+        transition: transform 0.2s;
+        margin-right: 4px;
+      }
+
+      .advanced-toggle.open .advanced-arrow {
+        transform: rotate(90deg);
+      }
+
+      .advanced-section {
+        margin-bottom: 0;
       }
 
       /* --- Key Source Toggle --- */
@@ -576,8 +609,8 @@
           </div>
           <div class="card-header-title">
             ssh session<span class="cursor"></span>
-            <span class="version-label">v{{ version }}</span>
           </div>
+          <span class="version-label">v{{ version }}</span>
           {% if user_key_enabled and auth_username %}
           <div class="card-header-user">{{ auth_username }}</div>
           {% end %}
@@ -585,7 +618,7 @@
         <div class="card-body">
           <form id="connect" action="" method="post" enctype="multipart/form-data"{% if debug %} novalidate{% end %}>
             <!-- Host -->
-            <div class="field-row">
+            <div class="field-row single">
               <div class="field-group">
                 <span class="field-label">Hostname</span>
                 {% if allowed_hosts %}
@@ -595,12 +628,8 @@
                   {% end %}
                 </select>
                 {% else %}
-                <input class="field-input" type="text" id="hostname" name="hostname" value="" placeholder="10.0.1.5" required>
+                <input class="field-input" type="text" id="hostname" name="hostname" value="" placeholder="host or host:port" required>
                 {% end %}
-              </div>
-              <div class="field-group">
-                <span class="field-label">Port</span>
-                <input class="field-input" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535 {% if allowed_hosts %}readonly{% end %}>
               </div>
             </div>
 
@@ -616,22 +645,63 @@
               </div>
             </div>
 
-            <!-- Key Management -->
-            {% if user_key_enabled %}
-            <div class="key-source-toggle">
-              <input type="radio" name="key_source" id="key_source_stored" value="stored" {% if has_stored_key %}checked{% end %}>
-              <label for="key_source_stored">
-                <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
-                Stored Key
-              </label>
-              <input type="radio" name="key_source" id="key_source_upload" value="upload" {% if not has_stored_key %}checked{% end %}>
-              <label for="key_source_upload">
-                <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
-                Upload Key
-              </label>
+            <!-- Advanced Options -->
+            <div class="advanced-toggle" id="advanced-toggle">
+              <span class="advanced-arrow">&#9654;</span> Advanced Options
             </div>
+            <div class="advanced-section" id="advanced-section" style="display: none">
+              <div class="field-row">
+                <div class="field-group">
+                  <span class="field-label">Port</span>
+                  <input class="field-input" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535 {% if allowed_hosts %}readonly{% end %}>
+                </div>
+                <div class="field-group">
+                  <span class="field-label">TOTP <span class="label-hint">(optional)</span></span>
+                  <input class="field-input" type="password" id="totp" name="totp" value="" placeholder="6-digit code">
+                </div>
+              </div>
 
-            <div id="upload-key-row" {% if has_stored_key %}style="display:none"{% end %}>
+              <!-- Key Management -->
+              {% if user_key_enabled %}
+              <div class="key-source-toggle">
+                <input type="radio" name="key_source" id="key_source_stored" value="stored" {% if has_stored_key %}checked{% end %}>
+                <label for="key_source_stored">
+                  <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
+                  Stored Key
+                </label>
+                <input type="radio" name="key_source" id="key_source_upload" value="upload" {% if not has_stored_key %}checked{% end %}>
+                <label for="key_source_upload">
+                  <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+                  Upload Key
+                </label>
+              </div>
+
+              <div id="upload-key-row" {% if has_stored_key %}style="display:none"{% end %}>
+                <div class="field-row">
+                  <div class="field-group">
+                    <span class="field-label">Private Key</span>
+                    <input class="field-input" type="file" id="privatekey" name="privatekey" value="">
+                  </div>
+                  <div class="field-group">
+                    <span class="field-label">Passphrase</span>
+                    <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
+                  </div>
+                </div>
+              </div>
+
+              <div id="stored-key-row" {% if not has_stored_key %}style="display:none"{% end %}>
+                <div class="stored-key-section">
+                  <div class="pubkey-label">Public Key <span style="text-transform: none; letter-spacing: normal;">&#8212; add to authorized_keys</span></div>
+                  <textarea class="pubkey-display" id="public-key-display" rows="3" readonly onclick="this.select()">{{ public_key }}</textarea>
+                  <div class="stored-key-actions">
+                    <button type="button" class="btn-generate" id="generate-key-btn">
+                      {% if has_stored_key %}Regenerate Key{% else %}Generate Key{% end %}
+                    </button>
+                    <span class="stored-key-hint">Click the key to select &amp; copy</span>
+                  </div>
+                </div>
+              </div>
+              {% else %}
               <div class="field-row">
                 <div class="field-group">
                   <span class="field-label">Private Key</span>
@@ -642,42 +712,7 @@
                   <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
                 </div>
               </div>
-            </div>
-
-            <div id="stored-key-row" {% if not has_stored_key %}style="display:none"{% end %}>
-              <div class="stored-key-section">
-                <div class="pubkey-label">Public Key <span style="text-transform: none; letter-spacing: normal;">&#8212; add to authorized_keys</span></div>
-                <textarea class="pubkey-display" id="public-key-display" rows="3" readonly onclick="this.select()">{{ public_key }}</textarea>
-                <div class="stored-key-actions">
-                  <button type="button" class="btn-generate" id="generate-key-btn">
-                    {% if has_stored_key %}Regenerate Key{% else %}Generate Key{% end %}
-                  </button>
-                  <span class="stored-key-hint">Click the key to select &amp; copy</span>
-                </div>
-              </div>
-            </div>
-            {% else %}
-            <div class="field-row">
-              <div class="field-group">
-                <span class="field-label">Private Key</span>
-                <input class="field-input" type="file" id="privatekey" name="privatekey" value="">
-              </div>
-              <div class="field-group">
-                <span class="field-label">Passphrase</span>
-                <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
-              </div>
-            </div>
-            {% end %}
-
-            <!-- TOTP -->
-            <div class="field-row">
-              <div class="field-group">
-                <span class="field-label">TOTP <span class="label-hint">(optional)</span></span>
-                <input class="field-input" type="password" id="totp" name="totp" value="" placeholder="6-digit code">
-              </div>
-              <div class="field-group">
-                <!-- spacer -->
-              </div>
+              {% end %}
             </div>
 
             <input type="hidden" id="term" name="term" value="xterm-256color">

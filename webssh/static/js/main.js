@@ -615,6 +615,20 @@ jQuery(function($){
         },
         errors = [], size;
 
+    // Parse hostname:port shortcut (e.g. "foobar:2222")
+    if (hostname && !allowed_hosts_configured && hostname.indexOf(':') > 0) {
+      var parts = hostname.split(':');
+      var parsed_port = parseInt(parts[parts.length - 1], 10);
+      if (parsed_port > 0 && parsed_port <= 65535) {
+        hostname = parts.slice(0, -1).join(':');
+        if (!port) {
+          port = parsed_port;
+        }
+        data.set('hostname', hostname);
+        data.set('port', port);
+      }
+    }
+
     if (!hostname) {
       errors.push('Value of hostname is required.');
     } else if (!allowed_hosts_configured) {
@@ -626,6 +640,7 @@ jQuery(function($){
     if (!port) {
       port = 22;
     } else {
+      port = parseInt(port, 10);
       if (!(port > 0 && port <= 65535)) {
         errors.push('Invalid port: ' + port);
       }
@@ -801,6 +816,13 @@ jQuery(function($){
   $(form_id).submit(function(event){
     event.preventDefault();
     connect();
+  });
+
+  // Advanced options toggle
+  $('#advanced-toggle').on('click', function() {
+    var section = $('#advanced-section');
+    $(this).toggleClass('open');
+    section.slideToggle(150);
   });
 
   // Auto-populate port when hostname dropdown changes
