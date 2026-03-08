@@ -139,7 +139,7 @@ Run `wssh --help` for the full list.
 Pass connection parameters via URL query or fragment:
 
 ```
-http://localhost:8888/?hostname=myserver&username=admin&password=base64encoded
+http://localhost:8888/?hostname=myserver&username=admin
 http://localhost:8888/#bgcolor=green&fontsize=24&encoding=utf-8
 http://localhost:8888/?title=my-server&command=htop&term=xterm-256color
 ```
