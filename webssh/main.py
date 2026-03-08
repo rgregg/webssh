@@ -89,7 +89,10 @@ def main():
     if ssl_ctx:
         server_settings.update(ssl_options=ssl_ctx)
         app_listen(app, options.sslport, options.ssladdress, server_settings)
-    loop.start()
+    try:
+        loop.start()
+    except KeyboardInterrupt:
+        logging.info('Exiting.')
 
 
 if __name__ == '__main__':
