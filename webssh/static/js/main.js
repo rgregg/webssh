@@ -819,10 +819,16 @@ jQuery(function($){
   });
 
   // Advanced options toggle
-  $('#advanced-toggle').on('click', function() {
+  $('#advanced-toggle').on('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
     var section = $('#advanced-section');
     $(this).toggleClass('open');
-    section.slideToggle(150);
+    if (section.is(':visible')) {
+      section.hide();
+    } else {
+      section.show();
+    }
   });
 
   // Auto-populate port when hostname dropdown changes
