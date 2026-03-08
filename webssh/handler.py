@@ -341,11 +341,15 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
-                   user_key_dir='', user_header='X-Authentik-Username'):
+                   user_key_dir='', user_header='X-Authentik-Username',
+                   live_config=None):
         super(IndexHandler, self).initialize(loop)
-        self.policy = policy
-        self.host_keys_settings = host_keys_settings
-        self.allowed_hosts = allowed_hosts or []
+        self.live_config = live_config if live_config is not None else {}
+        self.policy = self.live_config.get('policy', policy)
+        self.host_keys_settings = self.live_config.get(
+            'host_keys_settings', host_keys_settings)
+        self.allowed_hosts = self.live_config.get(
+            'allowed_hosts', allowed_hosts) or []
         self.user_key_dir = user_key_dir
         self.user_header = user_header
         self.ssh_client = self.get_ssh_client()
