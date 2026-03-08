@@ -53,8 +53,13 @@ def read_private_key(base_dir, username):
 
 def generate_key_pair(base_dir, username):
     user_dir = get_user_key_dir(base_dir, username)
-    if not os.path.exists(user_dir):
-        os.makedirs(user_dir, mode=0o700)
+    try:
+        os.makedirs(user_dir, mode=0o700, exist_ok=True)
+    except PermissionError:
+        raise ValueError(
+            'Cannot create key directory for user {!r}: permission denied. '
+            'Check ownership of {!r}'.format(username, base_dir)
+        )
 
     priv_path = os.path.join(user_dir, 'id_ed25519')
     pub_path = os.path.join(user_dir, 'id_ed25519.pub')
@@ -68,7 +73,7 @@ def generate_key_pair(base_dir, username):
 
     # Load into paramiko to get public key components
     key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem.decode()))
-    pub_key_str = '{} {} {}'.format(
+    pub_key_str = '{} {} {}@webssh-client'.format(
         key.get_name(), key.get_base64(), username
     )
 
