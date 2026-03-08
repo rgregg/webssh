@@ -56,6 +56,7 @@ jQuery(function($){
       key_max_size = 16384,
       fields = ['hostname', 'port', 'username'],
       form_keys = fields.concat(['password', 'totp']),
+      url_safe_keys = fields,
       opts_keys = ['bgcolor', 'title', 'encoding', 'command', 'term', 'fontsize', 'fontcolor', 'cursor'],
       url_form_data = {},
       url_opts_data = {},
@@ -84,7 +85,11 @@ jQuery(function($){
       name = names[i];
       value = window.localStorage.getItem(name);
       if (value) {
-        $('#'+name).val(value);
+        var el = $('#'+name);
+        el.val(value);
+        if (name === 'hostname' && el.is('select')) {
+          el.trigger('change');
+        }
       }
     }
   }
@@ -116,17 +121,7 @@ jQuery(function($){
   }
 
 
-  function decode_password(encoded) {
-    try {
-      return window.atob(encoded);
-    } catch (e) {
-       console.error(e);
-    }
-    return null;
-  }
-
-
-  function parse_url_data(string, form_keys, opts_keys, form_map, opts_map) {
+  function parse_url_data(string, allowed_keys, opts_keys, form_map, opts_map) {
     var i, pair, key, val,
         arr = string.split('&');
 
@@ -135,15 +130,11 @@ jQuery(function($){
       key = pair[0].trim().toLowerCase();
       val = pair.slice(1).join('=').trim();
 
-      if (form_keys.indexOf(key) >= 0) {
+      if (allowed_keys.indexOf(key) >= 0) {
         form_map[key] = val;
       } else if (opts_keys.indexOf(key) >=0) {
         opts_map[key] = val;
       }
-    }
-
-    if (form_map.password) {
-      form_map.password = decode_password(form_map.password);
     }
   }
 
@@ -323,9 +314,22 @@ jQuery(function($){
   }
 
 
+  function dismiss_status() {
+    status.removeClass('visible');
+  }
+
+  status.on('click', dismiss_status);
+
   function log_status(text, to_populate) {
     console.log(text);
-    status.text(text);
+    if (text) {
+      status.empty()
+        .append($('<span>').text(text))
+        .append('<button class="dismiss" title="Dismiss">&times;</button>');
+      status.addClass('visible');
+    } else {
+      status.empty().removeClass('visible');
+    }
 
     if (to_populate && validated_form_data) {
       populate_form(validated_form_data);
@@ -603,6 +607,7 @@ jQuery(function($){
         port = data.get('port'),
         username = data.get('username'),
         pk = data.get('privatekey'),
+        key_source = data.get('key_source'),
         result = {
           valid: false,
           data: data,
@@ -610,9 +615,23 @@ jQuery(function($){
         },
         errors = [], size;
 
+    // Parse hostname:port shortcut (e.g. "foobar:2222")
+    if (hostname && !allowed_hosts_configured && hostname.indexOf(':') > 0) {
+      var parts = hostname.split(':');
+      var parsed_port = parseInt(parts[parts.length - 1], 10);
+      if (parsed_port > 0 && parsed_port <= 65535) {
+        hostname = parts.slice(0, -1).join(':');
+        if (!port) {
+          port = parsed_port;
+        }
+        data.set('hostname', hostname);
+        data.set('port', port);
+      }
+    }
+
     if (!hostname) {
       errors.push('Value of hostname is required.');
-    } else {
+    } else if (!allowed_hosts_configured) {
       if (!hostname_tester.test(hostname)) {
          errors.push('Invalid hostname: ' + hostname);
       }
@@ -621,6 +640,7 @@ jQuery(function($){
     if (!port) {
       port = 22;
     } else {
+      port = parseInt(port, 10);
       if (!(port > 0 && port <= 65535)) {
         errors.push('Invalid port: ' + port);
       }
@@ -630,10 +650,10 @@ jQuery(function($){
       errors.push('Value of username is required.');
     }
 
-    if (pk) {
+    if (key_source !== 'stored' && pk) {
       size = pk.size || pk.length;
       if (size > key_max_size) {
-        errors.push('Invalid private key: ' + pk.name || '');
+        errors.push('Invalid private key: ' + (pk.name || ''));
       }
     }
 
@@ -681,7 +701,7 @@ jQuery(function($){
     enable_file_inputs(inputs);
 
     function ajax_post() {
-      status.text('');
+      status.empty().removeClass('visible');
       button.prop('disabled', true);
 
       $.ajax({
@@ -701,7 +721,10 @@ jQuery(function($){
       return;
     }
 
-    if (pk && pk.size && !debug) {
+    var key_source = data.get('key_source');
+    if (key_source === 'stored') {
+      ajax_post();
+    } else if (pk && pk.size && !debug) {
       read_file_as_text(pk, function(text) {
         if (text === undefined) {
             log_status('Invalid private key: ' + pk.name);
@@ -735,7 +758,7 @@ jQuery(function($){
       data._origin = event_origin;
     }
 
-    status.text('');
+    status.text('').removeClass('visible');
     button.prop('disabled', true);
 
     $.ajax({
@@ -795,6 +818,85 @@ jQuery(function($){
     connect();
   });
 
+  // Advanced options toggle
+  $('#advanced-toggle').on('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var section = $('#advanced-section');
+    $(this).toggleClass('open');
+    if (section.is(':visible')) {
+      section.hide();
+    } else {
+      section.show();
+    }
+  });
+
+  // Auto-populate port when hostname dropdown changes
+  $('#hostname').on('change', function() {
+    if ($(this).is('select')) {
+      var port = $(this).find(':selected').data('port');
+      if (port) {
+        $('#port').val(port);
+      }
+    }
+  });
+  // Initialize port from dropdown on page load
+  if ($('#hostname').is('select')) {
+    $('#hostname').trigger('change');
+  }
+
+  // User key management toggle
+  if (user_key_enabled) {
+    $('input[name="key_source"]').on('change', function() {
+      var val = $(this).val();
+      if (val === 'stored') {
+        $('#upload-key-row').hide();
+        $('#stored-key-row').show();
+      } else {
+        $('#upload-key-row').show();
+        $('#stored-key-row').hide();
+      }
+    });
+
+    $('#generate-key-btn').on('click', function() {
+      var btn = $(this);
+
+      if (has_stored_key) {
+        if (!window.confirm('This will replace your existing SSH key pair. Continue?')) {
+          return;
+        }
+      }
+
+      btn.prop('disabled', true).text('Generating...');
+
+      var xsrf = $('input[name="_xsrf"]').val();
+      $.ajax({
+        url: '/user-key',
+        type: 'POST',
+        data: {_xsrf: xsrf},
+        dataType: 'json',
+        success: function(resp) {
+          if (resp.public_key) {
+            $('#public-key-display').val(resp.public_key);
+            has_stored_key = true;
+            btn.text('Regenerate Key');
+            $('#key_source_stored').prop('checked', true).trigger('change');
+          }
+        },
+        error: function(xhr) {
+          var msg = 'Failed to generate key';
+          try {
+            msg = JSON.parse(xhr.responseText).status || msg;
+          } catch(e) {}
+          window.alert(msg);
+        },
+        complete: function() {
+          btn.prop('disabled', false);
+        }
+      });
+    });
+  }
+
 
   function cross_origin_connect(event)
   {
@@ -835,7 +937,7 @@ jQuery(function($){
 
   parse_url_data(
     decode_uri_component(window.location.search.substring(1)) + '&' + decode_uri_component(window.location.hash.substring(1)),
-    form_keys, opts_keys, url_form_data, url_opts_data
+    url_safe_keys, opts_keys, url_form_data, url_opts_data
   );
   // console.log(url_form_data);
   // console.log(url_opts_data);
@@ -844,16 +946,12 @@ jQuery(function($){
     term_type.val(url_opts_data.term);
   }
 
-  if (url_form_data.password === null) {
-    log_status('Password via url must be encoded in base64.');
+  if (get_object_length(url_form_data)) {
+    populate_form(wrap_object(url_form_data));
+    form_container.show();
   } else {
-    if (get_object_length(url_form_data)) {
-      waiter.show();
-      connect(url_form_data);
-    } else {
-      restore_items(fields);
-      form_container.show();
-    }
+    restore_items(fields);
+    form_container.show();
   }
 
 });

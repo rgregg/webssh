@@ -1,0 +1,41 @@
+# WebSSH Configuration File
+# Usage: wssh --config=config.yaml
+
+# Missing host key policy (optional)
+# Controls behavior when connecting to a host not in known_hosts.
+# Values: reject, autoadd, warning (default: warning)
+# policy: reject
+
+# Allowed SSH hosts (optional)
+# When specified, users can only connect to these hosts.
+# hosts:
+#   - name: "Production Server"
+#     hostname: "10.0.1.5"
+#     port: 22
+#     # host_key pins the expected server key(s). Accepts a single string or a
+#     # list. When omitted, the host key policy (--policy) applies instead.
+#     # You can get a host's keys with: ssh-keyscan -t ed25519,rsa hostname
+#     host_key:
+#       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+#       - "ssh-rsa AAAAB3NzaC1yc2EAAAA..."
+#   - name: "Database Server"
+#     hostname: "db.internal"
+#     port: 3022
+
+# Per-user SSH key management (optional)
+# When set, authenticated users can generate and store Ed25519 SSH key pairs
+# on the server, so they don't need to upload a key file each time.
+# userkeydir: /var/lib/webssh/user-keys
+
+# HTTP header containing the authenticated username (optional)
+# Used with userkeydir to identify users behind an auth proxy (e.g. Authentik).
+# userheader: X-Authentik-Username
+
+# Trusted proxy IP addresses (optional)
+# When set, only requests from these IPs are accepted. All other requests
+# are rejected with 403. This ensures auth headers (e.g. X-Authentik-Username)
+# cannot be spoofed by direct connections bypassing the proxy.
+# Merges with the --tdstream CLI option.
+# trusted_proxies:
+#   - 10.0.0.1
+#   - 172.16.0.5

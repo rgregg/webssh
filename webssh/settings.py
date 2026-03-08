@@ -3,6 +3,7 @@ import os.path
 import ssl
 import sys
 
+import yaml
 from tornado.options import define
 from webssh.policy import (
     load_host_keys, get_policy_class, check_policy_setting
@@ -51,6 +52,12 @@ define('font', default='', help='custom font filename')
 define('encoding', default='',
        help='''The default character encoding of ssh servers.
 Example: --encoding='utf-8' to solve the problem with some switches&routers''')
+define('config', default='',
+       help='YAML configuration file (hosts, userkeydir, userheader, trusted_proxies)')
+define('userkeydir', default='',
+       help='Directory to store per-user SSH key pairs')
+define('userheader', default='X-Authentik-Username',
+       help='HTTP header with authenticated username')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -196,3 +203,156 @@ def get_font_filename(font, font_dir):
 def check_encoding_setting(encoding):
     if encoding and not is_valid_encoding(encoding):
         raise ValueError('Unknown character encoding {!r}.'.format(encoding))
+
+
+def load_config_file(filepath):
+    if not os.path.isfile(filepath):
+        raise ValueError(
+            'Config file {!r} does not exist'.format(filepath)
+        )
+
+    with open(filepath, 'r') as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            'Config file must contain a YAML mapping'
+        )
+
+    return data
+
+
+def _validate_host_key(host_key, hostname):
+    import base64
+    parts = host_key.strip().split()
+    if len(parts) < 2:
+        raise ValueError(
+            'Invalid host_key for {!r}: expected "key-type base64-key"'.format(
+                hostname)
+        )
+    key_type = parts[0]
+    valid_types = (
+        'ssh-rsa', 'ssh-ed25519', 'ecdsa-sha2-nistp256',
+        'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+    )
+    if key_type not in valid_types:
+        raise ValueError(
+            'Invalid host_key type {!r} for {!r}'.format(key_type, hostname)
+        )
+    try:
+        base64.b64decode(parts[1], validate=True)
+    except Exception:
+        raise ValueError(
+            'Invalid host_key base64 data for {!r}'.format(hostname)
+        )
+
+
+def parse_allowed_hosts(data):
+    if 'hosts' not in data:
+        return []
+
+    hosts = data['hosts']
+    if not isinstance(hosts, list) or not hosts:
+        raise ValueError(
+            'Config file "hosts" must be a non-empty list'
+        )
+
+    result = []
+    for entry in hosts:
+        if not isinstance(entry, dict):
+            raise ValueError('Each host entry must be a mapping')
+        if 'hostname' not in entry:
+            raise ValueError('Each host entry must have a "hostname" field')
+        raw_keys = entry.get('host_key', [])
+        if isinstance(raw_keys, str):
+            raw_keys = [raw_keys] if raw_keys else []
+        elif not isinstance(raw_keys, list):
+            raise ValueError(
+                'host_key for {!r} must be a string or list'.format(
+                    entry['hostname'])
+            )
+        for k in raw_keys:
+            _validate_host_key(k, entry['hostname'])
+        port = int(entry.get('port', 22))
+        if port < 1 or port > 65535:
+            raise ValueError(
+                'Invalid port {!r} for host {!r}; must be 1-65535'.format(
+                    port, entry['hostname'])
+            )
+        host = {
+            'name': entry.get('name', entry['hostname']),
+            'hostname': entry['hostname'],
+            'port': port,
+            'host_keys': raw_keys,
+        }
+        result.append(host)
+
+    return result
+
+
+def load_allowed_hosts(filepath):
+    data = load_config_file(filepath)
+    if 'hosts' not in data:
+        raise ValueError(
+            'Config file must contain a "hosts" key'
+        )
+    return parse_allowed_hosts(data)
+
+
+def get_allowed_hosts_setting(options):
+    if not options.config:
+        return []
+    data = load_config_file(options.config)
+    return parse_allowed_hosts(data)
+
+
+def get_config_settings(options):
+    if not options.config:
+        return {}
+    return load_config_file(options.config)
+
+
+def apply_config_settings(options):
+    config = get_config_settings(options)
+    if not config:
+        return
+
+    if options.policy == 'warning' and 'policy' in config:
+        options.policy = config['policy']
+    if not options.userkeydir and 'userkeydir' in config:
+        options.userkeydir = config['userkeydir']
+    if options.userheader == 'X-Authentik-Username' and 'userheader' in config:
+        options.userheader = config['userheader']
+    if 'trusted_proxies' in config:
+        proxies = config['trusted_proxies']
+        if not isinstance(proxies, list):
+            raise ValueError('trusted_proxies must be a list of IP addresses')
+        proxy_ips = []
+        for ip in proxies:
+            ip = str(ip).strip()
+            if ip:
+                to_ip_address(ip)
+                proxy_ips.append(ip)
+        if proxy_ips:
+            existing = options.tdstream
+            if existing:
+                options.tdstream = existing + ',' + ','.join(proxy_ips)
+            else:
+                options.tdstream = ','.join(proxy_ips)
+
+
+def check_user_key_dir(user_key_dir, tdstream=''):
+    if not user_key_dir:
+        return
+    if not tdstream:
+        logging.warning(
+            'SECURITY WARNING: userkeydir is set but no trusted_proxies '
+            'configured. The user header can be spoofed by any client.'
+        )
+    if not os.path.exists(user_key_dir):
+        os.makedirs(user_key_dir, mode=0o700)
+        logging.info('Created user key directory: {}'.format(user_key_dir))
+    elif not os.path.isdir(user_key_dir):
+        raise ValueError(
+            'User key directory {!r} is not a directory'.format(user_key_dir)
+        )

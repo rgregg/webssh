@@ -1,5 +1,5 @@
 import sys
-from webssh._version import __version__, __version_info__
+from webssh._version import __version__ as __version__, __version_info__ as __version_info__
 
 
 __author__ = 'Shengdun Hua <webmaster0115@gmail.com>'

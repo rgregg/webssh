@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest -r requirements.txt
+      - run: pytest
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Strip leading 'v' if present (v1.2.3 -> 1.2.3)
+          VERSION="${TAG#v}"
+          MAJOR="${VERSION%%.*}"
+          MINOR="${VERSION#*.}"
+          MINOR="${MINOR%%.*}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "major=${MAJOR}" >> "$GITHUB_OUTPUT"
+          echo "minor=${MAJOR}.${MINOR}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build --build-arg VERSION=${{ steps.version.outputs.version }} -t webssh .
+
+      - name: Push to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          # Tag with full version (1.7.0), minor (1.7), major (1), and latest
+          docker tag webssh ghcr.io/rgregg/webssh:${{ steps.version.outputs.version }}
+          docker tag webssh ghcr.io/rgregg/webssh:${{ steps.version.outputs.minor }}
+          docker tag webssh ghcr.io/rgregg/webssh:${{ steps.version.outputs.major }}
+          docker tag webssh ghcr.io/rgregg/webssh:latest
+          docker push ghcr.io/rgregg/webssh:${{ steps.version.outputs.version }}
+          docker push ghcr.io/rgregg/webssh:${{ steps.version.outputs.minor }}
+          docker push ghcr.io/rgregg/webssh:${{ steps.version.outputs.major }}
+          docker push ghcr.io/rgregg/webssh:latest

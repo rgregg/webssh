@@ -1,34 +1,59 @@
-# https://beta.ruff.rs
-name: python
+name: CI
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
+
 jobs:
-  ruff:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - run: pip install --user ruff
-  pytest:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  test:
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest==8.1.2 pytest-cov -r requirements.txt
-      - run: pytest --cov=webssh
-      - run: mkdir -p coverage
-      - uses: tj-actions/coverage-badge-py@v2
+      - run: pip install pytest -r requirements.txt
+      - run: pytest
+
+  docker:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          output: coverage/coverage.svg
-      - uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: coverage-badge
-          folder: coverage
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build --build-arg VERSION=${{ steps.version.outputs.value }} -t webssh .
+
+      - name: Push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker tag webssh ghcr.io/rgregg/webssh:latest
+          docker tag webssh ghcr.io/rgregg/webssh:${{ github.sha }}
+          docker push ghcr.io/rgregg/webssh:latest
+          docker push ghcr.io/rgregg/webssh:${{ github.sha }}
