@@ -538,12 +538,14 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                 except ValueError:
                     pass
 
+        from webssh._version import __version__
         self.render('index.html', debug=self.debug, font=self.font,
                     allowed_hosts=self.allowed_hosts,
                     user_key_enabled=user_key_enabled,
                     has_stored_key=has_key,
                     public_key=public_key,
-                    auth_username=auth_username)
+                    auth_username=auth_username,
+                    version=__version__)
 
     @tornado.gen.coroutine
     def post(self):

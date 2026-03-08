@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -37,9 +39,15 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
       - name: Build image
-        run: docker build -t webssh .
+        run: docker build --build-arg VERSION=${{ steps.version.outputs.value }} -t webssh .
 
       - name: Push to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

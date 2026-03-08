@@ -162,6 +162,15 @@
         text-transform: uppercase;
       }
 
+      .card-header-title .version-label {
+        font-size: 10px;
+        font-weight: 400;
+        color: var(--text-muted);
+        text-transform: none;
+        letter-spacing: normal;
+        margin-left: 8px;
+      }
+
       .card-header-title .cursor {
         display: inline-block;
         width: 1px;
@@ -564,6 +573,7 @@
           </div>
           <div class="card-header-title">
             ssh session<span class="cursor"></span>
+            <span class="version-label">v{{ version }}</span>
           </div>
           {% if user_key_enabled and auth_username %}
           <div class="card-header-user">{{ auth_username }}</div>
