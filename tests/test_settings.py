@@ -2,7 +2,9 @@ import io
 import random
 import ssl
 import sys
+import os
 import os.path
+import tempfile
 import unittest
 import paramiko
 import tornado.options as options
@@ -13,7 +15,7 @@ from webssh.settings import (
     get_host_keys_settings, get_policy_setting, base_dir, get_font_filename,
     get_ssl_context, get_trusted_downstream, get_origin_setting, print_version,
     check_encoding_setting, load_allowed_hosts, get_allowed_hosts_setting,
-    apply_config_settings, parse_allowed_hosts
+    apply_config_settings, parse_allowed_hosts, check_user_key_dir
 )
 from webssh.utils import UnicodeType
 from webssh._version import __version__
@@ -367,3 +369,43 @@ class TestSettings(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 parse_allowed_hosts(data)
             self.assertIn('Invalid port', str(ctx.exception))
+
+    def test_check_user_key_dir_empty(self):
+        # Empty string means disabled, should return without error
+        check_user_key_dir('')
+
+    def test_check_user_key_dir_creates_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_dir = os.path.join(tmpdir, 'keys')
+            check_user_key_dir(key_dir, tdstream='10.0.0.1')
+            self.assertTrue(os.path.isdir(key_dir))
+            mode = os.stat(key_dir).st_mode & 0o777
+            self.assertEqual(mode, 0o700)
+
+    def test_check_user_key_dir_exists_ok(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_dir = os.path.join(tmpdir, 'keys')
+            os.makedirs(key_dir, mode=0o700)
+            # Should not raise when directory already exists
+            check_user_key_dir(key_dir, tdstream='10.0.0.1')
+
+    def test_check_user_key_dir_not_a_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = os.path.join(tmpdir, 'keys')
+            with open(file_path, 'w') as f:
+                f.write('')
+            with self.assertRaises(ValueError) as ctx:
+                check_user_key_dir(file_path, tdstream='10.0.0.1')
+            self.assertIn('is not a directory', str(ctx.exception))
+
+    def test_check_user_key_dir_permission_denied(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = os.path.join(tmpdir, 'noperm')
+            os.makedirs(parent, mode=0o000)
+            try:
+                key_dir = os.path.join(parent, 'keys')
+                with self.assertRaises(ValueError) as ctx:
+                    check_user_key_dir(key_dir, tdstream='10.0.0.1')
+                self.assertIn('permission denied', str(ctx.exception))
+            finally:
+                os.chmod(parent, 0o700)

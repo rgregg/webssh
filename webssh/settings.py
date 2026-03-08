@@ -357,6 +357,10 @@ def check_user_key_dir(user_key_dir, tdstream=''):
             'Create the directory manually or run with appropriate '
             'permissions.'.format(user_key_dir)
         )
+    except (FileExistsError, NotADirectoryError):
+        raise ValueError(
+            'User key directory {!r} is not a directory'.format(user_key_dir)
+        )
     if not os.path.isdir(user_key_dir):
         raise ValueError(
             'User key directory {!r} is not a directory'.format(user_key_dir)
