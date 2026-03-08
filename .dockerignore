@@ -1,1 +1,9 @@
 .git
+.venv
+.github
+.ruff_cache
+__pycache__
+*.pyc
+tests
+config.yaml.example
+*.md
