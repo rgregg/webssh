@@ -87,7 +87,7 @@ def main():
     try:
         loop.start()
     except KeyboardInterrupt:
-        print('Exiting.')
+        logging.info('Exiting.')
 
 
 if __name__ == '__main__':
