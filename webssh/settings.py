@@ -3,6 +3,7 @@ import os.path
 import ssl
 import sys
 
+import yaml
 from tornado.options import define
 from webssh.policy import (
     load_host_keys, get_policy_class, check_policy_setting
@@ -51,6 +52,8 @@ define('font', default='', help='custom font filename')
 define('encoding', default='',
        help='''The default character encoding of ssh servers.
 Example: --encoding='utf-8' to solve the problem with some switches&routers''')
+define('knownhosts', default='',
+       help='YAML file defining allowed SSH hosts')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -196,3 +199,45 @@ def get_font_filename(font, font_dir):
 def check_encoding_setting(encoding):
     if encoding and not is_valid_encoding(encoding):
         raise ValueError('Unknown character encoding {!r}.'.format(encoding))
+
+
+def load_allowed_hosts(filepath):
+    if not os.path.isfile(filepath):
+        raise ValueError(
+            'Known hosts file {!r} does not exist'.format(filepath)
+        )
+
+    with open(filepath, 'r') as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict) or 'hosts' not in data:
+        raise ValueError(
+            'Known hosts file must contain a "hosts" key'
+        )
+
+    hosts = data['hosts']
+    if not isinstance(hosts, list) or not hosts:
+        raise ValueError(
+            'Known hosts file must contain a non-empty list of hosts'
+        )
+
+    result = []
+    for entry in hosts:
+        if not isinstance(entry, dict):
+            raise ValueError('Each host entry must be a mapping')
+        if 'hostname' not in entry:
+            raise ValueError('Each host entry must have a "hostname" field')
+        host = {
+            'name': entry.get('name', entry['hostname']),
+            'hostname': entry['hostname'],
+            'port': int(entry.get('port', 22)),
+        }
+        result.append(host)
+
+    return result
+
+
+def get_allowed_hosts_setting(options):
+    if not options.knownhosts:
+        return []
+    return load_allowed_hosts(options.knownhosts)

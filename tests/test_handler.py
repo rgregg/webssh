@@ -1,6 +1,7 @@
 import io
 import unittest
 import paramiko
+import tornado.web
 
 from tornado.httputil import HTTPServerRequest
 from tornado.options import options
@@ -317,6 +318,47 @@ class TestWsockHandler(unittest.TestCase):
         obj.worker_ref = ref
         WsockHandler.on_message(obj, b'{"data": "somestuff"}')
         obj.close.assert_called_with(reason='Worker closed')
+
+class TestIndexHandlerAllowedHosts(unittest.TestCase):
+
+    def _make_handler(self, allowed_hosts=None):
+        handler_obj = Mock(spec=IndexHandler)
+        handler_obj.allowed_hosts = allowed_hosts or []
+        handler_obj.check_allowed_hosts = lambda h, p: \
+            IndexHandler.check_allowed_hosts(handler_obj, h, p)
+        return handler_obj
+
+    def test_no_allowed_hosts_allows_any(self):
+        h = self._make_handler([])
+        # Should not raise
+        h.check_allowed_hosts('any.host', 22)
+
+    def test_allowed_host_passes(self):
+        hosts = [
+            {'name': 'Server', 'hostname': '10.0.1.5', 'port': 22},
+        ]
+        h = self._make_handler(hosts)
+        # Should not raise
+        h.check_allowed_hosts('10.0.1.5', 22)
+
+    def test_disallowed_host_rejected(self):
+        hosts = [
+            {'name': 'Server', 'hostname': '10.0.1.5', 'port': 22},
+        ]
+        h = self._make_handler(hosts)
+        with self.assertRaises(tornado.web.HTTPError) as ctx:
+            h.check_allowed_hosts('evil.host', 22)
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_wrong_port_rejected(self):
+        hosts = [
+            {'name': 'Server', 'hostname': '10.0.1.5', 'port': 22},
+        ]
+        h = self._make_handler(hosts)
+        with self.assertRaises(tornado.web.HTTPError) as ctx:
+            h.check_allowed_hosts('10.0.1.5', 2222)
+        self.assertEqual(ctx.exception.status_code, 403)
+
 
 class TestIndexHandler(unittest.TestCase):
     def test_null_in_encoding(self):

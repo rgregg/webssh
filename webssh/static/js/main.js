@@ -84,7 +84,11 @@ jQuery(function($){
       name = names[i];
       value = window.localStorage.getItem(name);
       if (value) {
-        $('#'+name).val(value);
+        var el = $('#'+name);
+        el.val(value);
+        if (name === 'hostname' && el.is('select')) {
+          el.trigger('change');
+        }
       }
     }
   }
@@ -612,7 +616,7 @@ jQuery(function($){
 
     if (!hostname) {
       errors.push('Value of hostname is required.');
-    } else {
+    } else if (!allowed_hosts_configured) {
       if (!hostname_tester.test(hostname)) {
          errors.push('Invalid hostname: ' + hostname);
       }
@@ -794,6 +798,20 @@ jQuery(function($){
     event.preventDefault();
     connect();
   });
+
+  // Auto-populate port when hostname dropdown changes
+  $('#hostname').on('change', function() {
+    if ($(this).is('select')) {
+      var port = $(this).find(':selected').data('port');
+      if (port) {
+        $('#port').val(port);
+      }
+    }
+  });
+  // Initialize port from dropdown on page load
+  if ($('#hostname').is('select')) {
+    $('#hostname').trigger('change');
+  }
 
 
   function cross_origin_connect(event)

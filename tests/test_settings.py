@@ -12,7 +12,7 @@ from webssh.policy import load_host_keys
 from webssh.settings import (
     get_host_keys_settings, get_policy_setting, base_dir, get_font_filename,
     get_ssl_context, get_trusted_downstream, get_origin_setting, print_version,
-    check_encoding_setting
+    check_encoding_setting, load_allowed_hosts, get_allowed_hosts_setting
 )
 from webssh.utils import UnicodeType
 from webssh._version import __version__
@@ -185,3 +185,42 @@ class TestSettings(unittest.TestCase):
         self.assertIsNone(check_encoding_setting('utf-8'))
         with self.assertRaises(ValueError):
             check_encoding_setting('unknown-encoding')
+
+    def test_load_allowed_hosts_valid(self):
+        filepath = make_tests_data_path('allowed_hosts.yaml')
+        hosts = load_allowed_hosts(filepath)
+        self.assertEqual(len(hosts), 2)
+        self.assertEqual(hosts[0]['name'], 'Production Server')
+        self.assertEqual(hosts[0]['hostname'], '10.0.1.5')
+        self.assertEqual(hosts[0]['port'], 22)
+        self.assertEqual(hosts[1]['name'], 'Database Server')
+        self.assertEqual(hosts[1]['hostname'], 'db.internal')
+        self.assertEqual(hosts[1]['port'], 3022)
+
+    def test_load_allowed_hosts_default_port(self):
+        filepath = make_tests_data_path('allowed_hosts_no_port.yaml')
+        hosts = load_allowed_hosts(filepath)
+        self.assertEqual(len(hosts), 1)
+        self.assertEqual(hosts[0]['port'], 22)
+
+    def test_load_allowed_hosts_missing_file(self):
+        with self.assertRaises(ValueError) as ctx:
+            load_allowed_hosts('/nonexistent/file.yaml')
+        self.assertIn('does not exist', str(ctx.exception))
+
+    def test_load_allowed_hosts_malformed(self):
+        filepath = make_tests_data_path('allowed_hosts_malformed.yaml')
+        with self.assertRaises(ValueError) as ctx:
+            load_allowed_hosts(filepath)
+        self.assertIn('hosts', str(ctx.exception))
+
+    def test_get_allowed_hosts_setting_empty(self):
+        opts = type('Options', (), {'knownhosts': ''})()
+        result = get_allowed_hosts_setting(opts)
+        self.assertEqual(result, [])
+
+    def test_get_allowed_hosts_setting_with_file(self):
+        filepath = make_tests_data_path('allowed_hosts.yaml')
+        opts = type('Options', (), {'knownhosts': filepath})()
+        result = get_allowed_hosts_setting(opts)
+        self.assertEqual(len(result), 2)

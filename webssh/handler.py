@@ -314,10 +314,11 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
-    def initialize(self, loop, policy, host_keys_settings):
+    def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None):
         super(IndexHandler, self).initialize(loop)
         self.policy = policy
         self.host_keys_settings = host_keys_settings
+        self.allowed_hosts = allowed_hosts or []
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
@@ -385,6 +386,16 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                             hostname, port)
                     )
 
+    def check_allowed_hosts(self, hostname, port):
+        if not self.allowed_hosts:
+            return
+        for host in self.allowed_hosts:
+            if host['hostname'] == hostname and host['port'] == port:
+                return
+        raise tornado.web.HTTPError(
+            403, 'Connection to {}:{} is not allowed.'.format(hostname, port)
+        )
+
     def get_args(self):
         hostname = self.get_hostname()
         port = self.get_port()
@@ -393,6 +404,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         privatekey, filename = self.get_privatekey()
         passphrase = self.get_argument('passphrase', u'')
         totp = self.get_argument('totp', u'')
+
+        self.check_allowed_hosts(hostname, port)
 
         if isinstance(self.policy, paramiko.RejectPolicy):
             self.lookup_hostname(hostname, port)
@@ -486,7 +499,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         pass
 
     def get(self):
-        self.render('index.html', debug=self.debug, font=self.font)
+        self.render('index.html', debug=self.debug, font=self.font,
+                    allowed_hosts=self.allowed_hosts)
 
     @tornado.gen.coroutine
     def post(self):

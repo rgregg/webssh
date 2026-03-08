@@ -44,11 +44,19 @@
         <div class="row">
           <div class="col">
             <label for="Hostname">Hostname</label>
+            {% if allowed_hosts %}
+            <select class="form-control" id="hostname" name="hostname" required>
+              {% for host in allowed_hosts %}
+              <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}">{{ host['name'] }}</option>
+              {% end %}
+            </select>
+            {% else %}
             <input class="form-control" type="text" id="hostname" name="hostname" value="" required>
+            {% end %}
           </div>
           <div class="col">
             <label for="Port">Port</label>
-            <input class="form-control" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535>
+            <input class="form-control" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535 {% if allowed_hosts %}readonly{% end %}>
           </div>
         </div>
         <div class="row">
@@ -96,6 +104,9 @@
     <script src="static/js/bootstrap.min.js"></script>
     <script src="static/js/xterm.min.js"></script>
     <script src="static/js/xterm-addon-fit.min.js"></script>
+    <script>
+      var allowed_hosts_configured = {% if allowed_hosts %}true{% else %}false{% end %};
+    </script>
     <script src="static/js/main.js"></script>
   </body>
 </html>

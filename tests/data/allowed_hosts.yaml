@@ -1,0 +1,7 @@
+hosts:
+  - name: "Production Server"
+    hostname: "10.0.1.5"
+    port: 22
+  - name: "Database Server"
+    hostname: "db.internal"
+    port: 3022
