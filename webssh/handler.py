@@ -709,6 +709,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
     def initialize(self, loop):
         super(WsockHandler, self).initialize(loop)
         self.worker_ref = None
+        self._idle_timeout = None
 
     def open(self):
         self.src_addr = self.get_client_addr()
@@ -731,8 +732,25 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
                 worker.set_handler(self)
                 self.worker_ref = weakref.ref(worker)
                 self.loop.add_handler(worker.fd, worker, IOLoop.READ)
+                self._reset_idle_timeout()
             else:
                 self.close(reason='Websocket authentication failed.')
+
+    def _reset_idle_timeout(self):
+        if self._idle_timeout:
+            self.loop.remove_timeout(self._idle_timeout)
+            self._idle_timeout = None
+        timeout = options.idletimeout
+        if timeout > 0:
+            self._idle_timeout = self.loop.call_later(
+                timeout, self._idle_disconnect
+            )
+
+    def _idle_disconnect(self):
+        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
+        worker = self.worker_ref() if self.worker_ref else None
+        if worker:
+            worker.close(reason='Idle timeout.')
 
     def on_message(self, message):
         logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
@@ -770,8 +788,12 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if data and isinstance(data, UnicodeType):
             worker.data_to_dst.append(data)
             worker.on_write()
+            self._reset_idle_timeout()
 
     def on_close(self):
+        if self._idle_timeout:
+            self.loop.remove_timeout(self._idle_timeout)
+            self._idle_timeout = None
         logging.info('Disconnected from {}:{}'.format(*self.src_addr))
         if not self.close_reason:
             self.close_reason = 'client disconnected'

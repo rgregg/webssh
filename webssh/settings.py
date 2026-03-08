@@ -45,6 +45,8 @@ separated by comma;
 '*': wildcard policy, matches any domain, allowed in debug mode only.''')
 define('wpintvl', type=float, default=30, help='Websocket ping interval')
 define('timeout', type=float, default=3, help='SSH connection timeout')
+define('idletimeout', type=int, default=1800,
+       help='Idle timeout in seconds (0 to disable)')
 define('delay', type=float, default=3, help='The delay to call recycle_worker')
 define('maxconn', type=int, default=20,
        help='Maximum live connections (ssh sessions) per client')
@@ -323,6 +325,8 @@ def apply_config_settings(options):
         options.userkeydir = config['userkeydir']
     if options.userheader == 'X-Authentik-Username' and 'userheader' in config:
         options.userheader = config['userheader']
+    if 'idle_timeout' in config:
+        options.idletimeout = int(config['idle_timeout'])
     if 'trusted_proxies' in config:
         proxies = config['trusted_proxies']
         if not isinstance(proxies, list):
