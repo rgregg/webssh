@@ -1,12 +1,23 @@
 # WebSSH Configuration File
 # Usage: wssh --config=config.yaml
 
+# Missing host key policy (optional)
+# Controls behavior when connecting to a host not in known_hosts.
+# Values: reject, autoadd, warning (default: warning)
+# policy: reject
+
 # Allowed SSH hosts (optional)
 # When specified, users can only connect to these hosts.
 # hosts:
 #   - name: "Production Server"
 #     hostname: "10.0.1.5"
 #     port: 22
+#     # host_key pins the expected server key(s). Accepts a single string or a
+#     # list. When omitted, the host key policy (--policy) applies instead.
+#     # You can get a host's keys with: ssh-keyscan -t ed25519,rsa hostname
+#     host_key:
+#       - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+#       - "ssh-rsa AAAAB3NzaC1yc2EAAAA..."
 #   - name: "Database Server"
 #     hostname: "db.internal"
 #     port: 3022

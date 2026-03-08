@@ -222,6 +222,31 @@ def load_config_file(filepath):
     return data
 
 
+def _validate_host_key(host_key, hostname):
+    import base64
+    parts = host_key.strip().split()
+    if len(parts) < 2:
+        raise ValueError(
+            'Invalid host_key for {!r}: expected "key-type base64-key"'.format(
+                hostname)
+        )
+    key_type = parts[0]
+    valid_types = (
+        'ssh-rsa', 'ssh-ed25519', 'ecdsa-sha2-nistp256',
+        'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+    )
+    if key_type not in valid_types:
+        raise ValueError(
+            'Invalid host_key type {!r} for {!r}'.format(key_type, hostname)
+        )
+    try:
+        base64.b64decode(parts[1])
+    except Exception:
+        raise ValueError(
+            'Invalid host_key base64 data for {!r}'.format(hostname)
+        )
+
+
 def parse_allowed_hosts(data):
     if 'hosts' not in data:
         return []
@@ -238,10 +263,21 @@ def parse_allowed_hosts(data):
             raise ValueError('Each host entry must be a mapping')
         if 'hostname' not in entry:
             raise ValueError('Each host entry must have a "hostname" field')
+        raw_keys = entry.get('host_key', [])
+        if isinstance(raw_keys, str):
+            raw_keys = [raw_keys] if raw_keys else []
+        elif not isinstance(raw_keys, list):
+            raise ValueError(
+                'host_key for {!r} must be a string or list'.format(
+                    entry['hostname'])
+            )
+        for k in raw_keys:
+            _validate_host_key(k, entry['hostname'])
         host = {
             'name': entry.get('name', entry['hostname']),
             'hostname': entry['hostname'],
             'port': int(entry.get('port', 22)),
+            'host_keys': raw_keys,
         }
         result.append(host)
 
@@ -275,6 +311,8 @@ def apply_config_settings(options):
     if not config:
         return
 
+    if options.policy == 'warning' and 'policy' in config:
+        options.policy = config['policy']
     if not options.userkeydir and 'userkeydir' in config:
         options.userkeydir = config['userkeydir']
     if options.userheader == 'X-Authentik-Username' and 'userheader' in config:

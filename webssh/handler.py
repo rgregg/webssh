@@ -400,6 +400,46 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             403, 'Connection to {}:{} is not allowed.'.format(hostname, port)
         )
 
+    def load_configured_host_key(self, hostname, port):
+        if not self.allowed_hosts:
+            return
+        for host in self.allowed_hosts:
+            if host['hostname'] == hostname and host['port'] == port:
+                for key_str in host.get('host_keys', []):
+                    self._add_host_key(hostname, port, key_str)
+                return
+
+    def _add_host_key(self, hostname, port, host_key_str):
+        import base64
+        parts = host_key_str.strip().split()
+        key_type, key_data = parts[0], base64.b64decode(parts[1])
+
+        key_classes = {
+            'ssh-rsa': paramiko.RSAKey,
+            'ssh-ed25519': paramiko.Ed25519Key,
+            'ecdsa-sha2-nistp256': paramiko.ECDSAKey,
+            'ecdsa-sha2-nistp384': paramiko.ECDSAKey,
+            'ecdsa-sha2-nistp521': paramiko.ECDSAKey,
+        }
+
+        cls = key_classes.get(key_type)
+        if not cls:
+            return
+
+        key = cls(data=key_data)
+
+        # Use bracketed hostname for non-standard ports, matching paramiko
+        if port == 22:
+            host_entry = hostname
+        else:
+            host_entry = '[{}]:{}'.format(hostname, port)
+
+        self.ssh_client._host_keys.add(host_entry, key_type, key)
+        logging.debug(
+            'Loaded configured host key ({}) for {}'.format(
+                key_type, host_entry)
+        )
+
     def get_args(self):
         hostname = self.get_hostname()
         port = self.get_port()
@@ -424,6 +464,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             privatekey, filename = self.get_privatekey()
 
         self.check_allowed_hosts(hostname, port)
+        self.load_configured_host_key(hostname, port)
 
         if isinstance(self.policy, paramiko.RejectPolicy):
             self.lookup_hostname(hostname, port)
