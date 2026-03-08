@@ -17,7 +17,7 @@ COPY --from=builder /install /usr/local
 
 RUN addgroup webssh && \
     adduser -Ss /bin/false -g webssh webssh && \
-    mkdir -p /data/user-keys && \
+    mkdir -p -m 700 /data/user-keys && \
     chown webssh:webssh /data/user-keys
 
 COPY . /code
