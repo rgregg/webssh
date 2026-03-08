@@ -73,7 +73,7 @@ def generate_key_pair(base_dir, username):
 
     # Load into paramiko to get public key components
     key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem.decode()))
-    pub_key_str = '{} {} {}'.format(
+    pub_key_str = '{} {} {}@webssh-client'.format(
         key.get_name(), key.get_base64(), username
     )
 
