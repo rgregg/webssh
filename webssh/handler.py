@@ -19,6 +19,7 @@ from webssh.utils import (
 )
 from webssh.worker import Worker, recycle_worker, clients
 from webssh import user_keys
+from webssh._version import __version__
 
 try:
     from json.decoder import JSONDecodeError
@@ -582,7 +583,6 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             except ValueError:
                 pass
 
-        from webssh._version import __version__
         self.render('index.html', debug=self.debug, font=self.font,
                     allowed_hosts=self.allowed_hosts,
                     user_key_enabled=user_key_enabled,
