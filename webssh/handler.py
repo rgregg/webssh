@@ -562,6 +562,10 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         except paramiko.BadHostKeyException:
             raise ValueError('Bad host key.')
 
+        transport = ssh.get_transport()
+        if transport:
+            transport.set_keepalive(30)
+
         term = self.get_argument('term', u'') or u'xterm'
         chan = ssh.invoke_shell(term=term)
         chan.setblocking(0)
@@ -687,7 +691,13 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         future = self.executor.submit(
             user_keys.generate_key_pair, self.user_key_dir, username
         )
-        public_key = yield future
+        try:
+            public_key = yield future
+        except Exception:
+            logging.exception('Failed to generate key pair for user %s', username)
+            self.set_status(500)
+            self.write({'error': 'Failed to generate key pair.'})
+            return
         self.write({
             'has_key': True,
             'username': username,
@@ -700,6 +710,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
     def initialize(self, loop):
         super(WsockHandler, self).initialize(loop)
         self.worker_ref = None
+        self._idle_timeout = None
 
     def open(self):
         self.src_addr = self.get_client_addr()
@@ -722,8 +733,25 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
                 worker.set_handler(self)
                 self.worker_ref = weakref.ref(worker)
                 self.loop.add_handler(worker.fd, worker, IOLoop.READ)
+                self._reset_idle_timeout()
             else:
                 self.close(reason='Websocket authentication failed.')
+
+    def _reset_idle_timeout(self):
+        if self._idle_timeout:
+            self.loop.remove_timeout(self._idle_timeout)
+            self._idle_timeout = None
+        timeout = options.idletimeout
+        if timeout > 0:
+            self._idle_timeout = self.loop.call_later(
+                timeout, self._idle_disconnect
+            )
+
+    def _idle_disconnect(self):
+        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
+        worker = self.worker_ref() if self.worker_ref else None
+        if worker:
+            worker.close(reason='Idle timeout.')
 
     def on_message(self, message):
         logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
@@ -750,6 +778,8 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if not isinstance(msg, dict):
             return
 
+        self._reset_idle_timeout()
+
         resize = msg.get('resize')
         if resize and len(resize) == 2:
             try:
@@ -763,6 +793,9 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             worker.on_write()
 
     def on_close(self):
+        if self._idle_timeout:
+            self.loop.remove_timeout(self._idle_timeout)
+            self._idle_timeout = None
         logging.info('Disconnected from {}:{}'.format(*self.src_addr))
         if not self.close_reason:
             self.close_reason = 'client disconnected'

@@ -370,6 +370,47 @@ class TestSettings(unittest.TestCase):
                 parse_allowed_hosts(data)
             self.assertIn('Invalid port', str(ctx.exception))
 
+    def test_apply_config_idle_timeout_valid(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml',
+                                         delete=False) as f:
+            f.write('idle_timeout: 600\n')
+            f.flush()
+            try:
+                opts = self._make_config_opts(f.name, tdstream='',
+                                              idletimeout=1800)
+                apply_config_settings(opts)
+                self.assertEqual(opts.idletimeout, 600)
+            finally:
+                os.unlink(f.name)
+
+    def test_apply_config_idle_timeout_invalid(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml',
+                                         delete=False) as f:
+            f.write('idle_timeout: not_a_number\n')
+            f.flush()
+            try:
+                opts = self._make_config_opts(f.name, tdstream='',
+                                              idletimeout=1800)
+                with self.assertRaises(ValueError) as ctx:
+                    apply_config_settings(opts)
+                self.assertIn('Invalid idle_timeout', str(ctx.exception))
+            finally:
+                os.unlink(f.name)
+
+    def test_apply_config_idle_timeout_negative(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml',
+                                         delete=False) as f:
+            f.write('idle_timeout: -1\n')
+            f.flush()
+            try:
+                opts = self._make_config_opts(f.name, tdstream='',
+                                              idletimeout=1800)
+                with self.assertRaises(ValueError) as ctx:
+                    apply_config_settings(opts)
+                self.assertIn('Invalid idle_timeout', str(ctx.exception))
+            finally:
+                os.unlink(f.name)
+
     def test_check_user_key_dir_empty(self):
         # Empty string means disabled, should return without error
         check_user_key_dir('')

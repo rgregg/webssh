@@ -31,6 +31,17 @@
 # Used with userkeydir to identify users behind an auth proxy (e.g. Authentik).
 # userheader: X-Authentik-Username
 
+# Idle timeout in seconds (optional)
+# Disconnect websocket sessions that have been idle (no keystrokes) for this
+# many seconds. Set to 0 to disable. Default: 1800 (30 minutes).
+# idle_timeout: 1800
+
+# Websocket ping interval / keepalive (optional, CLI-only)
+# The server sends a websocket ping frame every --wpintvl seconds (default: 30)
+# to keep the connection alive through proxies and detect dead peers.
+# This is independent of idle_timeout, which tracks user keystrokes.
+# Configure via: wssh --wpintvl=30
+
 # Trusted proxy IP addresses (optional)
 # When set, only requests from these IPs are accepted. All other requests
 # are rejected with 403. This ensures auth headers (e.g. X-Authentik-Username)
