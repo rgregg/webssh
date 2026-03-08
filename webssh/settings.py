@@ -349,17 +349,19 @@ def check_user_key_dir(user_key_dir, tdstream=''):
             'SECURITY WARNING: userkeydir is set but no trusted_proxies '
             'configured. The user header can be spoofed by any client.'
         )
-    if not os.path.exists(user_key_dir):
-        try:
-            os.makedirs(user_key_dir, mode=0o700)
-        except PermissionError:
-            raise ValueError(
-                'Cannot create user key directory {!r}: permission denied. '
-                'Create the directory manually or run with appropriate '
-                'permissions.'.format(user_key_dir)
-            )
-        logging.info('Created user key directory: {}'.format(user_key_dir))
-    elif not os.path.isdir(user_key_dir):
+    try:
+        os.makedirs(user_key_dir, mode=0o700, exist_ok=True)
+    except PermissionError:
+        raise ValueError(
+            'Cannot create user key directory {!r}: permission denied. '
+            'Create the directory manually or run with appropriate '
+            'permissions.'.format(user_key_dir)
+        )
+    except (FileExistsError, NotADirectoryError):
+        raise ValueError(
+            'User key directory {!r} is not a directory'.format(user_key_dir)
+        )
+    if not os.path.isdir(user_key_dir):
         raise ValueError(
             'User key directory {!r} is not a directory'.format(user_key_dir)
         )
