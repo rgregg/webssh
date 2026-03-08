@@ -205,7 +205,8 @@ class TestPrivateKey(unittest.TestCase):
 
     def test_get_pkey_obj_with_plain_new_dsa_key(self):
         pk = self.get_pk_obj('test_new_dsa.key')
-        self.assertIsInstance(pk.get_pkey_obj(), paramiko.DSSKey)
+        with self.assertRaises(InvalidValueError):
+            pk.get_pkey_obj()
 
     def test_parse_name(self):
         key = u'-----BEGIN PRIVATE KEY-----'

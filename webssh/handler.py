@@ -106,7 +106,6 @@ class PrivateKey(object):
 
     tag_to_name = {
         'RSA': 'RSA',
-        'DSA': 'DSS',
         'EC': 'ECDSA',
         'OPENSSH': 'Ed25519'
     }
@@ -167,7 +166,7 @@ class PrivateKey(object):
         pkey = self.get_specific_pkey(name, offset, password)
 
         if pkey is None and name == 'Ed25519':
-            for name in ['RSA', 'ECDSA', 'DSS']:
+            for name in ['RSA', 'ECDSA']:
                 pkey = self.get_specific_pkey(name, offset, password)
                 if pkey:
                     break
@@ -178,8 +177,7 @@ class PrivateKey(object):
         logging.error(str(self.last_exception))
         msg = 'Invalid key'
         if self.password:
-            msg += ' or wrong passphrase "{}" for decrypting it.'.format(
-                    self.password)
+            msg += ' or wrong passphrase for decrypting it.'
         raise InvalidValueError(msg)
 
 
@@ -406,7 +404,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
         self.ssh_client.totp = totp
         args = (hostname, port, username, password, pkey)
-        logging.debug(args)
+        logging.debug((hostname, port, username))
 
         return args
 
