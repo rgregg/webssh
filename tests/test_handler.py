@@ -1,5 +1,4 @@
 import io
-import os
 import tempfile
 import unittest
 import paramiko
@@ -9,7 +8,6 @@ from tornado.httputil import HTTPServerRequest
 from tornado.options import options
 from tests.utils import read_file, make_tests_data_path
 from webssh import handler
-from webssh import worker
 from webssh import user_keys
 from webssh.handler import (
     IndexHandler, MixinHandler, WsockHandler, PrivateKey, InvalidValueError,

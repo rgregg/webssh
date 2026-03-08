@@ -13,7 +13,7 @@ from webssh.settings import (
     get_host_keys_settings, get_policy_setting, base_dir, get_font_filename,
     get_ssl_context, get_trusted_downstream, get_origin_setting, print_version,
     check_encoding_setting, load_allowed_hosts, get_allowed_hosts_setting,
-    load_config_file, apply_config_settings, get_config_settings
+    apply_config_settings
 )
 from webssh.utils import UnicodeType
 from webssh._version import __version__
@@ -23,7 +23,7 @@ class TestSettings(unittest.TestCase):
 
     def test_print_version(self):
         sys_stdout = sys.stdout
-        sys.stdout = io.StringIO() if UnicodeType == str else io.BytesIO()
+        sys.stdout = io.StringIO() if UnicodeType is str else io.BytesIO()
 
         self.assertEqual(print_version(False), None)
         self.assertEqual(sys.stdout.getvalue(), '')
