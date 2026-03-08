@@ -165,6 +165,7 @@ class TestPrivateKey(unittest.TestCase):
         with self.assertRaises(InvalidValueError) as ctx:
             pk.get_pkey_obj()
         self.assertIn('wrong passphrase', str(ctx.exception))
+        self.assertNotIn('wrongpass', str(ctx.exception))
 
         pk = self.get_pk_obj(fname, password=password)
         self.assertIsInstance(pk.get_pkey_obj(), klass)
@@ -208,7 +209,7 @@ class TestPrivateKey(unittest.TestCase):
         password = '123456'
         self._test_with_encrypted_key(fname, password, paramiko.RSAKey)
 
-    def test_get_pkey_obj_with_plain_new_dsa_key(self):
+    def test_get_pkey_obj_rejects_plain_new_dsa_key(self):
         pk = self.get_pk_obj('test_new_dsa.key')
         with self.assertRaises(InvalidValueError):
             pk.get_pkey_obj()
