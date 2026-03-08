@@ -44,7 +44,9 @@ jobs:
 
       - name: Determine version
         id: version
-        run: echo "value=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+        run: |
+          TAG="$(git describe --tags --always)"
+          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build image
         run: docker build --build-arg VERSION=${{ steps.version.outputs.value }} -t webssh .

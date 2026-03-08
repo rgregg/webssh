@@ -16,7 +16,9 @@ LABEL version=${VERSION}
 COPY --from=builder /install /usr/local
 
 RUN addgroup webssh && \
-    adduser -Ss /bin/false -g webssh webssh
+    adduser -Ss /bin/false -g webssh webssh && \
+    mkdir -p /data/user-keys && \
+    chown webssh:webssh /data/user-keys
 
 COPY . /code
 WORKDIR /code

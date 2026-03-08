@@ -350,7 +350,14 @@ def check_user_key_dir(user_key_dir, tdstream=''):
             'configured. The user header can be spoofed by any client.'
         )
     if not os.path.exists(user_key_dir):
-        os.makedirs(user_key_dir, mode=0o700)
+        try:
+            os.makedirs(user_key_dir, mode=0o700)
+        except PermissionError:
+            raise ValueError(
+                'Cannot create user key directory {!r}: permission denied. '
+                'Create the directory manually or run with appropriate '
+                'permissions.'.format(user_key_dir)
+            )
         logging.info('Created user key directory: {}'.format(user_key_dir))
     elif not os.path.isdir(user_key_dir):
         raise ValueError(
