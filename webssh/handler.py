@@ -566,23 +566,21 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         user_key_enabled = False
         has_key = False
         public_key = ''
-        auth_username = ''
+        auth_username = self.request.headers.get(self.user_header, '')
 
-        if self.user_key_dir:
-            auth_username = self.request.headers.get(self.user_header, '')
-            if auth_username:
-                try:
-                    user_keys.sanitize_username(auth_username)
-                    user_key_enabled = True
-                    has_key = user_keys.has_stored_key(
+        if self.user_key_dir and auth_username:
+            try:
+                user_keys.sanitize_username(auth_username)
+                user_key_enabled = True
+                has_key = user_keys.has_stored_key(
+                    self.user_key_dir, auth_username
+                )
+                if has_key:
+                    public_key = user_keys.read_public_key(
                         self.user_key_dir, auth_username
                     )
-                    if has_key:
-                        public_key = user_keys.read_public_key(
-                            self.user_key_dir, auth_username
-                        )
-                except ValueError:
-                    pass
+            except ValueError:
+                pass
 
         from webssh._version import __version__
         self.render('index.html', debug=self.debug, font=self.font,
