@@ -318,6 +318,12 @@ jQuery(function($){
     console.log(text);
     status.text(text);
 
+    if (text) {
+      status.addClass('visible');
+    } else {
+      status.removeClass('visible');
+    }
+
     if (to_populate && validated_form_data) {
       populate_form(validated_form_data);
       validated_form_data = undefined;
@@ -594,6 +600,7 @@ jQuery(function($){
         port = data.get('port'),
         username = data.get('username'),
         pk = data.get('privatekey'),
+        key_source = data.get('key_source'),
         result = {
           valid: false,
           data: data,
@@ -621,7 +628,7 @@ jQuery(function($){
       errors.push('Value of username is required.');
     }
 
-    if (pk) {
+    if (key_source !== 'stored' && pk) {
       size = pk.size || pk.length;
       if (size > key_max_size) {
         errors.push('Invalid private key: ' + pk.name || '');
@@ -672,7 +679,7 @@ jQuery(function($){
     enable_file_inputs(inputs);
 
     function ajax_post() {
-      status.text('');
+      status.text('').removeClass('visible');
       button.prop('disabled', true);
 
       $.ajax({
@@ -692,7 +699,10 @@ jQuery(function($){
       return;
     }
 
-    if (pk && pk.size && !debug) {
+    var key_source = data.get('key_source');
+    if (key_source === 'stored') {
+      ajax_post();
+    } else if (pk && pk.size && !debug) {
       read_file_as_text(pk, function(text) {
         if (text === undefined) {
             log_status('Invalid private key: ' + pk.name);
@@ -726,7 +736,7 @@ jQuery(function($){
       data._origin = event_origin;
     }
 
-    status.text('');
+    status.text('').removeClass('visible');
     button.prop('disabled', true);
 
     $.ajax({
@@ -798,6 +808,58 @@ jQuery(function($){
   // Initialize port from dropdown on page load
   if ($('#hostname').is('select')) {
     $('#hostname').trigger('change');
+  }
+
+  // User key management toggle
+  if (user_key_enabled) {
+    $('input[name="key_source"]').on('change', function() {
+      var val = $(this).val();
+      if (val === 'stored') {
+        $('#upload-key-row').hide();
+        $('#stored-key-row').show();
+      } else {
+        $('#upload-key-row').show();
+        $('#stored-key-row').hide();
+      }
+    });
+
+    $('#generate-key-btn').on('click', function() {
+      var btn = $(this);
+
+      if (has_stored_key) {
+        if (!window.confirm('This will replace your existing SSH key pair. Continue?')) {
+          return;
+        }
+      }
+
+      btn.prop('disabled', true).text('Generating...');
+
+      var xsrf = $('input[name="_xsrf"]').val();
+      $.ajax({
+        url: '/user-key',
+        type: 'POST',
+        data: {_xsrf: xsrf},
+        dataType: 'json',
+        success: function(resp) {
+          if (resp.public_key) {
+            $('#public-key-display').val(resp.public_key);
+            has_stored_key = true;
+            btn.text('Regenerate Key');
+            $('#key_source_stored').prop('checked', true).trigger('change');
+          }
+        },
+        error: function(xhr) {
+          var msg = 'Failed to generate key';
+          try {
+            msg = JSON.parse(xhr.responseText).status || msg;
+          } catch(e) {}
+          window.alert(msg);
+        },
+        complete: function() {
+          btn.prop('disabled', false);
+        }
+      });
+    });
   }
 
 

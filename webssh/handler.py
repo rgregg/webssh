@@ -18,6 +18,7 @@ from webssh.utils import (
     is_valid_encoding
 )
 from webssh.worker import Worker, recycle_worker, clients
+from webssh import user_keys
 
 try:
     from json.decoder import JSONDecodeError
@@ -314,11 +315,14 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
-    def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None):
+    def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
+                   user_key_dir='', user_header='X-Authentik-Username'):
         super(IndexHandler, self).initialize(loop)
         self.policy = policy
         self.host_keys_settings = host_keys_settings
         self.allowed_hosts = allowed_hosts or []
+        self.user_key_dir = user_key_dir
+        self.user_header = user_header
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
@@ -401,9 +405,23 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         port = self.get_port()
         username = self.get_value('username')
         password = self.get_argument('password', u'')
-        privatekey, filename = self.get_privatekey()
         passphrase = self.get_argument('passphrase', u'')
         totp = self.get_argument('totp', u'')
+
+        key_source = self.get_argument('key_source', u'')
+
+        if key_source == 'stored' and self.user_key_dir:
+            auth_username = self.request.headers.get(self.user_header, '')
+            if not auth_username:
+                raise InvalidValueError('No authenticated user found.')
+            if not user_keys.has_stored_key(self.user_key_dir, auth_username):
+                raise InvalidValueError('No stored key found.')
+            privatekey = user_keys.read_private_key(
+                self.user_key_dir, auth_username
+            )
+            filename = 'stored_key'
+        else:
+            privatekey, filename = self.get_privatekey()
 
         self.check_allowed_hosts(hostname, port)
 
@@ -499,8 +517,33 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         pass
 
     def get(self):
+        user_key_enabled = False
+        has_key = False
+        public_key = ''
+        auth_username = ''
+
+        if self.user_key_dir:
+            auth_username = self.request.headers.get(self.user_header, '')
+            if auth_username:
+                try:
+                    user_keys.sanitize_username(auth_username)
+                    user_key_enabled = True
+                    has_key = user_keys.has_stored_key(
+                        self.user_key_dir, auth_username
+                    )
+                    if has_key:
+                        public_key = user_keys.read_public_key(
+                            self.user_key_dir, auth_username
+                        )
+                except ValueError:
+                    pass
+
         self.render('index.html', debug=self.debug, font=self.font,
-                    allowed_hosts=self.allowed_hosts)
+                    allowed_hosts=self.allowed_hosts,
+                    user_key_enabled=user_key_enabled,
+                    has_stored_key=has_key,
+                    public_key=public_key,
+                    auth_username=auth_username)
 
     @tornado.gen.coroutine
     def post(self):
@@ -525,7 +568,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             worker = yield future
         except (ValueError, paramiko.SSHException) as exc:
-            logging.error(traceback.format_exc())
+            logging.warning('SSH connection failed: {}'.format(exc))
+            logging.debug(traceback.format_exc())
             self.result.update(status=str(exc))
         else:
             if not workers:
@@ -536,6 +580,49 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             self.result.update(id=worker.id, encoding=worker.encoding)
 
         self.write(self.result)
+
+
+class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
+
+    executor = ThreadPoolExecutor(max_workers=4)
+
+    def initialize(self, loop, user_key_dir, user_header):
+        super(UserKeyHandler, self).initialize(loop)
+        self.user_key_dir = user_key_dir
+        self.user_header = user_header
+
+    def get_auth_username(self):
+        username = self.request.headers.get(self.user_header, '')
+        if not username:
+            raise tornado.web.HTTPError(401, 'No authenticated user found.')
+        try:
+            user_keys.sanitize_username(username)
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid username.')
+        return username
+
+    def get(self):
+        username = self.get_auth_username()
+        has_key = user_keys.has_stored_key(self.user_key_dir, username)
+        result = {'has_key': has_key, 'username': username}
+        if has_key:
+            result['public_key'] = user_keys.read_public_key(
+                self.user_key_dir, username
+            )
+        self.write(result)
+
+    @tornado.gen.coroutine
+    def post(self):
+        username = self.get_auth_username()
+        future = self.executor.submit(
+            user_keys.generate_key_pair, self.user_key_dir, username
+        )
+        public_key = yield future
+        self.write({
+            'has_key': True,
+            'username': username,
+            'public_key': public_key
+        })
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):

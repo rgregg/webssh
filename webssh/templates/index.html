@@ -2,100 +2,666 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <title> WebSSH </title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSSH</title>
     <link href="static/img/favicon.png" rel="icon" type="image/png">
-    <link href="static/css/bootstrap.min.css" rel="stylesheet" type="text/css"/>
     <link href="static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
     <link href="static/css/fullscreen.min.css" rel="stylesheet" type="text/css"/>
     <style>
-      .row {
-        margin-top: 15px;
-        margin-bottom: 10px;
+      :root {
+        --bg-deep: #0a0e14;
+        --bg-surface: #111720;
+        --bg-elevated: #1a2130;
+        --bg-input: #0d1219;
+        --border-subtle: #1e2a3a;
+        --border-focus: #2dd4a8;
+        --text-primary: #e2e8f0;
+        --text-secondary: #8492a6;
+        --text-muted: #556275;
+        --accent: #2dd4a8;
+        --accent-dim: rgba(45, 212, 168, 0.12);
+        --accent-glow: rgba(45, 212, 168, 0.25);
+        --danger: #f87171;
+        --danger-dim: rgba(248, 113, 113, 0.12);
+        --radius: 8px;
+        --radius-lg: 12px;
+        --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+        --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+        --shadow-glow: 0 0 20px rgba(45, 212, 168, 0.08);
       }
 
-      .container {
-        margin-top: 20px;
+      *, *::before, *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
       }
 
-      .btn {
-        margin-top: 15px;
+      html, body {
+        height: 100%;
       }
 
-      .btn-danger {
-        margin-left: 5px;
+      body {
+        font-family: var(--font-sans);
+        background: var(--bg-deep);
+        color: var(--text-primary);
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
       }
+
+      /* --- Background pattern --- */
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(ellipse at 20% 50%, rgba(45, 212, 168, 0.03) 0%, transparent 60%),
+          radial-gradient(ellipse at 80% 20%, rgba(56, 120, 200, 0.03) 0%, transparent 50%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      /* --- Waiter --- */
+      #waiter {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-deep);
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 14px;
+        letter-spacing: 0.05em;
+        z-index: 100;
+      }
+
+      #waiter::after {
+        content: '';
+        display: inline-block;
+        width: 2px;
+        height: 16px;
+        background: var(--accent);
+        margin-left: 8px;
+        animation: cursor-blink 1s step-end infinite;
+      }
+
+      @keyframes cursor-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+
+      /* --- Form Container --- */
+      .form-container {
+        position: relative;
+        z-index: 1;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .connect-card {
+        width: 100%;
+        max-width: 580px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-card);
+        overflow: hidden;
+        animation: card-enter 0.4s ease-out;
+      }
+
+      @keyframes card-enter {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* --- Card Header (terminal chrome) --- */
+      .card-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 20px;
+        background: var(--bg-elevated);
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .card-header-dots {
+        display: flex;
+        gap: 6px;
+      }
+
+      .card-header-dots span {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--border-subtle);
+      }
+
+      .card-header-dots span:nth-child(1) { background: #f87171; }
+      .card-header-dots span:nth-child(2) { background: #fbbf24; }
+      .card-header-dots span:nth-child(3) { background: #34d399; }
+
+      .card-header-title {
+        flex: 1;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .card-header-title .cursor {
+        display: inline-block;
+        width: 1px;
+        height: 13px;
+        background: var(--accent);
+        margin-left: 4px;
+        vertical-align: text-bottom;
+        animation: cursor-blink 1s step-end infinite;
+      }
+
+      {% if user_key_enabled and auth_username %}
+      .card-header-user {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--accent);
+        background: var(--accent-dim);
+        padding: 3px 10px;
+        border-radius: 100px;
+        letter-spacing: 0.02em;
+      }
+      {% end %}
+
+      /* --- Card Body --- */
+      .card-body {
+        padding: 24px 24px 28px;
+      }
+
+      /* --- Form Fields --- */
+      .field-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .field-row.single {
+        grid-template-columns: 1fr;
+      }
+
+      .field-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field-label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .field-label .label-hint {
+        text-transform: none;
+        letter-spacing: normal;
+        font-weight: 400;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      input.field-input,
+      select.field-input,
+      textarea.field-input {
+        width: 100%;
+        padding: 10px 14px;
+        background: var(--bg-input);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius);
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.5;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+        -webkit-appearance: none;
+        appearance: none;
+      }
+
+      input.field-input::placeholder {
+        color: var(--text-muted);
+      }
+
+      input.field-input:focus,
+      select.field-input:focus,
+      textarea.field-input:focus {
+        border-color: var(--border-focus);
+        box-shadow: 0 0 0 3px var(--accent-dim);
+      }
+
+      input.field-input[readonly],
+      textarea.field-input[readonly] {
+        color: var(--text-secondary);
+        cursor: default;
+      }
+
+      select.field-input {
+        cursor: pointer;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238492a6' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        padding-right: 32px;
+      }
+
+      select.field-input option {
+        background: var(--bg-surface);
+        color: var(--text-primary);
+      }
+
+      input[type="file"].field-input {
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+
+      input[type="file"].field-input::file-selector-button {
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: 4px;
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 4px 12px;
+        margin-right: 10px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+
+      input[type="file"].field-input::file-selector-button:hover {
+        background: var(--border-subtle);
+      }
+
+      /* --- Key Source Toggle --- */
+      .key-source-toggle {
+        display: flex;
+        background: var(--bg-input);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius);
+        overflow: hidden;
+        margin-bottom: 16px;
+      }
+
+      .key-source-toggle label {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 16px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text-muted);
+        cursor: pointer;
+        transition: all 0.15s;
+        border-right: 1px solid var(--border-subtle);
+        user-select: none;
+      }
+
+      .key-source-toggle label:last-child {
+        border-right: none;
+      }
+
+      .key-source-toggle input[type="radio"] {
+        display: none;
+      }
+
+      .key-source-toggle input[type="radio"]:checked + label {
+        background: var(--accent-dim);
+        color: var(--accent);
+      }
+
+      .key-source-toggle .toggle-icon {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+      }
+
+      /* --- Stored Key Section --- */
+      .stored-key-section {
+        background: var(--bg-input);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius);
+        padding: 14px;
+        margin-bottom: 16px;
+      }
+
+      .stored-key-section .pubkey-label {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        font-weight: 500;
+        color: var(--text-muted);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+
+      textarea.pubkey-display {
+        width: 100%;
+        padding: 10px 12px;
+        background: var(--bg-deep);
+        border: 1px solid var(--border-subtle);
+        border-radius: 6px;
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.6;
+        resize: none;
+        outline: none;
+        cursor: pointer;
+        transition: border-color 0.15s;
+      }
+
+      textarea.pubkey-display:focus {
+        border-color: var(--accent);
+      }
+
+      .stored-key-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 10px;
+      }
+
+      .stored-key-hint {
+        font-size: 11px;
+        color: var(--text-muted);
+        font-style: italic;
+      }
+
+      /* --- Buttons --- */
+      .actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      .btn-connect {
+        flex: 1;
+        padding: 11px 24px;
+        background: var(--accent);
+        color: var(--bg-deep);
+        border: none;
+        border-radius: var(--radius);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        transition: all 0.15s;
+        box-shadow: var(--shadow-glow);
+      }
+
+      .btn-connect:hover {
+        filter: brightness(1.1);
+        box-shadow: 0 0 28px rgba(45, 212, 168, 0.15);
+      }
+
+      .btn-connect:active {
+        transform: translateY(1px);
+      }
+
+      .btn-connect:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        filter: none;
+        box-shadow: none;
+      }
+
+      .btn-reset {
+        padding: 11px 20px;
+        background: transparent;
+        color: var(--text-muted);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .btn-reset:hover {
+        color: var(--danger);
+        border-color: rgba(248, 113, 113, 0.3);
+        background: var(--danger-dim);
+      }
+
+      .btn-generate {
+        padding: 6px 14px;
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-subtle);
+        border-radius: 6px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s;
+        white-space: nowrap;
+      }
+
+      .btn-generate:hover {
+        color: var(--accent);
+        border-color: rgba(45, 212, 168, 0.3);
+        background: var(--accent-dim);
+      }
+
+      .btn-generate:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* --- Status --- */
+      #status {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 50;
+        max-width: 480px;
+        width: calc(100% - 48px);
+        padding: 12px 18px;
+        background: rgba(248, 113, 113, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.2);
+        border-radius: var(--radius);
+        color: var(--danger);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-line;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      #status.visible {
+        pointer-events: auto;
+        opacity: 1;
+      }
+
+      /* --- Terminal --- */
+      #terminal {
+        position: relative;
+        z-index: 1;
+      }
+
+      /* --- Responsive --- */
+      @media (max-width: 540px) {
+        .field-row {
+          grid-template-columns: 1fr;
+        }
+        .card-body {
+          padding: 20px 16px 24px;
+        }
+        .connect-card {
+          border-radius: var(--radius);
+        }
+      }
+
       {% if font.family %}
       @font-face {
         font-family: '{{ font.family }}';
         src: url('{{ font.url }}');
       }
-
-      body {
-        font-family: '{{ font.family }}';
-      }
       {% end %}
     </style>
   </head>
   <body>
-    <div id="waiter" style="display: none"> Connecting ... </div>
+    <div id="waiter" style="display: none">Connecting</div>
 
-    <div class="container form-container" style="display: none">
-      <form id="connect" action="" method="post" enctype="multipart/form-data"{% if debug %} novalidate{% end %}>
-        <div class="row">
-          <div class="col">
-            <label for="Hostname">Hostname</label>
-            {% if allowed_hosts %}
-            <select class="form-control" id="hostname" name="hostname" required>
-              {% for host in allowed_hosts %}
-              <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}">{{ host['name'] }}</option>
-              {% end %}
-            </select>
+    <div class="form-container" style="display: none">
+      <div class="connect-card">
+        <div class="card-header">
+          <div class="card-header-dots">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="card-header-title">
+            ssh session<span class="cursor"></span>
+          </div>
+          {% if user_key_enabled and auth_username %}
+          <div class="card-header-user">{{ auth_username }}</div>
+          {% end %}
+        </div>
+        <div class="card-body">
+          <form id="connect" action="" method="post" enctype="multipart/form-data"{% if debug %} novalidate{% end %}>
+            <!-- Host -->
+            <div class="field-row">
+              <div class="field-group">
+                <span class="field-label">Hostname</span>
+                {% if allowed_hosts %}
+                <select class="field-input" id="hostname" name="hostname" required>
+                  {% for host in allowed_hosts %}
+                  <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}">{{ host['name'] }}</option>
+                  {% end %}
+                </select>
+                {% else %}
+                <input class="field-input" type="text" id="hostname" name="hostname" value="" placeholder="10.0.1.5" required>
+                {% end %}
+              </div>
+              <div class="field-group">
+                <span class="field-label">Port</span>
+                <input class="field-input" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535 {% if allowed_hosts %}readonly{% end %}>
+              </div>
+            </div>
+
+            <!-- Credentials -->
+            <div class="field-row">
+              <div class="field-group">
+                <span class="field-label">Username</span>
+                <input class="field-input" type="text" id="username" name="username" value="" required>
+              </div>
+              <div class="field-group">
+                <span class="field-label">Password</span>
+                <input class="field-input" type="password" id="password" name="password" value="">
+              </div>
+            </div>
+
+            <!-- Key Management -->
+            {% if user_key_enabled %}
+            <div class="key-source-toggle">
+              <input type="radio" name="key_source" id="key_source_stored" value="stored" {% if has_stored_key %}checked{% end %}>
+              <label for="key_source_stored">
+                <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
+                Stored Key
+              </label>
+              <input type="radio" name="key_source" id="key_source_upload" value="upload" {% if not has_stored_key %}checked{% end %}>
+              <label for="key_source_upload">
+                <svg class="toggle-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+                Upload Key
+              </label>
+            </div>
+
+            <div id="upload-key-row" {% if has_stored_key %}style="display:none"{% end %}>
+              <div class="field-row">
+                <div class="field-group">
+                  <span class="field-label">Private Key</span>
+                  <input class="field-input" type="file" id="privatekey" name="privatekey" value="">
+                </div>
+                <div class="field-group">
+                  <span class="field-label">Passphrase</span>
+                  <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
+                </div>
+              </div>
+            </div>
+
+            <div id="stored-key-row" {% if not has_stored_key %}style="display:none"{% end %}>
+              <div class="stored-key-section">
+                <div class="pubkey-label">Public Key <span style="text-transform: none; letter-spacing: normal;">&#8212; add to authorized_keys</span></div>
+                <textarea class="pubkey-display" id="public-key-display" rows="3" readonly onclick="this.select()">{{ public_key }}</textarea>
+                <div class="stored-key-actions">
+                  <button type="button" class="btn-generate" id="generate-key-btn">
+                    {% if has_stored_key %}Regenerate Key{% else %}Generate Key{% end %}
+                  </button>
+                  <span class="stored-key-hint">Click the key to select &amp; copy</span>
+                </div>
+              </div>
+            </div>
             {% else %}
-            <input class="form-control" type="text" id="hostname" name="hostname" value="" required>
+            <div class="field-row">
+              <div class="field-group">
+                <span class="field-label">Private Key</span>
+                <input class="field-input" type="file" id="privatekey" name="privatekey" value="">
+              </div>
+              <div class="field-group">
+                <span class="field-label">Passphrase</span>
+                <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
+              </div>
+            </div>
             {% end %}
-          </div>
-          <div class="col">
-            <label for="Port">Port</label>
-            <input class="form-control" type="number" id="port" name="port" placeholder="22" value="" min=1 max=65535 {% if allowed_hosts %}readonly{% end %}>
-          </div>
+
+            <!-- TOTP -->
+            <div class="field-row">
+              <div class="field-group">
+                <span class="field-label">TOTP <span class="label-hint">(optional)</span></span>
+                <input class="field-input" type="password" id="totp" name="totp" value="" placeholder="6-digit code">
+              </div>
+              <div class="field-group">
+                <!-- spacer -->
+              </div>
+            </div>
+
+            <input type="hidden" id="term" name="term" value="xterm-256color">
+            {% module xsrf_form_html() %}
+
+            <div class="actions">
+              <button type="submit" class="btn-connect btn-primary">Connect</button>
+              <button type="reset" class="btn-reset btn-danger">Reset</button>
+            </div>
+          </form>
         </div>
-        <div class="row">
-          <div class="col">
-            <label for="Username">Username</label>
-            <input class="form-control" type="text" id="username" name="username" value="" required>
-          </div>
-          <div class="col">
-            <label for="Password">Password</label>
-            <input class="form-control" type="password" id="password" name="password" value="">
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label for="Username">Private Key</label>
-            <input class="form-control" type="file" id="privatekey" name="privatekey" value="">
-          </div>
-          <div class="col">
-            <label for="Passphrase">Passphrase</label>
-            <input class="form-control" type="password" id="passphrase" name="passphrase" value="">
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label for="totp">Totp (time-based one-time password)</label>
-            <input class="form-control" type="password" id="totp" name="totp" value="">
-          </div>
-          <div class="col">
-          </div>
-        </div>
-        <input type="hidden" id="term" name="term" value="xterm-256color">
-        {% module xsrf_form_html() %}
-        <button type="submit" class="btn btn-primary">Connect</button>
-        <button type="reset" class="btn btn-danger">Reset</button>
-      </form>
+      </div>
     </div>
 
     <div class="container">
-      <div id="status" style="color: red; white-space: pre-line;"></div>
+      <div id="status"></div>
       <div id="terminal"></div>
     </div>
 
@@ -106,6 +672,8 @@
     <script src="static/js/xterm-addon-fit.min.js"></script>
     <script>
       var allowed_hosts_configured = {% if allowed_hosts %}true{% else %}false{% end %};
+      var user_key_enabled = {% if user_key_enabled %}true{% else %}false{% end %};
+      var has_stored_key = {% if has_stored_key %}true{% else %}false{% end %};
     </script>
     <script src="static/js/main.js"></script>
   </body>

@@ -1,4 +1,6 @@
 import io
+import os
+import tempfile
 import unittest
 import paramiko
 import tornado.web
@@ -8,8 +10,10 @@ from tornado.options import options
 from tests.utils import read_file, make_tests_data_path
 from webssh import handler
 from webssh import worker
+from webssh import user_keys
 from webssh.handler import (
-    IndexHandler, MixinHandler, WsockHandler, PrivateKey, InvalidValueError, SSHClient
+    IndexHandler, MixinHandler, WsockHandler, PrivateKey, InvalidValueError,
+    SSHClient
 )
 
 try:
@@ -380,4 +384,94 @@ class TestIndexHandler(unittest.TestCase):
 
         encoding = IndexHandler.get_default_encoding(handler, ssh)
         self.assertEqual("utf-8", encoding)
+
+
+class TestIndexHandlerStoredKey(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.username = 'testuser'
+        user_keys.generate_key_pair(self.tmpdir, self.username)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_handler(self, headers=None, arguments=None):
+        handler_obj = Mock(spec=IndexHandler)
+        handler_obj.user_key_dir = self.tmpdir
+        handler_obj.user_header = 'X-Authentik-Username'
+        handler_obj.policy = Mock()
+
+        request = HTTPServerRequest(uri='/')
+        if headers:
+            for k, v in headers.items():
+                request.headers[k] = v
+        handler_obj.request = request
+
+        handler_obj.allowed_hosts = []
+        handler_obj.check_allowed_hosts = lambda h, p: None
+        handler_obj.ssh_client = Mock()
+
+        def get_argument(name, default=u''):
+            if arguments and name in arguments:
+                return arguments[name]
+            return default
+        handler_obj.get_argument = get_argument
+
+        def get_value(name):
+            val = get_argument(name, None)
+            if not val:
+                raise InvalidValueError('Missing value {}'.format(name))
+            return val
+        handler_obj.get_value = get_value
+
+        handler_obj.get_privatekey = lambda: (u'', '')
+        handler_obj.get_hostname = lambda: '10.0.0.1'
+        handler_obj.get_port = lambda: 22
+
+        return handler_obj
+
+    def test_get_args_with_stored_key(self):
+        h = self._make_handler(
+            headers={'X-Authentik-Username': self.username},
+            arguments={
+                'hostname': '10.0.0.1',
+                'port': '22',
+                'username': 'sshuser',
+                'key_source': 'stored',
+            }
+        )
+        args = IndexHandler.get_args(h)
+        hostname, port, username, password, pkey = args
+        self.assertEqual(hostname, '10.0.0.1')
+        self.assertIsInstance(pkey, paramiko.Ed25519Key)
+
+    def test_get_args_without_user_header(self):
+        h = self._make_handler(
+            headers={},
+            arguments={
+                'hostname': '10.0.0.1',
+                'port': '22',
+                'username': 'sshuser',
+                'key_source': 'stored',
+            }
+        )
+        with self.assertRaises(InvalidValueError) as ctx:
+            IndexHandler.get_args(h)
+        self.assertIn('No authenticated user', str(ctx.exception))
+
+    def test_get_args_stored_key_missing(self):
+        h = self._make_handler(
+            headers={'X-Authentik-Username': 'nonexistent'},
+            arguments={
+                'hostname': '10.0.0.1',
+                'port': '22',
+                'username': 'sshuser',
+                'key_source': 'stored',
+            }
+        )
+        with self.assertRaises(InvalidValueError) as ctx:
+            IndexHandler.get_args(h)
+        self.assertIn('No stored key', str(ctx.exception))
 

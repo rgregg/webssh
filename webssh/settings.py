@@ -52,8 +52,12 @@ define('font', default='', help='custom font filename')
 define('encoding', default='',
        help='''The default character encoding of ssh servers.
 Example: --encoding='utf-8' to solve the problem with some switches&routers''')
-define('knownhosts', default='',
-       help='YAML file defining allowed SSH hosts')
+define('config', default='',
+       help='YAML configuration file (hosts, userkeydir, userheader, trusted_proxies)')
+define('userkeydir', default='',
+       help='Directory to store per-user SSH key pairs')
+define('userheader', default='X-Authentik-Username',
+       help='HTTP header with authenticated username')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -201,24 +205,31 @@ def check_encoding_setting(encoding):
         raise ValueError('Unknown character encoding {!r}.'.format(encoding))
 
 
-def load_allowed_hosts(filepath):
+def load_config_file(filepath):
     if not os.path.isfile(filepath):
         raise ValueError(
-            'Known hosts file {!r} does not exist'.format(filepath)
+            'Config file {!r} does not exist'.format(filepath)
         )
 
     with open(filepath, 'r') as f:
         data = yaml.safe_load(f)
 
-    if not isinstance(data, dict) or 'hosts' not in data:
+    if not isinstance(data, dict):
         raise ValueError(
-            'Known hosts file must contain a "hosts" key'
+            'Config file must contain a YAML mapping'
         )
+
+    return data
+
+
+def parse_allowed_hosts(data):
+    if 'hosts' not in data:
+        return []
 
     hosts = data['hosts']
     if not isinstance(hosts, list) or not hosts:
         raise ValueError(
-            'Known hosts file must contain a non-empty list of hosts'
+            'Config file "hosts" must be a non-empty list'
         )
 
     result = []
@@ -237,7 +248,67 @@ def load_allowed_hosts(filepath):
     return result
 
 
+def load_allowed_hosts(filepath):
+    data = load_config_file(filepath)
+    if 'hosts' not in data:
+        raise ValueError(
+            'Config file must contain a "hosts" key'
+        )
+    return parse_allowed_hosts(data)
+
+
 def get_allowed_hosts_setting(options):
-    if not options.knownhosts:
+    if not options.config:
         return []
-    return load_allowed_hosts(options.knownhosts)
+    data = load_config_file(options.config)
+    return parse_allowed_hosts(data)
+
+
+def get_config_settings(options):
+    if not options.config:
+        return {}
+    return load_config_file(options.config)
+
+
+def apply_config_settings(options):
+    config = get_config_settings(options)
+    if not config:
+        return
+
+    if not options.userkeydir and 'userkeydir' in config:
+        options.userkeydir = config['userkeydir']
+    if options.userheader == 'X-Authentik-Username' and 'userheader' in config:
+        options.userheader = config['userheader']
+    if 'trusted_proxies' in config:
+        proxies = config['trusted_proxies']
+        if not isinstance(proxies, list):
+            raise ValueError('trusted_proxies must be a list of IP addresses')
+        proxy_ips = []
+        for ip in proxies:
+            ip = str(ip).strip()
+            if ip:
+                to_ip_address(ip)
+                proxy_ips.append(ip)
+        if proxy_ips:
+            existing = options.tdstream
+            if existing:
+                options.tdstream = existing + ',' + ','.join(proxy_ips)
+            else:
+                options.tdstream = ','.join(proxy_ips)
+
+
+def check_user_key_dir(user_key_dir, tdstream=''):
+    if not user_key_dir:
+        return
+    if not tdstream:
+        logging.warning(
+            'SECURITY WARNING: userkeydir is set but no trusted_proxies '
+            'configured. The user header can be spoofed by any client.'
+        )
+    if not os.path.exists(user_key_dir):
+        os.makedirs(user_key_dir, mode=0o700)
+        logging.info('Created user key directory: {}'.format(user_key_dir))
+    elif not os.path.isdir(user_key_dir):
+        raise ValueError(
+            'User key directory {!r} is not a directory'.format(user_key_dir)
+        )
