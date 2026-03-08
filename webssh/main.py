@@ -82,6 +82,7 @@ def main():
     # Pre-compile the template so the first request doesn't pay the cost
     loader = tornado.template.Loader(app.settings['template_path'])
     loader.load('index.html')
+    app.settings['template_loader'] = loader
     ssl_ctx = get_ssl_context(options)
     server_settings = get_server_settings(options)
     app_listen(app, options.port, options.address, server_settings)
