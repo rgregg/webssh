@@ -1,194 +1,119 @@
 ## WebSSH
 
-[![python](https://github.com/huashengdun/webssh/actions/workflows/python.yml/badge.svg)](https://github.com/huashengdun/webssh/actions/workflows/python.yml)
-[![codecov](https://raw.githubusercontent.com/huashengdun/webssh/coverage-badge/coverage.svg)](https://raw.githubusercontent.com/huashengdun/webssh/coverage-badge/coverage.svg)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/webssh.svg)
-![PyPI](https://img.shields.io/pypi/v/webssh.svg)
+A web-based SSH client with a modern terminal UI. Connect to SSH servers from your browser with password or key-based authentication, TOTP support, and optional per-user server-side key management.
 
+Built on Python, Tornado, Paramiko, and xterm.js.
 
-### Introduction
-
-A simple web application to be used as an ssh client to connect to your ssh servers. It is written in Python, base on tornado, paramiko and xterm.js.
+![WebSSH](preview/webssh_screenshot.png)
 
 ### Features
 
-* SSH password authentication supported, including empty password.
-* SSH public-key authentication supported, including DSA RSA ECDSA Ed25519 keys.
-* Encrypted keys supported.
-* Two-Factor Authentication (time-based one-time password) supported.
-* Fullscreen terminal supported.
-* Terminal window resizable.
-* Auto detect the ssh server's default encoding.
-* Modern browsers including Chrome, Firefox, Safari, Edge, Opera supported.
-
-
-### Preview
-
-![Login](preview/login.png)
-![Terminal](preview/terminal.png)
-
+* Password and public-key authentication (RSA, ECDSA, Ed25519)
+* Encrypted keys and TOTP two-factor authentication
+* Per-user server-side SSH key generation and storage
+* YAML configuration with host allowlisting and host key pinning
+* Hostname:port shortcut in the connect form
+* Username pre-filled from auth proxy header
+* Fullscreen, resizable terminal with auto-detected encoding
+* Modern dark terminal-inspired UI
 
 ### How it works
+
 ```
 +---------+     http     +--------+    ssh    +-----------+
 | browser | <==========> | webssh | <=======> | ssh server|
 +---------+   websocket  +--------+    ssh    +-----------+
 ```
 
-### Requirements
-
-* Python 3.10+
-
-
-### Quickstart
-
-1. Install this app, run command `pip install webssh`
-2. Start a webserver, run command `wssh`
-3. Open your browser, navigate to `127.0.0.1:8888`
-4. Input your data, submit the form.
-
-
-### Server options
+### Quick Start with Docker
 
 ```bash
-# start a http server with specified listen address and listen port
-wssh --address='2.2.2.2' --port=8000
-
-# start a https server, certfile and keyfile must be passed
-wssh --certfile='/path/to/cert.crt' --keyfile='/path/to/cert.key'
-
-# missing host key policy
-wssh --policy=reject
-
-# logging level
-wssh --logging=debug
-
-# log to file
-wssh --log-file-prefix=main.log
-
-# more options
-wssh --help
+docker run -d -p 8888:8888 ghcr.io/rgregg/webssh:latest
 ```
 
-### Browser console
+Then open `http://localhost:8888` in your browser.
 
-```javascript
-// connect to your ssh server
-wssh.connect(hostname, port, username, password, privatekey, passphrase, totp);
+### Configuration
 
-// pass an object to wssh.connect
-var opts = {
-  hostname: 'hostname',
-  port: 'port',
-  username: 'username',
-  password: 'password',
-  privatekey: 'the private key text',
-  passphrase: 'passphrase',
-  totp: 'totp'
-};
-wssh.connect(opts);
-
-// without an argument, wssh will use the form data to connect
-wssh.connect();
-
-// set a new encoding for client to use
-wssh.set_encoding(encoding);
-
-// reset encoding to use the default one
-wssh.reset_encoding();
-
-// send a command to the server
-wssh.send('ls -l');
-```
-
-### Custom Font
-
-To use custom font, put your font file in the directory `webssh/static/css/fonts/` and restart the server.
-
-### URL Arguments
-
-Support passing arguments by url (query or fragment) like following examples:
-
-Passing form data (password must be encoded in base64, privatekey not supported)
-```bash
-http://localhost:8888/?hostname=xx&username=yy&password=str_base64_encoded
-```
-
-Passing a terminal background color
-```bash
-http://localhost:8888/#bgcolor=green
-```
-
-Passing a terminal font color
-```bash
-http://localhost:8888/#fontcolor=red
-```
-
-Passing a user defined title
-```bash
-http://localhost:8888/?title=my-ssh-server
-```
-
-Passing an encoding
-```bash
-http://localhost:8888/#encoding=gbk
-```
-
-Passing a font size
-```bash
-http://localhost:8888/#fontsize=24
-```
-
-Passing a command executed right after login
-```bash
-http://localhost:8888/?command=pwd
-```
-
-Passing a terminal type
-```bash
-http://localhost:8888/?term=xterm-256color
-```
-
-### Use Docker
-
-Start up the app
-```
-docker-compose up
-```
-
-Tear down the app
-```
-docker-compose down
-```
-
-### Tests
-
-Requirements
-```
-pip install pytest pytest-cov codecov flake8 mock
-```
-
-Use unittest to run all tests
-```
-python -m unittest discover tests
-```
-
-Use pytest to run all tests
-```
-python -m pytest tests
-```
-
-### Deployment
-
-Running behind an Nginx server
+WebSSH uses a YAML config file for most settings. Mount it at `/data/config.yaml` and it will be loaded automatically:
 
 ```bash
-wssh --address='127.0.0.1' --port=8888 --policy=reject
+docker run -d -p 8888:8888 \
+  -v ./config.yaml:/data/config.yaml:ro \
+  ghcr.io/rgregg/webssh:latest
 ```
+
+Example `config.yaml`:
+
+```yaml
+# Host key policy: reject, autoadd, or warning (default: warning)
+policy: reject
+
+# Restrict connections to specific hosts
+hosts:
+  - name: "Production Server"
+    hostname: "10.0.1.5"
+    port: 22
+    host_key:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+      - "ssh-rsa AAAAB3NzaC1yc2EAAAA..."
+  - name: "Database Server"
+    hostname: "db.internal"
+    port: 3022
+
+# Per-user SSH key management
+userkeydir: /data/user-keys
+userheader: X-Authentik-Username
+
+# Trusted proxy IPs (required when userkeydir is set)
+trusted_proxies:
+  - 10.0.0.1
+```
+
+See [config.yaml.example](config.yaml.example) for all options.
+
+#### Host Key Pinning
+
+Pin expected host keys so connections are rejected if the server key doesn't match. Get a host's keys with:
+
+```bash
+ssh-keyscan -t ed25519,rsa hostname
+```
+
+Or generate a config from your existing `known_hosts`:
+
+```bash
+python scripts/known_hosts_to_yaml.py ~/.ssh/known_hosts > config.yaml
+```
+
+#### Per-User SSH Keys
+
+When `userkeydir` is configured, authenticated users can generate Ed25519 key pairs on the server and use them for connections without uploading a key file each time. The user's public key is displayed in the UI for copying to `authorized_keys` on target hosts.
+
+Requires an auth proxy (e.g. Authentik) that sets a username header.
+
+### Docker Compose
+
+```yaml
+services:
+  webssh:
+    image: ghcr.io/rgregg/webssh:latest
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./config.yaml:/data/config.yaml:ro
+      - webssh-keys:/data/user-keys
+    restart: unless-stopped
+
+volumes:
+  webssh-keys:
+```
+
+### Deployment Behind a Reverse Proxy
+
 ```nginx
-# Nginx config example
 location / {
-    proxy_pass http://127.0.0.1:8888;
+    proxy_pass http://webssh:8888;
     proxy_http_version 1.1;
     proxy_read_timeout 300;
     proxy_set_header Upgrade $http_upgrade;
@@ -199,14 +124,38 @@ location / {
 }
 ```
 
-Running as a standalone server
+### CLI Options
+
+All settings can also be passed as command-line arguments:
+
 ```bash
-wssh --port=8080 --sslport=4433 --certfile='cert.crt' --keyfile='cert.key' --xheaders=False --policy=reject
+wssh --address='0.0.0.0' --port=8888 --policy=reject --config=/data/config.yaml
 ```
 
+Run `wssh --help` for the full list.
 
-### Tips
+### URL Arguments
 
-* For whatever deployment choice you choose, don't forget to enable SSL.
-* By default plain http requests from a public network will be either redirected or blocked and being redirected takes precedence over being blocked.
-* Try to use reject policy as the missing host key policy along with your verified known_hosts, this will prevent man-in-the-middle attacks. The idea is that it checks the system host keys file("~/.ssh/known_hosts") and the application host keys file("./known_hosts") in order, if the ssh server's hostname is not found or the key is not matched, the connection will be aborted.
+Pass connection parameters via URL query or fragment:
+
+```
+http://localhost:8888/?hostname=myserver&username=admin&password=base64encoded
+http://localhost:8888/#bgcolor=green&fontsize=24&encoding=utf-8
+http://localhost:8888/?title=my-server&command=htop&term=xterm-256color
+```
+
+### Development
+
+Requirements: Python 3.10+
+
+```bash
+pip install -r requirements.txt
+python run.py
+```
+
+Run tests:
+
+```bash
+pip install pytest
+python -m pytest tests
+```
