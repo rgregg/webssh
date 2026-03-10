@@ -51,7 +51,6 @@ jQuery(function($){
       DISCONNECTED = 0,
       CONNECTING = 1,
       CONNECTED = 2,
-      state = DISCONNECTED,
       messages = {1: 'This client is connecting ...', 2: 'This client is already connnected.'},
       key_max_size = 16384,
       fields = ['hostname', 'port', 'username'],
@@ -64,6 +63,286 @@ jQuery(function($){
       event_origin,
       hostname_tester = /((^\s*((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))\s*$)|(^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$))|(^\s*((?=.{1,255}$)(?=.*[A-Za-z].*)[0-9A-Za-z](?:(?:[0-9A-Za-z]|\b-){0,61}[0-9A-Za-z])?(?:\.[0-9A-Za-z](?:(?:[0-9A-Za-z]|\b-){0,61}[0-9A-Za-z])?)*)\s*$)/;
 
+
+  // ===================== Tab Manager =====================
+
+  var tabManager = {
+    tabs: {},
+    activeTabId: null,
+    tabCounter: 0,
+
+    createTab: function() {
+      var tabId = ++this.tabCounter;
+      var container = document.createElement('div');
+      container.className = 'terminal-pane';
+      container.id = 'terminal-pane-' + tabId;
+      document.getElementById('terminals-container').appendChild(container);
+
+      // Create tab item element
+      var tabItem = document.createElement('div');
+      tabItem.className = 'tab-item';
+      tabItem.setAttribute('data-tab-id', tabId);
+
+      var statusDot = document.createElement('span');
+      statusDot.className = 'tab-status';
+
+      var label = document.createElement('span');
+      label.className = 'tab-label';
+      label.textContent = 'New Connection';
+
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'tab-close';
+      closeBtn.innerHTML = '&times;';
+      closeBtn.title = 'Close tab';
+
+      tabItem.appendChild(statusDot);
+      tabItem.appendChild(label);
+      tabItem.appendChild(closeBtn);
+      document.getElementById('tab-list').appendChild(tabItem);
+
+      // Tab click to activate
+      var self = this;
+      tabItem.addEventListener('click', function(e) {
+        if (!e.target.classList.contains('tab-close')) {
+          self.activateTab(tabId);
+        }
+      });
+
+      // Close button
+      closeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        self.closeTab(tabId);
+      });
+
+      var tab = {
+        id: tabId,
+        label: 'New Connection',
+        state: DISCONNECTED,
+        term: null,
+        fitAddon: null,
+        sock: null,
+        encoding: 'utf-8',
+        decoder: null,
+        containerEl: container,
+        tabItemEl: tabItem,
+        title: ''
+      };
+
+      this.tabs[tabId] = tab;
+
+      // Show tab bar
+      $('#tab-bar').addClass('visible');
+      $('body').addClass('has-tabs');
+
+      this.activateTab(tabId);
+      return tab;
+    },
+
+    activateTab: function(tabId) {
+      var tab = this.tabs[tabId];
+      if (!tab) return;
+
+      // Deactivate current
+      if (this.activeTabId !== null && this.tabs[this.activeTabId]) {
+        var oldTab = this.tabs[this.activeTabId];
+        $(oldTab.containerEl).removeClass('active');
+        $(oldTab.tabItemEl).removeClass('active');
+      }
+
+      this.activeTabId = tabId;
+      $(tab.containerEl).addClass('active');
+      $(tab.tabItemEl).addClass('active');
+
+      // Dismiss any lingering status from other tabs
+      dismiss_status();
+
+      if (tab.state === CONNECTED && tab.term) {
+        form_container.hide();
+        // Fit after a brief delay so layout settles
+        setTimeout(function() {
+          if (tab.fitAddon) {
+            tab.fitAddon.fit();
+          }
+          if (tab.term) {
+            tab.term.focus();
+          }
+        }, 10);
+      } else {
+        form_container.show();
+      }
+
+      // Update page title
+      if (tab.state === CONNECTED && tab.title) {
+        title_element.text = tab.title;
+      } else {
+        title_element.text = default_title;
+      }
+
+      // Rebind wssh proxy methods to this tab
+      this.bindWssh(tab);
+    },
+
+    closeTab: function(tabId) {
+      var tab = this.tabs[tabId];
+      if (!tab) return;
+
+      // Close WebSocket if connected
+      if (tab.sock) {
+        tab.sock.onclose = function() {}; // prevent re-entrant handling
+        tab.sock.close();
+        tab.sock = null;
+      }
+
+      // Dispose terminal
+      if (tab.term) {
+        tab.term.dispose();
+        tab.term = null;
+      }
+
+      // Remove DOM elements
+      tab.containerEl.parentNode.removeChild(tab.containerEl);
+      tab.tabItemEl.parentNode.removeChild(tab.tabItemEl);
+
+      delete this.tabs[tabId];
+
+      // If was active, activate nearest remaining tab
+      if (this.activeTabId === tabId) {
+        this.activeTabId = null;
+        var ids = this.getTabIds();
+        if (ids.length > 0) {
+          // Find nearest tab
+          var idx = 0;
+          for (var i = 0; i < ids.length; i++) {
+            if (ids[i] > tabId) break;
+            idx = i;
+          }
+          this.activateTab(ids[idx]);
+        } else {
+          // No tabs left, create new one
+          this.createTab();
+        }
+      }
+    },
+
+    getActiveTab: function() {
+      return this.tabs[this.activeTabId] || null;
+    },
+
+    updateTabLabel: function(tabId, label) {
+      var tab = this.tabs[tabId];
+      if (!tab) return;
+      tab.label = label;
+      tab.title = label;
+      $(tab.tabItemEl).find('.tab-label').text(label);
+    },
+
+    updateTabStatus: function(tabId) {
+      var tab = this.tabs[tabId];
+      if (!tab) return;
+      var dot = $(tab.tabItemEl).find('.tab-status');
+      dot.removeClass('connected connecting');
+      if (tab.state === CONNECTED) {
+        dot.addClass('connected');
+      } else if (tab.state === CONNECTING) {
+        dot.addClass('connecting');
+      }
+    },
+
+    getTabIds: function() {
+      var ids = [];
+      for (var k in this.tabs) {
+        if (this.tabs.hasOwnProperty(k)) {
+          ids.push(parseInt(k, 10));
+        }
+      }
+      ids.sort(function(a, b) { return a - b; });
+      return ids;
+    },
+
+    getTabByIndex: function(index) {
+      var ids = this.getTabIds();
+      if (index >= 0 && index < ids.length) {
+        return ids[index];
+      }
+      return null;
+    },
+
+    bindWssh: function(tab) {
+      // Reset wssh except connect
+      var name;
+      for (name in wssh) {
+        if (wssh.hasOwnProperty(name) && name !== 'connect') {
+          delete wssh[name];
+        }
+      }
+
+      if (!tab || tab.state !== CONNECTED || !tab.term || !tab.sock) return;
+
+      wssh.set_encoding = tab._set_encoding || undefined;
+      wssh.reset_encoding = tab._reset_encoding || undefined;
+
+      wssh.geometry = function() {
+        var geometry = current_geometry(tab.term);
+        console.log('Current window geometry: ' + JSON.stringify(geometry));
+      };
+
+      wssh.send = function(data) {
+        if (!tab.sock) {
+          console.log('Websocket was already closed');
+          return;
+        }
+        if (typeof data !== 'string') {
+          console.log('Only string is allowed');
+          return;
+        }
+        try {
+          JSON.parse(data);
+          tab.sock.send(data);
+        } catch (SyntaxError) {
+          data = data.trim() + '\r';
+          tab.sock.send(JSON.stringify({'data': data}));
+        }
+      };
+
+      wssh.resize = function(cols, rows) {
+        if (!tab.term) {
+          console.log('Terminal was already destroyed');
+          return;
+        }
+        var valid_args = false;
+        if (cols > 0 && rows > 0) {
+          var geometry = current_geometry(tab.term);
+          if (cols <= geometry.cols && rows <= geometry.rows) {
+            valid_args = true;
+          }
+        }
+        if (!valid_args) {
+          console.log('Unable to resize terminal to geometry: ' + format_geometry(cols, rows));
+        } else {
+          tab.term.on_resize(cols, rows);
+        }
+      };
+
+      wssh.set_bgcolor = function(color) {
+        set_backgound_color(tab.term, color);
+      };
+
+      wssh.set_fontcolor = function(color) {
+        set_font_color(tab.term, color);
+      };
+
+      wssh.custom_font = function() {
+        update_font_family(tab.term);
+      };
+
+      wssh.default_font = function() {
+        reset_font_family(tab.term);
+      };
+    }
+  };
+
+
+  // ===================== Utility Functions =====================
 
   function store_items(names, data) {
     var i, name, value;
@@ -183,8 +462,8 @@ jQuery(function($){
   }
 
 
-  function toggle_fullscreen(term) {
-    $('#terminal .terminal').toggleClass('fullscreen');
+  function enter_fullscreen(term, containerEl) {
+    $(containerEl).find('.terminal').addClass('fullscreen');
     term.fitAddon.fit();
   }
 
@@ -332,17 +611,6 @@ jQuery(function($){
   }
 
 
-  function reset_wssh() {
-    var name;
-
-    for (name in wssh) {
-      if (wssh.hasOwnProperty(name) && name !== 'connect') {
-        delete wssh[name];
-      }
-    }
-  }
-
-
   function dismiss_status() {
     status.removeClass('visible');
   }
@@ -369,250 +637,223 @@ jQuery(function($){
       waiter.hide();
     }
 
-    if (form_container.css('display') === 'none') {
-      form_container.show();
+    // Only show form if the active tab is disconnected
+    var activeTab = tabManager.getActiveTab();
+    if (activeTab && activeTab.state !== CONNECTED) {
+      if (form_container.css('display') === 'none') {
+        form_container.show();
+      }
     }
   }
 
 
-  function ajax_complete_callback(resp) {
-    button.prop('disabled', false);
+  // ===================== Per-Tab Ajax Callback =====================
 
-    if (resp.status !== 200) {
-      log_status(resp.status + ': ' + resp.statusText, true);
-      state = DISCONNECTED;
-      return;
-    }
+  function make_ajax_callback(tab) {
+    return function(resp) {
+      button.prop('disabled', false);
 
-    var msg = resp.responseJSON;
-    if (!msg.id) {
-      log_status(msg.status, true);
-      state = DISCONNECTED;
-      return;
-    }
+      if (resp.status !== 200) {
+        log_status(resp.status + ': ' + resp.statusText, true);
+        tab.state = DISCONNECTED;
+        tabManager.updateTabStatus(tab.id);
+        return;
+      }
 
-    var ws_url = window.location.href.split(/\?|#/, 1)[0].replace('http', 'ws'),
-        join = (ws_url[ws_url.length-1] === '/' ? '' : '/'),
-        url = ws_url + join + 'ws?id=' + msg.id,
-        sock = new window.WebSocket(url),
-        encoding = 'utf-8',
-        decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
-        terminal = document.getElementById('terminal'),
-        termOptions = {
-          cursorBlink: true,
-          theme: {
-            background: url_opts_data.bgcolor || 'black',
-            foreground: url_opts_data.fontcolor || 'white',
-            cursor: url_opts_data.cursor || url_opts_data.fontcolor || 'white'
+      var msg = resp.responseJSON;
+      if (!msg.id) {
+        log_status(msg.status, true);
+        tab.state = DISCONNECTED;
+        tabManager.updateTabStatus(tab.id);
+        return;
+      }
+
+      var ws_url = window.location.href.split(/\?|#/, 1)[0].replace('http', 'ws'),
+          join = (ws_url[ws_url.length-1] === '/' ? '' : '/'),
+          url = ws_url + join + 'ws?id=' + msg.id,
+          sock = new window.WebSocket(url),
+          encoding = 'utf-8',
+          decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
+          termOptions = {
+            cursorBlink: true,
+            theme: {
+              background: url_opts_data.bgcolor || 'black',
+              foreground: url_opts_data.fontcolor || 'white',
+              cursor: url_opts_data.cursor || url_opts_data.fontcolor || 'white'
+            }
+          };
+
+      if (url_opts_data.fontsize) {
+        var fontsize = window.parseInt(url_opts_data.fontsize);
+        if (fontsize && fontsize > 0) {
+          termOptions.fontSize = fontsize;
+        }
+      }
+
+      var term = new window.Terminal(termOptions);
+      var fitAddon = new window.FitAddon.FitAddon();
+      term.fitAddon = fitAddon;
+      term.loadAddon(fitAddon);
+
+      // Store on tab
+      tab.term = term;
+      tab.fitAddon = fitAddon;
+      tab.sock = sock;
+      tab.encoding = encoding;
+      tab.decoder = decoder;
+
+      console.log(url);
+      if (!msg.encoding) {
+        console.log('Unable to detect the default encoding of your server');
+        msg.encoding = encoding;
+      } else {
+        console.log('The deault encoding of your server is ' + msg.encoding);
+      }
+
+      function term_write(text) {
+        if (tab.term) {
+          tab.term.write(text);
+          if (!tab.term.resized) {
+            resize_terminal(tab.term);
+            tab.term.resized = true;
           }
-        };
-
-    if (url_opts_data.fontsize) {
-      var fontsize = window.parseInt(url_opts_data.fontsize);
-      if (fontsize && fontsize > 0) {
-        termOptions.fontSize = fontsize;
-      }
-    }
-
-    var term = new window.Terminal(termOptions);
-
-    term.fitAddon = new window.FitAddon.FitAddon();
-    term.loadAddon(term.fitAddon);
-
-    console.log(url);
-    if (!msg.encoding) {
-      console.log('Unable to detect the default encoding of your server');
-      msg.encoding = encoding;
-    } else {
-      console.log('The deault encoding of your server is ' + msg.encoding);
-    }
-
-    function term_write(text) {
-      if (term) {
-        term.write(text);
-        if (!term.resized) {
-          resize_terminal(term);
-          term.resized = true;
         }
       }
-    }
 
-    function set_encoding(new_encoding) {
-      // for console use
-      if (!new_encoding) {
-        console.log('An encoding is required');
-        return;
-      }
+      function set_encoding(new_encoding) {
+        if (!new_encoding) {
+          console.log('An encoding is required');
+          return;
+        }
 
-      if (!window.TextDecoder) {
-        decoder = new_encoding;
-        encoding = decoder;
-        console.log('Set encoding to ' + encoding);
-      } else {
-        try {
-          decoder = new window.TextDecoder(new_encoding);
-          encoding = decoder.encoding;
-          console.log('Set encoding to ' + encoding);
-        } catch (RangeError) {
-          console.log('Unknown encoding ' + new_encoding);
-          return false;
+        if (!window.TextDecoder) {
+          tab.decoder = new_encoding;
+          tab.encoding = tab.decoder;
+          console.log('Set encoding to ' + tab.encoding);
+        } else {
+          try {
+            tab.decoder = new window.TextDecoder(new_encoding);
+            tab.encoding = tab.decoder.encoding;
+            console.log('Set encoding to ' + tab.encoding);
+          } catch (RangeError) {
+            console.log('Unknown encoding ' + new_encoding);
+            return false;
+          }
         }
       }
-    }
 
-    wssh.set_encoding = set_encoding;
+      // Store encoding functions on tab for wssh binding
+      tab._set_encoding = set_encoding;
+      tab._reset_encoding = function() {
+        if (tab.encoding === msg.encoding) {
+          console.log('Already reset to ' + msg.encoding);
+        } else {
+          set_encoding(msg.encoding);
+        }
+      };
 
-    if (url_opts_data.encoding) {
-      if (set_encoding(url_opts_data.encoding) === false) {
-        set_encoding(msg.encoding);
-      }
-    } else {
-      set_encoding(msg.encoding);
-    }
-
-
-    wssh.geometry = function() {
-      // for console use
-      var geometry = current_geometry(term);
-      console.log('Current window geometry: ' + JSON.stringify(geometry));
-    };
-
-    wssh.send = function(data) {
-      // for console use
-      if (!sock) {
-        console.log('Websocket was already closed');
-        return;
-      }
-
-      if (typeof data !== 'string') {
-        console.log('Only string is allowed');
-        return;
-      }
-
-      try {
-        JSON.parse(data);
-        sock.send(data);
-      } catch (SyntaxError) {
-        data = data.trim() + '\r';
-        sock.send(JSON.stringify({'data': data}));
-      }
-    };
-
-    wssh.reset_encoding = function() {
-      // for console use
-      if (encoding === msg.encoding) {
-        console.log('Already reset to ' + msg.encoding);
+      if (url_opts_data.encoding) {
+        if (set_encoding(url_opts_data.encoding) === false) {
+          set_encoding(msg.encoding);
+        }
       } else {
         set_encoding(msg.encoding);
       }
-    };
 
-    wssh.resize = function(cols, rows) {
-      // for console use
-      if (term === undefined) {
-        console.log('Terminal was already destroryed');
-        return;
-      }
-
-      var valid_args = false;
-
-      if (cols > 0 && rows > 0)  {
-        var geometry = current_geometry(term);
-        if (cols <= geometry.cols && rows <= geometry.rows) {
-          valid_args = true;
+      term.on_resize = function(cols, rows) {
+        if (cols !== this.cols || rows !== this.rows) {
+          console.log('Resizing terminal to geometry: ' + format_geometry(cols, rows));
+          this.resize(cols, rows);
+          if (tab.sock) {
+            tab.sock.send(JSON.stringify({'resize': [cols, rows]}));
+          }
         }
-      }
+      };
 
-      if (!valid_args) {
-        console.log('Unable to resize terminal to geometry: ' + format_geometry(cols, rows));
-      } else {
-        term.on_resize(cols, rows);
-      }
-    };
-
-    wssh.set_bgcolor = function(color) {
-      set_backgound_color(term, color);
-    };
-
-    wssh.set_fontcolor = function(color) {
-      set_font_color(term, color);
-    };
-
-    wssh.custom_font = function() {
-      update_font_family(term);
-    };
-
-    wssh.default_font = function() {
-      reset_font_family(term);
-    };
-
-    term.on_resize = function(cols, rows) {
-      if (cols !== this.cols || rows !== this.rows) {
-        console.log('Resizing terminal to geometry: ' + format_geometry(cols, rows));
-        this.resize(cols, rows);
-        sock.send(JSON.stringify({'resize': [cols, rows]}));
-      }
-    };
-
-    term.onData(function(data) {
-      // console.log(data);
-      sock.send(JSON.stringify({'data': data}));
-    });
-
-    var keepaliveInterval = null;
-
-    sock.onopen = function() {
-      term.open(terminal);
-      toggle_fullscreen(term);
-      update_font_family(term);
-      term.focus();
-      state = CONNECTED;
-      title_element.text = url_opts_data.title || default_title;
-      var command = (url_opts_data.command || $('#default-command').val() || '').trim();
-      if (command) {
-        setTimeout(function () {
-          sock.send(JSON.stringify({'data': command+'\r'}));
-        }, 500);
-      }
-
-      // Send keepalive every 30s to prevent proxy timeouts
-      keepaliveInterval = setInterval(function() {
-        if (sock && sock.readyState === WebSocket.OPEN) {
-          sock.send(JSON.stringify({'keepalive': 1}));
+      term.onData(function(data) {
+        if (tab.sock) {
+          tab.sock.send(JSON.stringify({'data': data}));
         }
-      }, 30000);
-    };
+      });
 
-    sock.onmessage = function(msg) {
-      read_file_as_text(msg.data, term_write, decoder);
-    };
+      // Allow Alt-key shortcuts to pass through to document handler
+      term.attachCustomKeyEventHandler(function(e) {
+        if (e.altKey && (e.key === 't' || e.key === 'T' ||
+            e.key === 'w' || e.key === 'W' ||
+            e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+            (e.key >= '1' && e.key <= '9'))) {
+          return false; // let the event propagate to the document handler
+        }
+        return true;
+      });
 
-    sock.onerror = function(e) {
-      console.error(e);
-    };
+      sock.onopen = function() {
+        term.open(tab.containerEl);
+        enter_fullscreen(term, tab.containerEl);
+        update_font_family(term);
+        tab.state = CONNECTED;
+        tabManager.updateTabLabel(tab.id, tab.title || default_title);
+        tabManager.updateTabStatus(tab.id);
 
-    sock.onclose = function(e) {
-      if (keepaliveInterval) {
-        clearInterval(keepaliveInterval);
-        keepaliveInterval = null;
-      }
-      term.dispose();
-      term = undefined;
-      sock = undefined;
-      reset_wssh();
-      log_status(e.reason, true);
-      state = DISCONNECTED;
-      default_title = 'WebSSH';
-      title_element.text = default_title;
-    };
+        // If this is the active tab, hide form and focus
+        if (tabManager.activeTabId === tab.id) {
+          form_container.hide();
+          term.focus();
+          title_element.text = url_opts_data.title || tab.title || default_title;
+          tabManager.bindWssh(tab);
+        }
 
-    $(window).resize(function(){
-      if (term) {
-        resize_terminal(term);
-      }
-    });
+        var command = (url_opts_data.command || $('#default-command').val() || '').trim();
+        if (command) {
+          setTimeout(function () {
+            if (tab.sock) {
+              tab.sock.send(JSON.stringify({'data': command+'\r'}));
+            }
+          }, 500);
+        }
+
+        // Send keepalive every 30s to prevent proxy timeouts
+        tab.keepaliveInterval = setInterval(function() {
+          if (tab.sock && tab.sock.readyState === WebSocket.OPEN) {
+            tab.sock.send(JSON.stringify({'keepalive': 1}));
+          }
+        }, 30000);
+      };
+
+      sock.onmessage = function(msg) {
+        read_file_as_text(msg.data, term_write, tab.decoder);
+      };
+
+      sock.onerror = function(e) {
+        console.error(e);
+      };
+
+      sock.onclose = function(e) {
+        if (tab.keepaliveInterval) {
+          clearInterval(tab.keepaliveInterval);
+          tab.keepaliveInterval = null;
+        }
+        if (tab.term) {
+          tab.term.dispose();
+          tab.term = null;
+        }
+        tab.fitAddon = null;
+        tab.sock = null;
+        tab.state = DISCONNECTED;
+        tabManager.updateTabStatus(tab.id);
+
+        // Only show form and status if this is the active tab
+        if (tabManager.activeTabId === tab.id) {
+          tabManager.bindWssh(tab);
+          log_status(e.reason, true);
+          title_element.text = default_title;
+        }
+      };
+    };
   }
 
+
+  // ===================== Connection Functions =====================
 
   function wrap_object(opts) {
     var obj = {};
@@ -733,6 +974,11 @@ jQuery(function($){
 
   function connect_without_options() {
     // use data from the form
+    var tab = tabManager.getActiveTab();
+    if (!tab || tab.state !== DISCONNECTED) {
+      return;
+    }
+
     var form = document.querySelector(form_id),
         inputs = form.querySelectorAll('input[type="file"]'),
         url = form.action,
@@ -751,7 +997,7 @@ jQuery(function($){
           url: url,
           type: 'post',
           data: data,
-          complete: ajax_complete_callback,
+          complete: make_ajax_callback(tab),
           cache: false,
           contentType: false,
           processData: false
@@ -795,6 +1041,8 @@ jQuery(function($){
       return;
     }
 
+    var tab = tabManager.getActiveTab();
+
     data.term = term_type.val();
     data._xsrf = _xsrf.value;
     if (event_origin) {
@@ -808,7 +1056,7 @@ jQuery(function($){
         url: url,
         type: 'post',
         data: data,
-        complete: ajax_complete_callback
+        complete: make_ajax_callback(tab)
     });
 
     return result;
@@ -818,9 +1066,12 @@ jQuery(function($){
   function connect(hostname, port, username, password, privatekey, passphrase, totp) {
     // for console use
     var result, opts;
+    var tab = tabManager.getActiveTab();
 
-    if (state !== DISCONNECTED) {
-      console.log(messages[state]);
+    if (!tab || tab.state !== DISCONNECTED) {
+      if (tab) {
+        console.log(messages[tab.state]);
+      }
       return;
     }
 
@@ -845,8 +1096,9 @@ jQuery(function($){
     }
 
     if (result) {
-      state = CONNECTING;
-      default_title = result.title;
+      tab.state = CONNECTING;
+      tab.title = result.title;
+      tabManager.updateTabStatus(tab.id);
       if (hostname) {
         validated_form_data = result.data;
       }
@@ -1004,6 +1256,12 @@ jQuery(function($){
       args = [args];
     }
 
+    // Create a new tab for cross-origin connections if current tab is connected
+    var activeTab = tabManager.getActiveTab();
+    if (activeTab && activeTab.state !== DISCONNECTED) {
+      tabManager.createTab();
+    }
+
     try {
       event_origin = event.origin;
       wssh[prop].apply(wssh, args);
@@ -1025,24 +1283,106 @@ jQuery(function($){
   }
 
 
+  // ===================== Window Resize (registered once) =====================
+
+  $(window).resize(function(){
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED) {
+      resize_terminal(tab.term);
+    }
+  });
+
+
+  // ===================== New Tab Button =====================
+
+  $('#new-tab-btn').on('click', function() {
+    tabManager.createTab();
+  });
+
+
+  // ===================== Keyboard Shortcuts =====================
+
+  $(document).on('keydown', function(e) {
+    // Don't intercept when focused on form inputs
+    var tag = e.target.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      return;
+    }
+
+    if (e.altKey) {
+      // Alt+T: New tab
+      if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        tabManager.createTab();
+        return;
+      }
+
+      // Alt+W: Close current tab
+      if (e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        if (tabManager.activeTabId !== null) {
+          tabManager.closeTab(tabManager.activeTabId);
+        }
+        return;
+      }
+
+      // Alt+1-9: Switch to tab by number
+      var num = parseInt(e.key, 10);
+      if (num >= 1 && num <= 9) {
+        e.preventDefault();
+        var targetId = tabManager.getTabByIndex(num - 1);
+        if (targetId !== null) {
+          tabManager.activateTab(targetId);
+        }
+        return;
+      }
+
+      // Alt+Left: Previous tab
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        var ids = tabManager.getTabIds();
+        var curIdx = ids.indexOf(tabManager.activeTabId);
+        if (curIdx > 0) {
+          tabManager.activateTab(ids[curIdx - 1]);
+        }
+        return;
+      }
+
+      // Alt+Right: Next tab
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        var ids2 = tabManager.getTabIds();
+        var curIdx2 = ids2.indexOf(tabManager.activeTabId);
+        if (curIdx2 < ids2.length - 1) {
+          tabManager.activateTab(ids2[curIdx2 + 1]);
+        }
+        return;
+      }
+    }
+  });
+
+
+  // ===================== Initialization =====================
+
   parse_url_data(
     decode_uri_component(window.location.search.substring(1)) + '&' + decode_uri_component(window.location.hash.substring(1)),
     url_safe_keys, opts_keys, url_form_data, url_opts_data
   );
-  // console.log(url_form_data);
-  // console.log(url_opts_data);
 
   if (url_opts_data.term) {
     term_type.val(url_opts_data.term);
   }
 
+  // Create the first tab
+  tabManager.createTab();
+
+  // Populate form
   if (get_object_length(url_form_data)) {
     populate_form(wrap_object(url_form_data));
-    form_container.show();
   } else {
     restore_items(fields);
-    form_container.show();
   }
+  form_container.show();
 
   // Restore default command for the current hostname
   restore_default_command($('#hostname').val(), $('#port').val());
