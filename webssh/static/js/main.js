@@ -78,6 +78,34 @@ jQuery(function($){
   }
 
 
+  function get_host_key(data) {
+    var hostname = data.get ? data.get('hostname') : data.hostname;
+    var port = data.get ? data.get('port') : data.port;
+    if (!hostname) return null;
+    return 'command:' + hostname + ':' + (port || '22');
+  }
+
+
+  function store_default_command(data) {
+    var key = get_host_key(data);
+    if (!key) return;
+    var command = $('#default-command').val().trim();
+    if (command) {
+      window.localStorage.setItem(key, command);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  }
+
+
+  function restore_default_command(hostname, port) {
+    if (!hostname) return;
+    var key = 'command:' + hostname + ':' + (port || '22');
+    var command = window.localStorage.getItem(key);
+    $('#default-command').val(command || '');
+  }
+
+
   function restore_items(names) {
     var i, name, value;
 
@@ -537,9 +565,10 @@ jQuery(function($){
       term.focus();
       state = CONNECTED;
       title_element.text = url_opts_data.title || default_title;
-      if (url_opts_data.command) {
+      var command = url_opts_data.command || $('#default-command').val();
+      if (command) {
         setTimeout(function () {
-          sock.send(JSON.stringify({'data': url_opts_data.command+'\r'}));
+          sock.send(JSON.stringify({'data': command.trim()+'\r'}));
         }, 500);
       }
     };
@@ -808,6 +837,7 @@ jQuery(function($){
         validated_form_data = result.data;
       }
       store_items(fields, result.data);
+      store_default_command(result.data);
     }
   }
 
@@ -831,14 +861,16 @@ jQuery(function($){
     }
   });
 
-  // Auto-populate port when hostname dropdown changes
+  // Auto-populate port and restore default command when hostname changes
   $('#hostname').on('change', function() {
+    var port;
     if ($(this).is('select')) {
-      var port = $(this).find(':selected').data('port');
+      port = $(this).find(':selected').data('port');
       if (port) {
         $('#port').val(port);
       }
     }
+    restore_default_command($(this).val(), port || $('#port').val());
   });
   // Initialize port from dropdown on page load
   if ($('#hostname').is('select')) {
@@ -953,5 +985,8 @@ jQuery(function($){
     restore_items(fields);
     form_container.show();
   }
+
+  // Restore default command for the current hostname
+  restore_default_command($('#hostname').val(), $('#port').val());
 
 });
