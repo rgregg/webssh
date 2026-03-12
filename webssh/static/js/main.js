@@ -862,6 +862,40 @@ jQuery(function($){
     connect();
   });
 
+  // Advanced options summary (shown when section is collapsed)
+  function update_advanced_summary() {
+    var summary = $('#advanced-summary');
+    var section = $('#advanced-section');
+
+    // Only show summary when section is collapsed
+    if (section.is(':visible')) {
+      summary.hide();
+      return;
+    }
+
+    var tags = [];
+    var command = $('#default-command').val();
+    if (command && command.trim()) {
+      tags.push('cmd: ' + command.trim());
+    }
+    if (user_key_enabled) {
+      var key_source = $('input[name="key_source"]:checked').val();
+      if (key_source === 'stored') {
+        tags.push('using stored key');
+      }
+    }
+
+    summary.empty();
+    if (tags.length) {
+      for (var i = 0; i < tags.length; i++) {
+        summary.append($('<span>').addClass('summary-tag').text(tags[i]));
+      }
+      summary.show();
+    } else {
+      summary.hide();
+    }
+  }
+
   // Advanced options toggle
   $('#advanced-toggle').on('click', function(e) {
     e.preventDefault();
@@ -873,6 +907,7 @@ jQuery(function($){
     } else {
       section.show();
     }
+    update_advanced_summary();
   });
 
   // Auto-populate port and restore default command when hostname changes
@@ -885,11 +920,13 @@ jQuery(function($){
       }
     }
     restore_default_command($(this).val(), port || $('#port').val());
+    update_advanced_summary();
   });
 
   // Restore default command when port changes
   $('#port').on('input change', function() {
     restore_default_command($('#hostname').val(), $(this).val());
+    update_advanced_summary();
   });
 
   // Initialize port from dropdown on page load
@@ -908,6 +945,7 @@ jQuery(function($){
         $('#upload-key-row').show();
         $('#stored-key-row').hide();
       }
+      update_advanced_summary();
     });
 
     $('#generate-key-btn').on('click', function() {
@@ -1008,5 +1046,13 @@ jQuery(function($){
 
   // Restore default command for the current hostname
   restore_default_command($('#hostname').val(), $('#port').val());
+
+  // Update summary on default command field changes
+  $('#default-command').on('input change', function() {
+    update_advanced_summary();
+  });
+
+  // Initial summary update
+  update_advanced_summary();
 
 });
