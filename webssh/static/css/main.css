@@ -320,6 +320,27 @@ input[type="file"].field-input::file-selector-button:hover {
   transform: rotate(90deg);
 }
 
+.advanced-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.advanced-summary .summary-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 3px 10px;
+  border-radius: 100px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .advanced-section {
   margin-bottom: 0;
 }
