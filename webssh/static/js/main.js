@@ -569,8 +569,11 @@ jQuery(function($){
       state = CONNECTED;
       title_element.text = url_opts_data.title || default_title;
       var command = (url_opts_data.command || $('#default-command').val() || '').trim();
+      console.log('Default command value:', JSON.stringify(command));
       if (command) {
+        console.log('Sending default command in 500ms');
         setTimeout(function () {
+          console.log('Sending default command now');
           sock.send(JSON.stringify({'data': command+'\r'}));
         }, 500);
       }
