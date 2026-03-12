@@ -100,7 +100,8 @@ jQuery(function($){
 
   function restore_default_command(hostname, port) {
     if (!hostname) return;
-    var key = 'command:' + hostname + ':' + (port || '22');
+    var key = get_host_key({hostname: hostname, port: port});
+    if (!key) return;
     var command = window.localStorage.getItem(key);
     $('#default-command').val(command || '');
   }
@@ -887,7 +888,7 @@ jQuery(function($){
   });
 
   // Restore default command when port changes
-  $('#port').on('change', function() {
+  $('#port').on('input change', function() {
     restore_default_command($('#hostname').val(), $(this).val());
   });
 
