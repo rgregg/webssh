@@ -558,6 +558,8 @@ jQuery(function($){
       sock.send(JSON.stringify({'data': data}));
     });
 
+    var keepaliveInterval = null;
+
     sock.onopen = function() {
       term.open(terminal);
       toggle_fullscreen(term);
@@ -571,6 +573,13 @@ jQuery(function($){
           sock.send(JSON.stringify({'data': command.trim()+'\r'}));
         }, 500);
       }
+
+      // Send keepalive every 30s to prevent proxy timeouts
+      keepaliveInterval = setInterval(function() {
+        if (sock && sock.readyState === WebSocket.OPEN) {
+          sock.send(JSON.stringify({'keepalive': 1}));
+        }
+      }, 30000);
     };
 
     sock.onmessage = function(msg) {
@@ -582,6 +591,10 @@ jQuery(function($){
     };
 
     sock.onclose = function(e) {
+      if (keepaliveInterval) {
+        clearInterval(keepaliveInterval);
+        keepaliveInterval = null;
+      }
       term.dispose();
       term = undefined;
       sock = undefined;
