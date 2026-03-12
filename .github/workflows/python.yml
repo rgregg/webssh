@@ -51,7 +51,7 @@ jobs:
       - name: Build image
         run: docker build --build-arg VERSION=${{ steps.version.outputs.value }} -t webssh .
 
-      - name: Push to GHCR
+      - name: Push to GHCR (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -59,3 +59,12 @@ jobs:
           docker tag webssh ghcr.io/rgregg/webssh:${{ github.sha }}
           docker push ghcr.io/rgregg/webssh:latest
           docker push ghcr.io/rgregg/webssh:${{ github.sha }}
+
+      - name: Push to GHCR (PR branch)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          BRANCH="${{ github.head_ref }}"
+          SAFE_BRANCH="$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+          docker tag webssh ghcr.io/rgregg/webssh:dev-${SAFE_BRANCH}
+          docker push ghcr.io/rgregg/webssh:dev-${SAFE_BRANCH}
