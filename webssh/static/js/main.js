@@ -567,10 +567,10 @@ jQuery(function($){
       term.focus();
       state = CONNECTED;
       title_element.text = url_opts_data.title || default_title;
-      var command = url_opts_data.command || $('#default-command').val();
+      var command = (url_opts_data.command || $('#default-command').val() || '').trim();
       if (command) {
         setTimeout(function () {
-          sock.send(JSON.stringify({'data': command.trim()+'\r'}));
+          sock.send(JSON.stringify({'data': command+'\r'}));
         }, 500);
       }
 
@@ -885,6 +885,12 @@ jQuery(function($){
     }
     restore_default_command($(this).val(), port || $('#port').val());
   });
+
+  // Restore default command when port changes
+  $('#port').on('change', function() {
+    restore_default_command($('#hostname').val(), $(this).val());
+  });
+
   // Initialize port from dropdown on page load
   if ($('#hostname').is('select')) {
     $('#hostname').trigger('change');
