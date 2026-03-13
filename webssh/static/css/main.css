@@ -238,6 +238,10 @@ textarea.field-input {
   appearance: none;
 }
 
+.secret-field {
+  -webkit-text-security: disc;
+}
+
 input.field-input::placeholder {
   color: var(--text-muted);
 }
@@ -577,10 +581,186 @@ textarea.pubkey-display:focus {
   opacity: 1;
 }
 
-/* --- Terminal --- */
-#terminal {
+/* --- Tab Bar --- */
+#tab-bar {
+  display: none;
+  align-items: center;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  height: 36px;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+#tab-bar.visible {
+  display: flex;
+}
+
+#tab-list {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+#tab-list::-webkit-scrollbar {
+  height: 3px;
+}
+
+#tab-list::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+.tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 36px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 200px;
+  border-right: 1px solid var(--border-subtle);
+  user-select: none;
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+.tab-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+}
+
+.tab-item.active {
+  color: var(--accent);
+  background: var(--bg-surface);
+  border-bottom: 2px solid var(--accent);
+}
+
+.tab-item .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-status {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tab-status.connected {
+  background: #34d399;
+}
+
+.tab-status.connecting {
+  background: #fbbf24;
+}
+
+.tab-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.tab-item:hover .tab-close,
+.tab-item.active .tab-close {
+  display: flex;
+}
+
+.tab-close:hover {
+  color: var(--danger);
+  background: var(--danger-dim);
+}
+
+#new-tab-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+
+#new-tab-btn:hover {
+  background: var(--accent-dim);
+}
+
+/* --- Terminals Container --- */
+#terminals-container {
   position: relative;
+  flex: 1;
   z-index: 1;
+}
+
+.terminal-pane {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  visibility: hidden;
+}
+
+.terminal-pane.active {
+  visibility: visible;
+  z-index: 1;
+}
+
+/* --- Body layout when tabs active --- */
+body.has-tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+body.has-tabs .form-container {
+  flex: 1;
+  min-height: 0;
+}
+
+body.has-tabs .container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+body.has-tabs #terminals-container {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+body.has-tabs .terminal-pane .xterm.fullscreen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: auto;
+  z-index: auto;
 }
 
 /* --- Responsive --- */
