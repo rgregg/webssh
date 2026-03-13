@@ -158,13 +158,13 @@ jQuery(function($){
 
       if (tab.state === CONNECTED && tab.term) {
         form_container.hide();
-        // Fit after a brief delay so layout settles
+        // Fit after a brief delay so layout settles, then focus
         setTimeout(function() {
           if (tab.fitAddon) {
             tab.fitAddon.fit();
           }
           if (tab.term) {
-            tab.term.focus();
+            setTimeout(function() { tab.term.focus(); }, 50);
           }
         }, 10);
       } else {
@@ -808,7 +808,7 @@ jQuery(function($){
             resize_terminal(term);
           }
           if (tabManager.activeTabId === tab.id) {
-            term.focus();
+            setTimeout(function() { term.focus(); }, 50);
           }
         });
 
@@ -1306,6 +1306,26 @@ jQuery(function($){
 
   $('#new-tab-btn').on('click', function() {
     tabManager.createTab();
+  });
+
+
+  // ===================== Terminal Focus on Click =====================
+
+  $('#terminals-container').on('click', function() {
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED) {
+      tab.term.focus();
+    }
+  });
+
+
+  // ===================== Tab Bar Click Refocus =====================
+
+  $('#tab-bar').on('click', function(e) {
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED) {
+      tab.term.focus();
+    }
   });
 
 
