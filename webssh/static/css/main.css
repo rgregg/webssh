@@ -744,6 +744,19 @@ body.has-tabs .container {
 
 body.has-tabs #terminals-container {
   flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+body.has-tabs .terminal-pane .xterm.fullscreen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: auto;
+  z-index: auto;
 }
 
 /* --- Responsive --- */

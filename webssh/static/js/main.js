@@ -469,23 +469,17 @@ jQuery(function($){
 
 
   function current_geometry(term) {
-    if (!style.width || !style.height) {
-      try {
-        get_cell_size(term);
-      } catch (TypeError) {
-        parse_xterm_style();
-      }
-    }
-
-    var cols = parseInt(window.innerWidth / style.width, 10) - 1;
-    var rows = parseInt(window.innerHeight / style.height, 10);
-    return {'cols': cols, 'rows': rows};
+    return {'cols': term.cols, 'rows': term.rows};
   }
 
 
   function resize_terminal(term) {
+    if (term.fitAddon) {
+      term.fitAddon.fit();
+    }
     var geometry = current_geometry(term);
-    term.on_resize(geometry.cols, geometry.rows);
+    // Send the current size to the server (fit already resized the local terminal)
+    term.send_resize(geometry.cols, geometry.rows);
   }
 
 
@@ -760,14 +754,19 @@ jQuery(function($){
         set_encoding(msg.encoding);
       }
 
+      term.send_resize = function(cols, rows) {
+        console.log('Sending resize to server: ' + format_geometry(cols, rows));
+        if (tab.sock) {
+          tab.sock.send(JSON.stringify({'resize': [cols, rows]}));
+        }
+      };
+
       term.on_resize = function(cols, rows) {
         if (cols !== this.cols || rows !== this.rows) {
           console.log('Resizing terminal to geometry: ' + format_geometry(cols, rows));
           this.resize(cols, rows);
-          if (tab.sock) {
-            tab.sock.send(JSON.stringify({'resize': [cols, rows]}));
-          }
         }
+        this.send_resize(cols, rows);
       };
 
       term.onData(function(data) {
@@ -789,8 +788,6 @@ jQuery(function($){
 
       sock.onopen = function() {
         term.open(tab.containerEl);
-        enter_fullscreen(term, tab.containerEl);
-        update_font_family(term);
         tab.state = CONNECTED;
         tabManager.updateTabLabel(tab.id, tab.title || default_title);
         tabManager.updateTabStatus(tab.id);
@@ -798,10 +795,22 @@ jQuery(function($){
         // If this is the active tab, hide form and focus
         if (tabManager.activeTabId === tab.id) {
           form_container.hide();
-          term.focus();
           title_element.text = url_opts_data.title || tab.title || default_title;
           tabManager.bindWssh(tab);
         }
+
+        // Fit terminal after layout has settled (form hidden)
+        update_font_family(term);
+        $(tab.containerEl).find('.terminal').addClass('fullscreen');
+        requestAnimationFrame(function() {
+          if (term.fitAddon) {
+            term.fitAddon.fit();
+            resize_terminal(term);
+          }
+          if (tabManager.activeTabId === tab.id) {
+            term.focus();
+          }
+        });
 
         var command = (url_opts_data.command || $('#default-command').val() || '').trim();
         if (command) {
