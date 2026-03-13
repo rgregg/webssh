@@ -792,6 +792,10 @@ jQuery(function($){
         tabManager.updateTabLabel(tab.id, tab.title || default_title);
         tabManager.updateTabStatus(tab.id);
 
+        // Clear sensitive fields after successful connection
+        $('#password').val('');
+        $('#totp').val('');
+
         // If this is the active tab, hide form and focus
         if (tabManager.activeTabId === tab.id) {
           form_container.hide();
@@ -850,6 +854,12 @@ jQuery(function($){
         tab.sock = null;
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
+
+        // Auto-close the tab unless it's the last one
+        if (tabManager.getTabIds().length > 1) {
+          tabManager.closeTab(tab.id);
+          return;
+        }
 
         // Only show form and status if this is the active tab
         if (tabManager.activeTabId === tab.id) {
