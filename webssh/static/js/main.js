@@ -54,7 +54,7 @@ jQuery(function($){
       messages = {1: 'This client is connecting ...', 2: 'This client is already connnected.'},
       key_max_size = 16384,
       fields = ['hostname', 'port', 'username'],
-      form_keys = fields.concat(['password', 'totp']),
+      form_keys = fields.concat(['credential', 'totp']),
       url_safe_keys = fields,
       opts_keys = ['bgcolor', 'title', 'encoding', 'command', 'term', 'fontsize', 'fontcolor', 'cursor'],
       url_form_data = {},
@@ -82,6 +82,8 @@ jQuery(function($){
       var tabItem = document.createElement('div');
       tabItem.className = 'tab-item';
       tabItem.setAttribute('data-tab-id', tabId);
+      tabItem.setAttribute('role', 'tab');
+      tabItem.setAttribute('tabindex', '0');
 
       var statusDot = document.createElement('span');
       statusDot.className = 'tab-status';
@@ -100,10 +102,16 @@ jQuery(function($){
       tabItem.appendChild(closeBtn);
       document.getElementById('tab-list').appendChild(tabItem);
 
-      // Tab click to activate
+      // Tab click/keyboard to activate
       var self = this;
       tabItem.addEventListener('click', function(e) {
         if (!e.target.classList.contains('tab-close')) {
+          self.activateTab(tabId);
+        }
+      });
+      tabItem.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
           self.activateTab(tabId);
         }
       });
@@ -185,6 +193,14 @@ jQuery(function($){
     closeTab: function(tabId) {
       var tab = this.tabs[tabId];
       if (!tab) return;
+
+      tab.closed = true;
+
+      // Clear keepalive timer
+      if (tab.keepaliveInterval) {
+        clearInterval(tab.keepaliveInterval);
+        tab.keepaliveInterval = null;
+      }
 
       // Close WebSocket if connected
       if (tab.sock) {
@@ -463,7 +479,7 @@ jQuery(function($){
 
 
   function enter_fullscreen(term, containerEl) {
-    $(containerEl).find('.terminal').addClass('fullscreen');
+    $(containerEl).find('.xterm').addClass('fullscreen');
     term.fitAddon.fit();
   }
 
@@ -647,6 +663,9 @@ jQuery(function($){
     return function(resp) {
       button.prop('disabled', false);
 
+      // Guard against tab closed while AJAX was in flight
+      if (tab.closed) return;
+
       if (resp.status !== 200) {
         log_status(resp.status + ': ' + resp.statusText, true);
         tab.state = DISCONNECTED;
@@ -701,7 +720,7 @@ jQuery(function($){
         console.log('Unable to detect the default encoding of your server');
         msg.encoding = encoding;
       } else {
-        console.log('The deault encoding of your server is ' + msg.encoding);
+        console.log('The default encoding of your server is ' + msg.encoding);
       }
 
       function term_write(text) {
@@ -793,7 +812,7 @@ jQuery(function($){
         tabManager.updateTabStatus(tab.id);
 
         // Clear sensitive fields after successful connection
-        $('#password').val('');
+        $('#credential').val('');
         $('#totp').val('');
 
         // If this is the active tab, hide form and focus
@@ -805,7 +824,7 @@ jQuery(function($){
 
         // Fit terminal after layout has settled (form hidden)
         update_font_family(term);
-        $(tab.containerEl).find('.terminal').addClass('fullscreen');
+        $(tab.containerEl).find('.xterm').addClass('fullscreen');
         requestAnimationFrame(function() {
           if (term.fitAddon) {
             term.fitAddon.fit();
@@ -1011,6 +1030,10 @@ jQuery(function($){
     function ajax_post() {
       status.empty().removeClass('visible');
       button.prop('disabled', true);
+
+      // Remap form field name to what the server expects
+      data.set('password', data.get('credential') || '');
+      data.delete('credential');
 
       $.ajax({
           url: url,
@@ -1277,7 +1300,7 @@ jQuery(function($){
 
     // Create a new tab for cross-origin connections if current tab is connected
     var activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.state !== DISCONNECTED) {
+    if (activeTab && activeTab.state === CONNECTED) {
       tabManager.createTab();
     }
 

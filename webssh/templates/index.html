@@ -25,7 +25,7 @@
 
     <div id="tab-bar">
       <div id="tab-list"></div>
-      <button id="new-tab-btn" title="New connection">+</button>
+      <button id="new-tab-btn" type="button" title="New connection" aria-label="Open new connection tab">+</button>
     </div>
 
     <div class="form-container">
@@ -43,7 +43,7 @@
           {% end %}
         </div>
         <div class="card-body">
-          <form id="connect" action="" method="post" enctype="multipart/form-data"{% if debug %} novalidate{% end %}>
+          <form id="connect" action="" method="post" autocomplete="off" enctype="multipart/form-data"{% if debug %} novalidate{% end %}>
             <!-- Host -->
             <div class="field-row single">
               <div class="field-group">
@@ -68,7 +68,7 @@
               </div>
               <div class="field-group">
                 <span class="field-label">Password</span>
-                <input class="field-input" type="password" id="password" name="password" value="">
+                <input class="field-input secret-field" type="text" id="credential" name="credential" value="" autocomplete="off">
               </div>
             </div>
 
@@ -85,7 +85,7 @@
                 </div>
                 <div class="field-group">
                   <span class="field-label">TOTP <span class="label-hint">(optional)</span></span>
-                  <input class="field-input" type="password" id="totp" name="totp" value="" placeholder="6-digit code">
+                  <input class="field-input secret-field" type="text" id="totp" name="totp" value="" placeholder="6-digit code" autocomplete="off">
                 </div>
               </div>
 
@@ -119,7 +119,7 @@
                   </div>
                   <div class="field-group">
                     <span class="field-label">Passphrase</span>
-                    <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
+                    <input class="field-input secret-field" type="text" id="passphrase" name="passphrase" value="" autocomplete="off">
                   </div>
                 </div>
               </div>
@@ -144,7 +144,7 @@
                 </div>
                 <div class="field-group">
                   <span class="field-label">Passphrase</span>
-                  <input class="field-input" type="password" id="passphrase" name="passphrase" value="">
+                  <input class="field-input secret-field" type="text" id="passphrase" name="passphrase" value="" autocomplete="off">
                 </div>
               </div>
               {% end %}

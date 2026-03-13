@@ -238,6 +238,10 @@ textarea.field-input {
   appearance: none;
 }
 
+.secret-field {
+  -webkit-text-security: disc;
+}
+
 input.field-input::placeholder {
   color: var(--text-muted);
 }
