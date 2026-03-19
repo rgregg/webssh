@@ -133,7 +133,8 @@ jQuery(function($){
         decoder: null,
         containerEl: container,
         tabItemEl: tabItem,
-        title: ''
+        title: '',
+        altScrollDisabled: false
       };
 
       this.tabs[tabId] = tab;
@@ -178,6 +179,9 @@ jQuery(function($){
       } else {
         form_container.show();
       }
+
+      // Sync settings panel with active tab
+      $('#disable-alt-scroll').prop('checked', tab.altScrollDisabled);
 
       // Update page title
       if (tab.state === CONNECTED && tab.title) {
@@ -689,6 +693,7 @@ jQuery(function($){
           decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
           termOptions = {
             cursorBlink: true,
+            alternateScrolling: !tab.altScrollDisabled,
             theme: {
               background: url_opts_data.bgcolor || 'black',
               foreground: url_opts_data.fontcolor || 'white',
@@ -1452,6 +1457,39 @@ jQuery(function($){
   // Update summary on default command field changes
   $('#default-command').on('input change', function() {
     update_advanced_summary();
+  });
+
+  // Tab settings panel toggle
+  $('#tab-settings-btn').on('click', function(e) {
+    e.stopPropagation();
+    var panel = $('#tab-settings-panel');
+    var btn = $(this);
+    if (panel.is(':visible')) {
+      panel.hide();
+      btn.removeClass('active');
+    } else {
+      panel.show();
+      btn.addClass('active');
+    }
+  });
+
+  // Close settings panel when clicking elsewhere
+  $(document).on('click', function(e) {
+    var panel = $('#tab-settings-panel');
+    if (panel.is(':visible') && !$(e.target).closest('#tab-settings-panel, #tab-settings-btn').length) {
+      panel.hide();
+      $('#tab-settings-btn').removeClass('active');
+    }
+  });
+
+  // Per-tab alternate scroll toggle
+  $('#disable-alt-scroll').on('change', function() {
+    var tab = tabManager.getActiveTab();
+    if (!tab) return;
+    tab.altScrollDisabled = $(this).is(':checked');
+    if (tab.term) {
+      tab.term.options.alternateScrolling = !tab.altScrollDisabled;
+    }
   });
 
   // Initial summary update
