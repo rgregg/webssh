@@ -692,31 +692,6 @@ textarea.pubkey-display:focus {
   background: var(--danger-dim);
 }
 
-#tab-bar-actions {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-#tab-settings-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.1s, color 0.1s;
-}
-
-#tab-settings-btn:hover,
-#tab-settings-btn.active {
-  color: var(--accent);
-  background: var(--accent-dim);
-}
-
 #new-tab-btn {
   width: 36px;
   height: 36px;
@@ -732,51 +707,6 @@ textarea.pubkey-display:focus {
 
 #new-tab-btn:hover {
   background: var(--accent-dim);
-}
-
-/* --- Tab Settings Panel --- */
-#tab-settings-panel {
-  position: absolute;
-  top: 36px;
-  right: 0;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: 0 0 var(--radius) var(--radius);
-  padding: 10px 14px;
-  z-index: 20;
-  min-width: 260px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-
-.tab-settings-header {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-}
-
-.tab-setting-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-secondary);
-  padding: 4px 0;
-}
-
-.tab-setting-option input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.tab-setting-option:hover {
-  color: var(--text-primary);
 }
 
 /* --- Terminals Container --- */

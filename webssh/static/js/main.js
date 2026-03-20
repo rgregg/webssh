@@ -133,8 +133,7 @@ jQuery(function($){
         decoder: null,
         containerEl: container,
         tabItemEl: tabItem,
-        title: '',
-        altScrollDisabled: false
+        title: ''
       };
 
       this.tabs[tabId] = tab;
@@ -180,8 +179,7 @@ jQuery(function($){
         form_container.show();
       }
 
-      // Sync settings panel with active tab
-      $('#disable-alt-scroll').prop('checked', tab.altScrollDisabled);
+
 
       // Update page title
       if (tab.state === CONNECTED && tab.title) {
@@ -477,8 +475,9 @@ jQuery(function($){
 
 
   function get_cell_size(term) {
-    style.width = term._core._renderService._renderer.dimensions.actualCellWidth;
-    style.height = term._core._renderService._renderer.dimensions.actualCellHeight;
+    var dims = term._core._renderService.dimensions;
+    style.width = dims.css.cell.width;
+    style.height = dims.css.cell.height;
   }
 
 
@@ -504,15 +503,11 @@ jQuery(function($){
 
 
   function set_backgound_color(term, color) {
-    term.setOption('theme', {
-      background: color
-    });
+    term.options.theme = { ...term.options.theme, background: color };
   }
 
   function set_font_color(term, color) {
-    term.setOption('theme', {
-      foreground: color
-    });
+    term.options.theme = { ...term.options.theme, foreground: color };
   }
 
   function custom_font_is_loaded() {
@@ -536,12 +531,12 @@ jQuery(function($){
     }
 
     if (!default_fonts) {
-      default_fonts = term.getOption('fontFamily');
+      default_fonts = term.options.fontFamily;
     }
 
     if (custom_font_is_loaded()) {
       var new_fonts =  custom_font.family + ', ' + default_fonts;
-      term.setOption('fontFamily', new_fonts);
+      term.options.fontFamily = new_fonts;
       term.font_family_updated = true;
       console.log('Using custom font family ' + new_fonts);
     }
@@ -555,7 +550,7 @@ jQuery(function($){
     }
 
     if (default_fonts) {
-      term.setOption('fontFamily',  default_fonts);
+      term.options.fontFamily = default_fonts;
       term.font_family_updated = false;
       console.log('Using default font family ' + default_fonts);
     }
@@ -693,7 +688,6 @@ jQuery(function($){
           decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
           termOptions = {
             cursorBlink: true,
-            alternateScrolling: !tab.altScrollDisabled,
             theme: {
               background: url_opts_data.bgcolor || 'black',
               foreground: url_opts_data.fontcolor || 'white',
@@ -712,6 +706,8 @@ jQuery(function($){
       var fitAddon = new window.FitAddon.FitAddon();
       term.fitAddon = fitAddon;
       term.loadAddon(fitAddon);
+      term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+      term.loadAddon(new window.ClipboardAddon.ClipboardAddon());
 
       // Store on tab
       tab.term = term;
@@ -812,6 +808,7 @@ jQuery(function($){
 
       sock.onopen = function() {
         term.open(tab.containerEl);
+
         tab.state = CONNECTED;
         tabManager.updateTabLabel(tab.id, tab.title || default_title);
         tabManager.updateTabStatus(tab.id);
@@ -1457,39 +1454,6 @@ jQuery(function($){
   // Update summary on default command field changes
   $('#default-command').on('input change', function() {
     update_advanced_summary();
-  });
-
-  // Tab settings panel toggle
-  $('#tab-settings-btn').on('click', function(e) {
-    e.stopPropagation();
-    var panel = $('#tab-settings-panel');
-    var btn = $(this);
-    if (panel.is(':visible')) {
-      panel.hide();
-      btn.removeClass('active');
-    } else {
-      panel.show();
-      btn.addClass('active');
-    }
-  });
-
-  // Close settings panel when clicking elsewhere
-  $(document).on('click', function(e) {
-    var panel = $('#tab-settings-panel');
-    if (panel.is(':visible') && !$(e.target).closest('#tab-settings-panel, #tab-settings-btn').length) {
-      panel.hide();
-      $('#tab-settings-btn').removeClass('active');
-    }
-  });
-
-  // Per-tab alternate scroll toggle
-  $('#disable-alt-scroll').on('change', function() {
-    var tab = tabManager.getActiveTab();
-    if (!tab) return;
-    tab.altScrollDisabled = $(this).is(':checked');
-    if (tab.term) {
-      tab.term.options.alternateScrolling = !tab.altScrollDisabled;
-    }
   });
 
   // Initial summary update
