@@ -88,7 +88,7 @@ body::before {
   z-index: 1;
   min-height: 100vh;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 24px;
 }
@@ -96,6 +96,7 @@ body::before {
 .connect-card {
   width: 100%;
   max-width: 580px;
+  margin: auto 0;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -792,10 +793,12 @@ textarea.pubkey-display:focus {
   right: 0;
   bottom: 0;
   visibility: hidden;
+  pointer-events: none;
 }
 
 .terminal-pane.active {
   visibility: visible;
+  pointer-events: auto;
   z-index: 1;
 }
 
@@ -808,6 +811,7 @@ body.has-tabs {
 body.has-tabs .form-container {
   flex: 1;
   min-height: 0;
+  z-index: 2;
 }
 
 body.has-tabs .container {
