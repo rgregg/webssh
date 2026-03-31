@@ -261,7 +261,8 @@ class MixinHandler(object):
 
     def is_forbidden(self, context, hostname):
         ip = context.address[0]
-        lst = context.trusted_downstream
+        settings = getattr(self, 'settings', None) or {}
+        lst = settings.get('trusted_downstream') or context.trusted_downstream
         ip_address = None
 
         if lst and ip not in lst:

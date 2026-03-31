@@ -154,13 +154,47 @@ def get_ssl_context(options):
 
 
 def get_trusted_downstream(tdstream):
-    result = set()
-    for ip in tdstream.split(','):
-        ip = ip.strip()
-        if ip:
-            to_ip_address(ip)
-            result.add(ip)
-    return result
+    import ipaddress
+    ips = set()
+    networks = []
+    for entry in tdstream.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if '/' in entry:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        else:
+            to_ip_address(entry)
+            ips.add(entry)
+    return TrustedDownstream(ips, networks)
+
+
+class TrustedDownstream:
+    """Set-like object that supports both exact IPs and CIDR networks."""
+    def __init__(self, ips, networks):
+        self.ips = ips
+        self.networks = networks
+
+    def __contains__(self, ip):
+        import ipaddress
+        if ip in self.ips:
+            return True
+        if self.networks:
+            addr = ipaddress.ip_address(ip)
+            for net in self.networks:
+                if addr in net:
+                    return True
+        return False
+
+    def __iter__(self):
+        return iter(self.ips)
+
+    def __bool__(self):
+        return bool(self.ips) or bool(self.networks)
+
+    def __repr__(self):
+        parts = sorted(self.ips) + [str(n) for n in self.networks]
+        return repr(parts)
 
 
 def get_origin_setting(options):
@@ -339,21 +373,25 @@ def apply_config_settings(options):
             )
         options.idletimeout = timeout
     if 'trusted_proxies' in config:
+        import ipaddress
         proxies = config['trusted_proxies']
         if not isinstance(proxies, list):
-            raise ValueError('trusted_proxies must be a list of IP addresses')
-        proxy_ips = []
-        for ip in proxies:
-            ip = str(ip).strip()
-            if ip:
-                to_ip_address(ip)
-                proxy_ips.append(ip)
-        if proxy_ips:
+            raise ValueError('trusted_proxies must be a list of IP addresses or CIDR ranges')
+        proxy_entries = []
+        for entry in proxies:
+            entry = str(entry).strip()
+            if entry:
+                if '/' in entry:
+                    ipaddress.ip_network(entry, strict=False)
+                else:
+                    to_ip_address(entry)
+                proxy_entries.append(entry)
+        if proxy_entries:
             existing = options.tdstream
             if existing:
-                options.tdstream = existing + ',' + ','.join(proxy_ips)
+                options.tdstream = existing + ',' + ','.join(proxy_entries)
             else:
-                options.tdstream = ','.join(proxy_ips)
+                options.tdstream = ','.join(proxy_entries)
 
 
 def check_user_key_dir(user_key_dir, tdstream=''):

@@ -127,21 +127,29 @@ class TestSettings(unittest.TestCase):
         self.assertIsNotNone(ssl_ctx)
 
     def test_get_trusted_downstream(self):
-        tdstream = ''
-        result = set()
-        self.assertEqual(get_trusted_downstream(tdstream), result)
+        td = get_trusted_downstream('')
+        self.assertFalse(td)
 
-        tdstream = '1.1.1.1, 2.2.2.2'
-        result = set(['1.1.1.1', '2.2.2.2'])
-        self.assertEqual(get_trusted_downstream(tdstream), result)
+        td = get_trusted_downstream('1.1.1.1, 2.2.2.2')
+        self.assertIn('1.1.1.1', td)
+        self.assertIn('2.2.2.2', td)
+        self.assertNotIn('3.3.3.3', td)
 
-        tdstream = '1.1.1.1, 2.2.2.2, 2.2.2.2'
-        result = set(['1.1.1.1', '2.2.2.2'])
-        self.assertEqual(get_trusted_downstream(tdstream), result)
+        td = get_trusted_downstream('1.1.1.1, 2.2.2.2, 2.2.2.2')
+        self.assertIn('1.1.1.1', td)
+        self.assertIn('2.2.2.2', td)
 
         tdstream = '1.1.1.1, 2.2.2.'
         with self.assertRaises(ValueError):
             get_trusted_downstream(tdstream)
+
+    def test_get_trusted_downstream_cidr(self):
+        td = get_trusted_downstream('10.0.0.1,172.22.0.0/16')
+        self.assertIn('10.0.0.1', td)
+        self.assertIn('172.22.0.3', td)
+        self.assertIn('172.22.255.255', td)
+        self.assertNotIn('172.23.0.1', td)
+        self.assertTrue(td)
 
     def test_get_origin_setting(self):
         options.debug = False
@@ -275,7 +283,9 @@ class TestSettings(unittest.TestCase):
         opts = self._make_config_opts(filepath, tdstream='192.168.1.1')
         apply_config_settings(opts)
         downstream = get_trusted_downstream(opts.tdstream)
-        self.assertEqual(downstream, {'192.168.1.1', '10.0.0.1', '172.16.0.5'})
+        self.assertIn('192.168.1.1', downstream)
+        self.assertIn('10.0.0.1', downstream)
+        self.assertIn('172.16.0.5', downstream)
 
     def test_apply_config_no_trusted_proxies(self):
         filepath = make_tests_data_path('config_with_keys.yaml')

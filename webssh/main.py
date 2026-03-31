@@ -186,6 +186,7 @@ def main():
     app.settings['template_loader'] = loader
     ssl_ctx = get_ssl_context(options)
     server_settings = get_server_settings(options)
+    app.settings['trusted_downstream'] = server_settings['trusted_downstream']
     app_listen(app, options.port, options.address, server_settings)
     if ssl_ctx:
         server_settings.update(ssl_options=ssl_ctx)
