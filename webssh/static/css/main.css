@@ -766,6 +766,8 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   width: auto;
   height: auto;
   z-index: auto;
+  background: black;
+  padding-left: 4px;
 }
 
 /* --- Responsive --- */
