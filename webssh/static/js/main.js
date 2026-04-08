@@ -895,9 +895,17 @@ jQuery(function($){
         if (e.code === 1006 || (!e.wasClean && !e.reason)) {
           fetch(window.location.href, { method: 'GET', redirect: 'manual' })
             .then(function(resp) {
-              // A type of 'opaqueredirect' or non-200 status means the auth
-              // proxy is redirecting us to a login page.
-              if (resp.type === 'opaqueredirect' || resp.status === 401 || resp.status === 403) {
+              // With manual redirects, browsers may expose auth redirects as
+              // an 'opaqueredirect', a 3xx status, or status 0. Treat those,
+              // plus 401/403, as signals that the auth proxy wants us to
+              // re-authenticate.
+              var isAuthRedirect = resp.type === 'opaqueredirect' ||
+                resp.status === 0 ||
+                (resp.status >= 300 && resp.status < 400) ||
+                resp.status === 401 ||
+                resp.status === 403;
+
+              if (isAuthRedirect) {
                 console.warn('Auth proxy session expired, reloading to re-authenticate.');
                 window.location.reload();
               } else {
