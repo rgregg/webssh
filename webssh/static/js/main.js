@@ -833,6 +833,13 @@ jQuery(function($){
           console.warn('WebGL renderer not available, using DOM fallback:', e);
         }
 
+        // Force viewport background to black — xterm 6.0 may set it via
+        // inline style that overrides CSS rules.
+        var viewport = tab.containerEl.querySelector('.xterm-viewport');
+        if (viewport) {
+          viewport.style.backgroundColor = 'black';
+        }
+
         tab.state = CONNECTED;
         tabManager.updateTabLabel(tab.id, tab.title || default_title);
         tabManager.updateTabStatus(tab.id);
