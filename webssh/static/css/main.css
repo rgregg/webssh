@@ -724,6 +724,7 @@ textarea.pubkey-display:focus {
   bottom: 0;
   visibility: hidden;
   pointer-events: none;
+  background: black;
 }
 
 .terminal-pane.active {
@@ -761,13 +762,11 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: 4px;
   right: 0;
   width: auto;
   height: auto;
   z-index: auto;
-  background: black;
-  padding-left: 4px;
 }
 
 /* --- Responsive --- */
