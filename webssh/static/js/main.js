@@ -809,6 +809,16 @@ jQuery(function($){
       sock.onopen = function() {
         term.open(tab.containerEl);
 
+        // Use WebGL renderer for better performance with TUI apps,
+        // falling back to the default DOM renderer if unavailable.
+        try {
+          var webglAddon = new window.WebglAddon.WebglAddon();
+          webglAddon.onContextLoss(function() { webglAddon.dispose(); });
+          term.loadAddon(webglAddon);
+        } catch (e) {
+          console.warn('WebGL renderer not available, using DOM fallback:', e);
+        }
+
         tab.state = CONNECTED;
         tabManager.updateTabLabel(tab.id, tab.title || default_title);
         tabManager.updateTabStatus(tab.id);
