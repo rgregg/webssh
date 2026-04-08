@@ -666,6 +666,12 @@ jQuery(function($){
       if (tab.closed) return;
 
       if (resp.status !== 200) {
+        // Auth proxy may return 401/403 when session expires
+        if (resp.status === 401 || resp.status === 403) {
+          console.warn('Auth proxy returned ' + resp.status + ', reloading to re-authenticate.');
+          window.location.reload();
+          return;
+        }
         log_status(resp.status + ': ' + resp.statusText, true);
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
@@ -673,7 +679,15 @@ jQuery(function($){
       }
 
       var msg = resp.responseJSON;
-      if (!msg.id) {
+      if (!msg || !msg.id) {
+        // If the response is not JSON, the auth proxy likely intercepted
+        // the request (e.g. session expired) and returned an HTML login page.
+        // Reload the page to re-authenticate through the proxy.
+        if (!msg) {
+          console.warn('Non-JSON response received; auth proxy session may have expired.');
+          window.location.reload();
+          return;
+        }
         log_status(msg.status, true);
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
@@ -876,6 +890,39 @@ jQuery(function($){
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
 
+        // If the WebSocket closed abnormally, check whether the auth proxy
+        // session has expired. If so, reload to re-authenticate.
+        if (e.code === 1006 || (!e.wasClean && !e.reason)) {
+          fetch(window.location.href, { method: 'GET', redirect: 'manual' })
+            .then(function(resp) {
+              // With manual redirects, browsers may expose auth redirects as
+              // an 'opaqueredirect', a 3xx status, or status 0. Treat those,
+              // plus 401/403, as signals that the auth proxy wants us to
+              // re-authenticate.
+              var isAuthRedirect = resp.type === 'opaqueredirect' ||
+                resp.status === 0 ||
+                (resp.status >= 300 && resp.status < 400) ||
+                resp.status === 401 ||
+                resp.status === 403;
+
+              if (isAuthRedirect) {
+                console.warn('Auth proxy session expired, reloading to re-authenticate.');
+                window.location.reload();
+              } else {
+                handle_ws_close(e, tab);
+              }
+            })
+            .catch(function() {
+              // Network error - just handle normally
+              handle_ws_close(e, tab);
+            });
+          return;
+        }
+
+        handle_ws_close(e, tab);
+      };
+
+      function handle_ws_close(e, tab) {
         // Auto-close the tab unless it's the last one
         if (tabManager.getTabIds().length > 1) {
           tabManager.closeTab(tab.id);
@@ -888,7 +935,7 @@ jQuery(function($){
           log_status(e.reason, true);
           title_element.text = default_title;
         }
-      };
+      }
     };
   }
 
