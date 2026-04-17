@@ -1370,6 +1370,11 @@ jQuery(function($){
 
   function cross_origin_connect(event)
   {
+    // Browser extensions and other frames dispatch postMessage events with
+    // non-string payloads; only strings are meaningful to this handler.
+    if (typeof event.data !== 'string') {
+      return;
+    }
     console.log(event.origin);
     var prop = 'connect',
         args;
