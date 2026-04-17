@@ -721,7 +721,27 @@ jQuery(function($){
       term.fitAddon = fitAddon;
       term.loadAddon(fitAddon);
       term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
-      term.loadAddon(new window.ClipboardAddon.ClipboardAddon());
+      // Custom clipboard provider: tmux emits OSC 52 with an empty selector
+      // (`\e]52;;<base64>\a`). The default BrowserClipboardProvider only
+      // responds to selector `c`, so tmux selections silently drop. Normalize
+      // empty/missing selector to `c` before delegating.
+      var TmuxAwareClipboardProvider = function () {};
+      TmuxAwareClipboardProvider.prototype = Object.create(
+        window.ClipboardAddon.BrowserClipboardProvider.prototype
+      );
+      TmuxAwareClipboardProvider.prototype.writeText = function (sel, text) {
+        return window.ClipboardAddon.BrowserClipboardProvider.prototype.writeText.call(
+          this, sel || 'c', text
+        );
+      };
+      TmuxAwareClipboardProvider.prototype.readText = function (sel) {
+        return window.ClipboardAddon.BrowserClipboardProvider.prototype.readText.call(
+          this, sel || 'c'
+        );
+      };
+      term.loadAddon(new window.ClipboardAddon.ClipboardAddon(
+        undefined, new TmuxAwareClipboardProvider()
+      ));
 
       // Store on tab
       tab.term = term;
