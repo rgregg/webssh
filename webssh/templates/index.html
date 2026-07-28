@@ -57,7 +57,7 @@
                   <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}">{{ host['name'] }}</option>
                   {% end %}
                   {% for host in user_hosts %}
-                  <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}" data-username="{{ host['username'] }}" data-command="{{ host['default_command'] }}">{{ host['name'] }}</option>
+                  <option value="{{ host['hostname'] }}" data-port="{{ host['port'] }}" data-username="{{ host.get('username', '') }}" data-command="{{ host.get('default_command', '') }}">{{ host['name'] }}</option>
                   {% end %}
                 </select>
                 {% else %}

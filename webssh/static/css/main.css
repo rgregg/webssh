@@ -867,3 +867,5 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 
 .settings-status { font-size: 0.85em; opacity: 0.75; }
 .settings-status.error { color: var(--danger); opacity: 1; }
+
+.input-error { border-color: var(--danger) !important; background: var(--danger-dim); }

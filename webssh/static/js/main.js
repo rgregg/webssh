@@ -195,9 +195,7 @@ jQuery(function($){
       }
 
       // Rebind wssh proxy methods to this tab
-      if (tab.kind !== 'settings') {
-        this.bindWssh(tab);
-      }
+      this.bindWssh(tab);
     },
 
     closeTab: function(tabId) {
@@ -676,9 +674,9 @@ jQuery(function($){
       waiter.hide();
     }
 
-    // Only show form if the active tab is disconnected
+    // Only show form if the active tab is disconnected (and not the settings tab)
     var activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.state !== CONNECTED) {
+    if (activeTab && activeTab.state !== CONNECTED && activeTab.kind !== 'settings') {
       if (form_container.css('display') === 'none') {
         form_container.show();
       }
@@ -711,7 +709,10 @@ jQuery(function($){
 
   function collect_host_rows(pane) {
     var hosts = [];
+    var error = null;
+    pane.find('#user-host-rows .host-port').removeClass('input-error');
     pane.find('#user-host-rows tr.user-host').each(function() {
+      if (error) return;
       var row = $(this);
       var hostname = row.find('.host-hostname').val().trim();
       if (!hostname) return;
@@ -721,17 +722,29 @@ jQuery(function($){
         var k = keys[i].trim();
         if (k) cleaned.push(k);
       }
-      var port = window.parseInt(row.find('.host-port').val(), 10);
-      hosts.push({
-        name: row.find('.host-name').val().trim() || hostname,
+      var name = row.find('.host-name').val().trim() || hostname;
+      var host = {
+        name: name,
         hostname: hostname,
-        port: port > 0 ? port : 22,
         host_key: cleaned,
         username: row.find('.host-username').val().trim(),
         default_command: row.find('.host-command').val().trim()
-      });
+      };
+      // Leave port unset when blank so the server applies its documented
+      // default; never rewrite a value the user actually typed.
+      var port_text = row.find('.host-port').val().trim();
+      if (port_text) {
+        var port = window.parseInt(port_text, 10);
+        if (!(port > 0 && port <= 65535)) {
+          row.find('.host-port').addClass('input-error');
+          error = 'Invalid port "' + port_text + '" for host "' + name + '" (must be 1-65535).';
+          return;
+        }
+        host.port = port;
+      }
+      hosts.push(host);
     });
-    return hosts;
+    return {hosts: hosts, error: error};
   }
 
 
@@ -782,22 +795,45 @@ jQuery(function($){
       pane.find('#set-key-source').val(user_settings.key_source);
     }
 
+    // The host list PUT honors an empty "hosts" array as "clear my list".
+    // Never let a save proceed from a list this pane failed to load, so
+    // keep Save disabled until the GET resolves (and leave it disabled,
+    // with an explicit error, if it fails).
+    pane.find('#settings-save').prop('disabled', true);
     $.get('/api/hosts').done(function(data) {
       var hosts = data.user_hosts || [];
       for (var i = 0; i < hosts.length; i++) {
         add_host_row(pane, hosts[i]);
       }
+      pane.find('#settings-save').prop('disabled', false);
+    }).fail(function() {
+      settings_status(
+        pane,
+        'Failed to load your existing hosts. Save is disabled to avoid ' +
+        'overwriting them; reload the tab and try again.',
+        true
+      );
     });
 
     pane.find('#settings-save').on('click', function() {
+      var collected = collect_host_rows(pane);
+      if (collected.error) {
+        settings_status(pane, collected.error, true);
+        return;
+      }
       settings_status(pane, 'Saving...');
-      var hosts = collect_host_rows(pane);
+      var hosts = collected.hosts;
       var settings = collect_settings(pane);
       $.ajax({
         url: '/api/hosts', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},
         data: JSON.stringify({hosts: hosts})
       }).done(function() {
+        // Hosts are now persisted regardless of what happens to settings
+        // below, so refresh the dropdown now rather than only on full
+        // success -- otherwise a settings failure leaves the dropdown
+        // looking stale even though the hosts did save.
+        refresh_host_list();
         return $.ajax({
           url: '/api/settings', type: 'PUT', contentType: 'application/json',
           headers: {'X-Xsrftoken': get_xsrf_token()},
@@ -805,12 +841,15 @@ jQuery(function($){
         }).done(function(data) {
           user_settings = data.settings || {};
           settings_status(pane, 'Saved');
-          refresh_host_list();
         }).fail(function(xhr) {
-          settings_status(pane, save_error_text(xhr), true);
+          settings_status(
+            pane,
+            'Hosts saved, but settings failed to save: ' + save_error_text(xhr),
+            true
+          );
         });
       }).fail(function(xhr) {
-        settings_status(pane, save_error_text(xhr), true);
+        settings_status(pane, 'Hosts failed to save: ' + save_error_text(xhr), true);
       });
     });
   }
@@ -818,6 +857,9 @@ jQuery(function($){
 
   function save_error_text(xhr) {
     if (xhr && xhr.status === 400) {
+      if (xhr.responseJSON && xhr.responseJSON.error) {
+        return xhr.responseJSON.error;
+      }
       return 'Rejected: check hostnames, ports, and host keys.';
     }
     return 'Save failed.';
@@ -1398,6 +1440,12 @@ jQuery(function($){
     var result, opts;
     var tab = tabManager.getActiveTab();
 
+    // A settings tab is never a valid connect target; open a new terminal
+    // tab and connect there instead.
+    if (tab && tab.kind === 'settings') {
+      tab = tabManager.createTab('terminal');
+    }
+
     if (!tab || tab.state !== DISCONNECTED) {
       if (tab) {
         console.log(messages[tab.state]);
@@ -1508,7 +1556,10 @@ jQuery(function($){
     var host_username = option.attr('data-username');
     var host_command = option.attr('data-command');
     if (host_username) $('#username').val(host_username);
-    if (host_command !== undefined) $('#default-command').val(host_command);
+    // An empty default_command means "no host-specific override" -- leave
+    // whatever restore_default_command already populated from localStorage
+    // alone rather than blanking it.
+    if (host_command) $('#default-command').val(host_command);
   });
 
   // Restore default command when port changes
@@ -1597,9 +1648,11 @@ jQuery(function($){
       args = [args];
     }
 
-    // Create a new tab for cross-origin connections if current tab is connected
+    // Create a new tab for cross-origin connections if the current tab is
+    // already connected, or if it is the settings tab (never a valid
+    // connect target).
     var activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.state === CONNECTED) {
+    if (activeTab && (activeTab.state === CONNECTED || activeTab.kind === 'settings')) {
       tabManager.createTab();
     }
 
