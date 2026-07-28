@@ -71,7 +71,8 @@ jQuery(function($){
     activeTabId: null,
     tabCounter: 0,
 
-    createTab: function() {
+    createTab: function(kind) {
+      kind = kind || 'terminal';
       var tabId = ++this.tabCounter;
       var container = document.createElement('div');
       container.className = 'terminal-pane';
@@ -90,7 +91,7 @@ jQuery(function($){
 
       var label = document.createElement('span');
       label.className = 'tab-label';
-      label.textContent = 'New Connection';
+      label.textContent = (kind === 'settings') ? 'Settings' : 'New Connection';
 
       var closeBtn = document.createElement('button');
       closeBtn.className = 'tab-close';
@@ -124,7 +125,8 @@ jQuery(function($){
 
       var tab = {
         id: tabId,
-        label: 'New Connection',
+        kind: kind,
+        label: (kind === 'settings') ? 'Settings' : 'New Connection',
         state: DISCONNECTED,
         term: null,
         fitAddon: null,
@@ -164,7 +166,9 @@ jQuery(function($){
       // Dismiss any lingering status from other tabs
       dismiss_status();
 
-      if (tab.state === CONNECTED && tab.term) {
+      if (tab.kind === 'settings') {
+        form_container.hide();
+      } else if (tab.state === CONNECTED && tab.term) {
         form_container.hide();
         // Fit after a brief delay so layout settles, then focus
         setTimeout(function() {
@@ -182,14 +186,18 @@ jQuery(function($){
 
 
       // Update page title
-      if (tab.state === CONNECTED && tab.title) {
+      if (tab.kind === 'settings') {
+        title_element.text = 'Settings';
+      } else if (tab.state === CONNECTED && tab.title) {
         title_element.text = tab.title;
       } else {
         title_element.text = default_title;
       }
 
       // Rebind wssh proxy methods to this tab
-      this.bindWssh(tab);
+      if (tab.kind !== 'settings') {
+        this.bindWssh(tab);
+      }
     },
 
     closeTab: function(tabId) {
@@ -237,13 +245,35 @@ jQuery(function($){
           this.activateTab(ids[idx]);
         } else {
           // No tabs left, create new one
-          this.createTab();
+          this.createTab('terminal');
         }
       }
     },
 
     getActiveTab: function() {
       return this.tabs[this.activeTabId] || null;
+    },
+
+    openSettings: function() {
+      var ids = this.getTabIds();
+      for (var i = 0; i < ids.length; i++) {
+        if (this.tabs[ids[i]].kind === 'settings') {
+          this.activateTab(ids[i]);
+          return;
+        }
+      }
+      var tab = this.createTab('settings');
+      var pane = $(tab.containerEl);
+      pane.html('<div class="settings-loading">Loading settings...</div>');
+      $.get('/settings-pane')
+        .done(function(html) {
+          pane.html(html);
+          init_settings_pane(pane);
+        })
+        .fail(function() {
+          pane.html('<div class="settings-loading">Failed to load settings.</div>');
+        });
+      return tab;
     },
 
     updateTabLabel: function(tabId, label) {
@@ -653,6 +683,178 @@ jQuery(function($){
         form_container.show();
       }
     }
+  }
+
+
+  // ===================== Settings Pane =====================
+
+  function settings_status(pane, message, is_error) {
+    var el = pane.find('#settings-status');
+    el.text(message || '');
+    el.toggleClass('error', !!is_error);
+  }
+
+
+  function add_host_row(pane, host) {
+    host = host || {};
+    var tpl = pane.find('#host-row-template')[0];
+    var row = $(document.importNode(tpl.content, true));
+    row.find('.host-name').val(host.name || '');
+    row.find('.host-hostname').val(host.hostname || '');
+    row.find('.host-port').val(host.port || '');
+    row.find('.host-username').val(host.username || '');
+    row.find('.host-command').val(host.default_command || '');
+    row.find('.host-keys').val((host.host_keys || []).join('\n'));
+    pane.find('#user-host-rows').append(row);
+  }
+
+
+  function collect_host_rows(pane) {
+    var hosts = [];
+    pane.find('#user-host-rows tr.user-host').each(function() {
+      var row = $(this);
+      var hostname = row.find('.host-hostname').val().trim();
+      if (!hostname) return;
+      var keys = row.find('.host-keys').val().split('\n');
+      var cleaned = [];
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i].trim();
+        if (k) cleaned.push(k);
+      }
+      var port = window.parseInt(row.find('.host-port').val(), 10);
+      hosts.push({
+        name: row.find('.host-name').val().trim() || hostname,
+        hostname: hostname,
+        port: port > 0 ? port : 22,
+        host_key: cleaned,
+        username: row.find('.host-username').val().trim(),
+        default_command: row.find('.host-command').val().trim()
+      });
+    });
+    return hosts;
+  }
+
+
+  function collect_settings(pane) {
+    var settings = {};
+    var size = window.parseInt(pane.find('#set-font-size').val(), 10);
+    if (size > 0) settings.font_size = size;
+    var pairs = {
+      background: '#set-background', foreground: '#set-foreground',
+      cursor: '#set-cursor', encoding: '#set-encoding', term: '#set-term'
+    };
+    for (var key in pairs) {
+      var value = pane.find(pairs[key]).val().trim();
+      if (value) settings[key] = value;
+    }
+    settings.cursor_blink = pane.find('#set-cursor-blink').is(':checked');
+    settings.key_source = pane.find('#set-key-source').val();
+    return settings;
+  }
+
+
+  function init_settings_pane(pane) {
+    pane.find('.settings-tab').on('click', function() {
+      var section = $(this).data('section');
+      pane.find('.settings-tab').removeClass('active');
+      $(this).addClass('active');
+      pane.find('.settings-section').removeClass('active');
+      pane.find('#settings-' + section).addClass('active');
+    });
+
+    pane.find('#add-host-btn').on('click', function() {
+      add_host_row(pane, {});
+    });
+
+    pane.on('click', '.host-delete', function() {
+      $(this).closest('tr').remove();
+    });
+
+    pane.find('#set-font-size').val(user_settings.font_size || '');
+    pane.find('#set-background').val(user_settings.background || '');
+    pane.find('#set-foreground').val(user_settings.foreground || '');
+    pane.find('#set-cursor').val(user_settings.cursor || '');
+    pane.find('#set-encoding').val(user_settings.encoding || '');
+    pane.find('#set-term').val(user_settings.term || '');
+    pane.find('#set-cursor-blink').prop('checked',
+                                        user_settings.cursor_blink !== false);
+    if (user_settings.key_source) {
+      pane.find('#set-key-source').val(user_settings.key_source);
+    }
+
+    $.get('/api/hosts').done(function(data) {
+      var hosts = data.user_hosts || [];
+      for (var i = 0; i < hosts.length; i++) {
+        add_host_row(pane, hosts[i]);
+      }
+    });
+
+    pane.find('#settings-save').on('click', function() {
+      settings_status(pane, 'Saving...');
+      var hosts = collect_host_rows(pane);
+      var settings = collect_settings(pane);
+      $.ajax({
+        url: '/api/hosts', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({hosts: hosts})
+      }).done(function() {
+        return $.ajax({
+          url: '/api/settings', type: 'PUT', contentType: 'application/json',
+          headers: {'X-Xsrftoken': get_xsrf_token()},
+          data: JSON.stringify({settings: settings})
+        }).done(function(data) {
+          user_settings = data.settings || {};
+          settings_status(pane, 'Saved');
+          refresh_host_list();
+        }).fail(function(xhr) {
+          settings_status(pane, save_error_text(xhr), true);
+        });
+      }).fail(function(xhr) {
+        settings_status(pane, save_error_text(xhr), true);
+      });
+    });
+  }
+
+
+  function save_error_text(xhr) {
+    if (xhr && xhr.status === 400) {
+      return 'Rejected: check hostnames, ports, and host keys.';
+    }
+    return 'Save failed.';
+  }
+
+
+  function get_xsrf_token() {
+    var match = document.cookie.match(/\b_xsrf=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+
+  function refresh_host_list() {
+    if (!user_hosts_enabled) return;
+    $.get('/api/hosts').done(function(data) {
+      var select = $('#hostname');
+      if (!select.is('select')) return;
+      var current = select.val();
+      select.empty();
+      var groups = [data.admin_hosts || [], data.user_hosts || []];
+      for (var g = 0; g < groups.length; g++) {
+        for (var i = 0; i < groups[g].length; i++) {
+          var host = groups[g][i];
+          var option = $('<option>')
+            .attr('value', host.hostname)
+            .attr('data-port', host.port)
+            .text(host.name);
+          if (g === 1) {
+            option.attr('data-username', host.username || '');
+            option.attr('data-command', host.default_command || '');
+          }
+          select.append(option);
+        }
+      }
+      if (current) select.val(current);
+      select.trigger('change');
+    });
   }
 
 
@@ -1301,6 +1503,12 @@ jQuery(function($){
     }
     restore_default_command($(this).val(), port || $('#port').val());
     update_advanced_summary();
+
+    var option = $('#hostname option:selected');
+    var host_username = option.attr('data-username');
+    var host_command = option.attr('data-command');
+    if (host_username) $('#username').val(host_username);
+    if (host_command !== undefined) $('#default-command').val(host_command);
   });
 
   // Restore default command when port changes
@@ -1430,6 +1638,10 @@ jQuery(function($){
 
   $('#new-tab-btn').on('click', function() {
     tabManager.createTab();
+  });
+
+  $('#settings-btn').on('click', function() {
+    tabManager.openSettings();
   });
 
 
