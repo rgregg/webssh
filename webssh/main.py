@@ -16,7 +16,8 @@ from webssh.settings import (
     get_app_settings,  get_host_keys_settings, get_policy_setting,
     get_ssl_context, get_server_settings, check_encoding_setting,
     get_allowed_hosts_setting, check_user_key_dir, apply_config_settings,
-    load_config_file, parse_allowed_hosts
+    load_config_file, parse_allowed_hosts, get_user_data_dir_setting,
+    check_user_data_dir
 )
 
 
@@ -176,6 +177,9 @@ def main():
     apply_config_settings(options)
     check_encoding_setting(options.encoding)
     check_user_key_dir(options.userkeydir, options.tdstream)
+    user_data_dir = get_user_data_dir_setting(options)
+    if options.user_hosts:
+        check_user_data_dir(user_data_dir, options.tdstream)
     loop = tornado.ioloop.IOLoop.current()
     live_config = {}
     app = make_app(make_handlers(loop, options, live_config),

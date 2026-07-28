@@ -60,6 +60,11 @@ define('userkeydir', default='',
        help='Directory to store per-user SSH key pairs')
 define('userheader', default='X-Authentik-Username',
        help='HTTP header with authenticated username')
+define('userdatadir', default='',
+       help='Directory for per-user hosts and settings '
+            '(defaults to userkeydir)')
+define('user_hosts', type=bool, default=False,
+       help='Allow authenticated users to manage their own host list')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -364,6 +369,10 @@ def apply_config_settings(options):
         options.userkeydir = config['userkeydir']
     if options.userheader == 'X-Authentik-Username' and 'userheader' in config:
         options.userheader = config['userheader']
+    if not options.userdatadir and 'userdatadir' in config:
+        options.userdatadir = config['userdatadir']
+    if not options.user_hosts and 'user_hosts' in config:
+        options.user_hosts = bool(config['user_hosts'])
     if 'idle_timeout' in config:
         raw = config['idle_timeout']
         try:
@@ -422,4 +431,34 @@ def check_user_key_dir(user_key_dir, tdstream=''):
     if not os.path.isdir(user_key_dir):
         raise ValueError(
             'User key directory {!r} is not a directory'.format(user_key_dir)
+        )
+
+
+def get_user_data_dir_setting(options):
+    return options.userdatadir or options.userkeydir or ''
+
+
+def check_user_data_dir(user_data_dir, tdstream=''):
+    if not user_data_dir:
+        return
+    if not tdstream:
+        logging.warning(
+            'SECURITY WARNING: user_hosts is enabled but no trusted_proxies '
+            'configured. The user header can be spoofed by any client.'
+        )
+    try:
+        os.makedirs(user_data_dir, mode=0o700, exist_ok=True)
+    except PermissionError:
+        raise ValueError(
+            'Cannot create user data directory {!r}: permission denied. '
+            'Create the directory manually or run with appropriate '
+            'permissions.'.format(user_data_dir)
+        )
+    except (FileExistsError, NotADirectoryError):
+        raise ValueError(
+            'User data directory {!r} is not a directory'.format(user_data_dir)
+        )
+    if not os.path.isdir(user_data_dir):
+        raise ValueError(
+            'User data directory {!r} is not a directory'.format(user_data_dir)
         )
