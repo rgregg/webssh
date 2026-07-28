@@ -18,6 +18,7 @@ from webssh.utils import (
     is_valid_encoding
 )
 from webssh.worker import Worker, recycle_worker, clients
+from webssh import user_data
 from webssh import user_keys
 from webssh._version import __version__
 
@@ -708,6 +709,90 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
             'username': username,
             'public_key': public_key
         })
+
+
+class UserDataMixin(object):
+
+    def initialize(self, loop, user_data_dir, user_header,
+                   user_hosts_enabled, allowed_hosts=None, live_config=None):
+        super(UserDataMixin, self).initialize(loop)
+        self.user_data_dir = user_data_dir
+        self.user_header = user_header
+        self.user_hosts_enabled = user_hosts_enabled
+        self.live_config = live_config if live_config is not None else {}
+        self._allowed_hosts = allowed_hosts or []
+
+    @property
+    def allowed_hosts(self):
+        return self.live_config.get('allowed_hosts', self._allowed_hosts) or []
+
+    def check_feature_enabled(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            raise tornado.web.HTTPError(
+                403, 'User host management is not enabled.')
+
+    def get_auth_username(self):
+        username = self.request.headers.get(self.user_header, '')
+        if not username:
+            raise tornado.web.HTTPError(401, 'No authenticated user found.')
+        try:
+            user_keys.sanitize_username(username)
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid username.')
+        return username
+
+    def get_json_body(self, key, default):
+        try:
+            data = json.loads(self.request.body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            raise tornado.web.HTTPError(400, 'Malformed JSON body.')
+        if not isinstance(data, dict):
+            raise tornado.web.HTTPError(400, 'Body must be a JSON object.')
+        return data.get(key, default)
+
+
+class UserHostsHandler(UserDataMixin, MixinHandler,
+                       tornado.web.RequestHandler):
+
+    def get(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        self.write({
+            'admin_hosts': self.allowed_hosts,
+            'user_hosts': user_data.read_hosts(self.user_data_dir, username),
+        })
+
+    def put(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        hosts = self.get_json_body('hosts', [])
+        try:
+            stored = user_data.write_hosts(self.user_data_dir, username, hosts)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        self.write({'user_hosts': stored})
+
+
+class UserSettingsHandler(UserDataMixin, MixinHandler,
+                          tornado.web.RequestHandler):
+
+    def get(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        self.write({
+            'settings': user_data.read_settings(self.user_data_dir, username),
+        })
+
+    def put(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        settings = self.get_json_body('settings', {})
+        try:
+            stored = user_data.write_settings(
+                self.user_data_dir, username, settings)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        self.write({'settings': stored})
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):

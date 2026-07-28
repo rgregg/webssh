@@ -1,6 +1,8 @@
 import json
 import random
+import tempfile
 import threading
+import unittest
 import tornado.websocket
 import tornado.gen
 
@@ -790,3 +792,122 @@ class TestAppWithUnknownEncoding(OtherTestBase):
         dic = json.loads(to_str(response.body))
         self.assert_status_none(dic)
         self.assertEqual(dic['encoding'], 'utf-8')
+
+
+class UserDataTestBase(TestAppBase):
+
+    headers = {'Cookie': '_xsrf=yummy',
+               'X-Authentik-Username': 'alice'}
+    user_hosts = True
+
+    def get_app(self):
+        self.data_dir = tempfile.mkdtemp()
+        options.debug = False
+        options.xsrf = True
+        options.policy = 'warning'
+        options.hostfile = ''
+        options.syshostfile = ''
+        options.tdstream = ''
+        options.origin = 'same'
+        options.user_hosts = self.user_hosts
+        options.userdatadir = self.data_dir
+        options.userheader = 'X-Authentik-Username'
+        self.addCleanup(self._restore_options)
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+    def _restore_options(self):
+        options.user_hosts = False
+        options.userdatadir = ''
+        options.config = ''
+
+
+class TestUserDataApi(UserDataTestBase):
+
+    def put(self, path, payload, headers=None):
+        body = json.dumps(payload)
+        hdrs = dict(headers if headers is not None else self.headers)
+        hdrs['Content-Type'] = 'application/json'
+        hdrs['X-Xsrftoken'] = 'yummy'
+        return self.fetch(path, method='PUT', body=body, headers=hdrs)
+
+    def test_get_hosts_empty(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+        self.assertIn('admin_hosts', data)
+
+    def test_put_then_get_hosts(self):
+        response = self.put('/api/hosts', {'hosts': [{'hostname': 'nas.lan',
+                                                      'port': 2222}]})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['user_hosts']), 1)
+        self.assertEqual(data['user_hosts'][0]['port'], 2222)
+
+    def test_put_invalid_host_returns_400_and_preserves_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts',
+                            {'hosts': [{'hostname': 'bad', 'port': 0}]})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'][0]['hostname'], 'good.lan')
+
+    def test_put_malformed_json_returns_400(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body='{not json',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 400)
+
+    def test_missing_auth_header_returns_401(self):
+        response = self.fetch('/api/hosts', headers={'Cookie': '_xsrf=yummy'})
+        self.assertEqual(response.code, 401)
+
+    def test_invalid_username_returns_400(self):
+        response = self.fetch('/api/hosts', headers={
+            'Cookie': '_xsrf=yummy', 'X-Authentik-Username': '../etc'})
+        self.assertEqual(response.code, 400)
+
+    def test_put_without_xsrf_returns_403(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body=json.dumps({'hosts': []}),
+            headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_settings_round_trip(self):
+        response = self.put('/api/settings', {'settings': {'font_size': 15}})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings']['font_size'], 15)
+
+    def test_settings_drops_secrets(self):
+        self.put('/api/settings',
+                 {'settings': {'font_size': 15, 'password': 'hunter2'}})
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertNotIn('password', data['settings'])
+
+    def test_users_are_isolated(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'alice.lan'}]})
+        response = self.fetch('/api/hosts', headers={
+            'Cookie': '_xsrf=yummy', 'X-Authentik-Username': 'bob'})
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+
+
+class TestUserDataApiDisabled(UserDataTestBase):
+
+    user_hosts = False
+
+    def test_get_hosts_returns_403(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_get_settings_returns_403(self):
+        response = self.fetch('/api/settings', headers=self.headers)
+        self.assertEqual(response.code, 403)
