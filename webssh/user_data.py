@@ -12,6 +12,7 @@ from webssh.utils import is_valid_encoding
 SCHEMA_VERSION = 1
 MAX_HOSTS = 200
 MAX_FIELD_LENGTH = 512
+MAX_CORRUPT_COPIES = 20
 
 HOSTS_FILENAME = 'hosts.json'
 SETTINGS_FILENAME = 'settings.json'
@@ -122,29 +123,62 @@ def validate_settings(settings):
     return result
 
 
+def quarantine_file(path):
+    """Move an unreadable data file aside so a later write cannot destroy it.
+
+    Returns the path the file was moved to, or None if it could not be
+    moved. An existing .corrupt file is never overwritten; a numeric
+    suffix is added instead.
+    """
+    target = path + '.corrupt'
+    suffix = 0
+    while os.path.exists(target):
+        suffix += 1
+        if suffix > MAX_CORRUPT_COPIES:
+            logging.error(
+                'Not quarantining {!r}: too many .corrupt files '
+                'already present'.format(path)
+            )
+            return None
+        target = '{}.corrupt.{}'.format(path, suffix)
+    try:
+        os.rename(path, target)
+    except OSError as exc:
+        logging.error(
+            'Could not quarantine unreadable file {!r}: {}'.format(path, exc))
+        return None
+    return target
+
+
 def _read_json(base_dir, username, filename, payload_key, empty):
     user_dir = get_user_data_dir(base_dir, username)
     path = os.path.join(user_dir, filename)
     if not os.path.isfile(path):
         return empty
+
+    def give_up(reason):
+        # The caller cannot distinguish "no data" from "unreadable data", and
+        # a later save would overwrite the file with the empty payload. Move
+        # the original aside so it stays recoverable.
+        target = quarantine_file(path)
+        logging.error(
+            'Unreadable {} for user {!r}: {}{}'.format(
+                filename, username, reason,
+                '; moved to {!r}'.format(target) if target else ''
+            )
+        )
+        return empty
+
     try:
         with open(path, 'r') as f:
             data = json.load(f)
     except (ValueError, OSError) as exc:
-        logging.warning(
-            'Ignoring unreadable {} for user {!r}: {}'.format(
-                filename, username, exc)
-        )
-        return empty
+        return give_up(exc)
     if not isinstance(data, dict):
-        logging.warning(
-            'Ignoring malformed {} for user {!r}'.format(filename, username))
-        return empty
+        return give_up('payload is not a mapping')
     payload = data.get(payload_key, empty)
     if not isinstance(payload, type(empty)):
-        logging.warning(
-            'Ignoring malformed {} for user {!r}'.format(filename, username))
-        return empty
+        return give_up('{!r} has the wrong type'.format(payload_key))
     return payload
 
 

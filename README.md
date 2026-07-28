@@ -116,7 +116,10 @@ trusted_proxies:
 
 Administrator hosts from `hosts:` remain read-only and always take precedence: if
 a user saves a host with the same hostname and port as an administrator entry,
-the administrator's host key pin is the one used.
+the user's entry is dropped in its entirety and only the administrator's entry
+is used — its host key pins, its username, and its default command. The user's
+colliding entry still appears in their Settings tab, but it has no effect on
+connections.
 
 Requires an auth proxy that sets a username header; without one, `user_hosts`
 has no effect. Set `trusted_proxies` so the header can't be spoofed — without

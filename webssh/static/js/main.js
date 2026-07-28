@@ -406,6 +406,14 @@ jQuery(function($){
         url: '/api/settings', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},
         data: JSON.stringify({settings: user_settings})
+      }).fail(function(xhr) {
+        // Silent failure here means preferences quietly revert on the next
+        // page load (the roamed value wins over localStorage), so make it
+        // visible.
+        var detail = xhr && xhr.status ? String(xhr.status) : 'network error';
+        var message = 'Could not save preferences (' + detail + ').';
+        console.warn(message);
+        show_status_text(message);
       });
     }
   };
@@ -494,11 +502,28 @@ jQuery(function($){
   }
 
 
+  // The username carried by the currently selected host option, if any.
+  function selected_host_username() {
+    var el = $('#hostname');
+    if (!el.is('select')) return '';
+    return el.find('option:selected').attr('data-username') || '';
+  }
+
+
   function restore_items(names) {
     var i, name, value;
 
     for (i = 0; i < names.length; i++) {
       name = names[i];
+      // 'hostname' is restored before 'username' and its change handler
+      // fills #username from the selected host's data-username. That
+      // host-specific username must win over the roamed/stored one, which
+      // would otherwise clobber it here. A free-text hostname (or a host
+      // with no saved username) carries no data-username, so the roamed
+      // last_username still applies there.
+      if (name === 'username' && selected_host_username()) {
+        continue;
+      }
       value = null;
       if (user_hosts_enabled && ROAMING_FIELDS[name]) {
         var roamed = user_settings[ROAMING_FIELDS[name]];
@@ -792,8 +817,9 @@ jQuery(function($){
 
   status.on('click', dismiss_status);
 
-  function log_status(text, to_populate) {
-    console.log(text);
+  // Set the status banner text without touching the waiter or the form
+  // container, so background failures can report themselves at any time.
+  function show_status_text(text) {
     if (text) {
       status.empty()
         .append($('<span>').text(text))
@@ -802,6 +828,11 @@ jQuery(function($){
     } else {
       status.empty().removeClass('visible');
     }
+  }
+
+  function log_status(text, to_populate) {
+    console.log(text);
+    show_status_text(text);
 
     if (to_populate && validated_form_data) {
       populate_form(validated_form_data);

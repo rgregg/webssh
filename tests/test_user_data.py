@@ -180,3 +180,47 @@ class TestRoundTrip(unittest.TestCase):
         write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
         entries = os.listdir(get_user_data_dir(self.base, 'alice'))
         self.assertEqual(sorted(entries), ['hosts.json'])
+
+    def _write_raw(self, filename, text):
+        user_dir = get_user_data_dir(self.base, 'alice')
+        if not os.path.isdir(user_dir):
+            os.makedirs(user_dir, mode=0o700)
+        path = os.path.join(user_dir, filename)
+        with open(path, 'w') as f:
+            f.write(text)
+        return path
+
+    def test_corrupt_file_is_quarantined_not_lost(self):
+        # A corrupt file reads as empty, and the client's next save would
+        # then overwrite it with an empty list. The original must survive.
+        path = self._write_raw('hosts.json', '{not json at all')
+        self.assertEqual(read_hosts(self.base, 'alice'), [])
+        self.assertFalse(os.path.exists(path))
+        with open(path + '.corrupt') as f:
+            self.assertEqual(f.read(), '{not json at all')
+
+        write_hosts(self.base, 'alice', [])
+        with open(path + '.corrupt') as f:
+            self.assertEqual(f.read(), '{not json at all')
+
+    def test_wrong_shape_file_is_quarantined(self):
+        path = self._write_raw(
+            'hosts.json', json.dumps({'version': 1, 'hosts': 'not-a-list'}))
+        self.assertEqual(read_hosts(self.base, 'alice'), [])
+        self.assertTrue(os.path.exists(path + '.corrupt'))
+
+    def test_quarantine_does_not_overwrite_existing_corrupt_file(self):
+        path = self._write_raw('hosts.json', 'first')
+        self.assertEqual(read_hosts(self.base, 'alice'), [])
+        self._write_raw('hosts.json', 'second')
+        self.assertEqual(read_hosts(self.base, 'alice'), [])
+
+        with open(path + '.corrupt') as f:
+            self.assertEqual(f.read(), 'first')
+        with open(path + '.corrupt.1') as f:
+            self.assertEqual(f.read(), 'second')
+
+    def test_corrupt_settings_file_is_quarantined(self):
+        path = self._write_raw('settings.json', 'nope')
+        self.assertEqual(read_settings(self.base, 'alice'), {})
+        self.assertTrue(os.path.exists(path + '.corrupt'))

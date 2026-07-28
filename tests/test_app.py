@@ -1125,3 +1125,73 @@ class TestConnectWithUserHostsDisabled(ConnectHostsTestBase):
     def test_host_in_neither_list_is_rejected(self):
         self.assertIn(b'is not allowed',
                       self.post_hostname('127.0.0.2').body)
+
+
+class TestUserHostKeyIsolation(TestAppBase):
+    """A user's personal host key pin must not leak into other requests.
+
+    Under `policy: reject` with no administrator `hosts:` allowlist,
+    check_allowed_hosts returns early and lookup_hostname is the only gate.
+    If a user's pin lands in the process-wide HostKeys store, that user's
+    private bookmark silently becomes a global allowlist entry.
+    """
+
+    # Any syntactically valid key; it never has to match a real server.
+    user_key = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwZGQmNFADnAAlm5uFLQ'
+                'TrdxqpNxHdgg4JPbB3sR2kr')
+    # Loopback with nothing listening: the allowlist gate runs, then the
+    # connection fails fast instead of hanging on an unroutable address.
+    hostname = '127.0.0.9'
+    port = 7009
+
+    def get_app(self):
+        self.data_dir = tempfile.mkdtemp()
+        options.debug = False
+        options.xsrf = True
+        options.policy = 'reject'
+        # A hostfile is required for the reject policy, and it deliberately
+        # does not contain self.hostname.
+        options.hostfile = make_tests_data_path('known_hosts_example')
+        options.syshostfile = make_tests_data_path('known_hosts_example')
+        options.tdstream = ''
+        options.origin = 'same'
+        options.config = ''
+        options.user_hosts = True
+        options.userdatadir = self.data_dir
+        options.userheader = 'X-Authentik-Username'
+        self.addCleanup(self._restore_options)
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+    def _restore_options(self):
+        options.user_hosts = False
+        options.userdatadir = ''
+        options.hostfile = ''
+        options.syshostfile = ''
+
+    def setUp(self):
+        super(TestUserHostKeyIsolation, self).setUp()
+        from webssh.user_data import write_hosts
+        write_hosts(self.data_dir, 'alice',
+                    [{'hostname': self.hostname, 'port': self.port,
+                      'host_key': [self.user_key]}])
+
+    def post_as(self, username):
+        headers = {'Cookie': '_xsrf=yummy'}
+        if username:
+            headers['X-Authentik-Username'] = username
+        body = ('hostname={}&port={}&username=robey&password=foo'
+                '&_xsrf=yummy').format(self.hostname, self.port)
+        return self.fetch('/', method='POST', body=body, headers=headers)
+
+    def test_alice_reaches_her_own_host(self):
+        # Her own pin satisfies the reject gate for her own request.
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+
+    def test_alice_pin_does_not_leak_to_another_user(self):
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+        self.assertIn(b'is not allowed', self.post_as('bob').body)
+
+    def test_alice_pin_does_not_leak_to_anonymous_request(self):
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+        self.assertIn(b'is not allowed', self.post_as(None).body)

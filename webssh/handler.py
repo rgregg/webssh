@@ -378,10 +378,33 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def get_ssh_client(self):
         ssh = SSHClient()
         ssh._system_host_keys = self.host_keys_settings['system_host_keys']
-        ssh._host_keys = self.host_keys_settings['host_keys']
+        host_keys = self.host_keys_settings['host_keys']
+        if self.user_hosts_enabled:
+            # User-supplied host entries can contribute host key pins, and
+            # paramiko's HostKeys.add() mutates the store in place (replacing
+            # the key of a matching entry). Sharing the process-wide store
+            # would let one user's pin leak into every other request, both
+            # widening the reject-policy allowlist and downgrading the
+            # administrator's pins. Give this request its own deep-enough
+            # copy: new HostKeys, new HostKeyEntry objects, new hostname
+            # lists. The PKey objects themselves are never mutated, only
+            # rebound, so they can be shared.
+            host_keys = self.copy_host_keys(host_keys)
+        ssh._host_keys = host_keys
         ssh._host_keys_filename = self.host_keys_settings['host_keys_filename']
         ssh.set_missing_host_key_policy(self.policy)
         return ssh
+
+    @staticmethod
+    def copy_host_keys(host_keys):
+        """Return a private copy of a paramiko HostKeys store."""
+        private = paramiko.hostkeys.HostKeys()
+        for entry in host_keys._entries:
+            private._entries.append(
+                paramiko.hostkeys.HostKeyEntry(
+                    list(entry.hostnames), entry.key)
+            )
+        return private
 
     def get_privatekey(self):
         name = 'privatekey'
