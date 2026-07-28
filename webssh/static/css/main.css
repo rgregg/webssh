@@ -865,6 +865,10 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* .btn-connect defaults to flex:1 for the connect form's .actions row;
+   in the settings footer that stretches Save across the full width. */
+.settings-footer .btn-connect { flex: none; }
+
 .settings-status { font-size: 0.85em; opacity: 0.75; }
 .settings-status.error { color: var(--danger); opacity: 1; }
 

@@ -872,14 +872,63 @@ jQuery(function($){
   }
 
 
+  function build_hostname_select() {
+    return $('<select>')
+      .attr('id', 'hostname')
+      .attr('name', 'hostname')
+      .addClass('field-input')
+      .attr('required', 'required');
+  }
+
+
+  function build_hostname_input() {
+    return $('<input>')
+      .attr('type', 'text')
+      .attr('id', 'hostname')
+      .attr('name', 'hostname')
+      .addClass('field-input')
+      .attr('placeholder', 'host or host:port')
+      .attr('required', 'required')
+      .val('');
+  }
+
+
   function refresh_host_list() {
     if (!user_hosts_enabled) return;
     $.get('/api/hosts').done(function(data) {
-      var select = $('#hostname');
-      if (!select.is('select')) return;
-      var current = select.val();
-      select.empty();
-      var groups = [data.admin_hosts || [], data.user_hosts || []];
+      var admin_hosts = data.admin_hosts || [];
+      var user_hosts = data.user_hosts || [];
+      var total = admin_hosts.length + user_hosts.length;
+      var el = $('#hostname');
+      var is_select = el.is('select');
+      var current = el.val();
+
+      if (total > 0 && !is_select) {
+        // Upgrade the plain text input into a dropdown now that there is
+        // something to choose from. Built via jQuery DOM construction
+        // (not string-concatenated HTML) to keep this XSS-safe like the
+        // option-building code below.
+        var new_select = build_hostname_select();
+        el.replaceWith(new_select);
+        el = new_select;
+        is_select = true;
+        // Keep this in lockstep with index.html's identical
+        // allowed_hosts-or-user_hosts condition on #port's readonly attr.
+        $('#port').attr('readonly', 'readonly');
+      } else if (total === 0 && is_select) {
+        // Downgrade back to free text; nothing left to choose from and an
+        // empty <select> would leave the user with no way to type a host.
+        var new_input = build_hostname_input();
+        el.replaceWith(new_input);
+        el = new_input;
+        is_select = false;
+        $('#port').removeAttr('readonly');
+      }
+
+      if (!is_select) return;
+
+      el.empty();
+      var groups = [admin_hosts, user_hosts];
       for (var g = 0; g < groups.length; g++) {
         for (var i = 0; i < groups[g].length; i++) {
           var host = groups[g][i];
@@ -891,11 +940,11 @@ jQuery(function($){
             option.attr('data-username', host.username || '');
             option.attr('data-command', host.default_command || '');
           }
-          select.append(option);
+          el.append(option);
         }
       }
-      if (current) select.val(current);
-      select.trigger('change');
+      if (current) el.val(current);
+      el.trigger('change');
     });
   }
 
@@ -1540,8 +1589,12 @@ jQuery(function($){
     update_advanced_summary();
   });
 
-  // Auto-populate port and restore default command when hostname changes
-  $('#hostname').on('change', function() {
+  // Auto-populate port and restore default command when hostname changes.
+  // Delegated on the form (rather than bound directly to #hostname) because
+  // refresh_host_list() may replace the #hostname element outright when it
+  // upgrades between a plain text input and a <select>; a direct binding
+  // would be lost when that happens.
+  $(form_id).on('change', '#hostname', function() {
     var port;
     if ($(this).is('select')) {
       port = $(this).find(':selected').data('port');
