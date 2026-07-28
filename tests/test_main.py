@@ -46,18 +46,26 @@ class TestCheckUserHostsConfiguration(unittest.TestCase):
         ))
 
     def test_enabled_with_data_dir_checks_directory(self):
-        data_dir = tempfile.mkdtemp()
+        parent = tempfile.mkdtemp()
+        data_dir = os.path.join(parent, 'does-not-exist-yet')
         try:
-            # Should not raise, and should not log the "not configured"
-            # warning when a data dir is present (a separate security
-            # warning about missing trusted_proxies is expected instead).
+            # Should not log the "not configured" warning when a data dir
+            # is present (a separate security warning about missing
+            # trusted_proxies is expected instead), and should actually
+            # reach check_user_data_dir -- proven by the directory getting
+            # created, since it does not exist beforehand.
+            self.assertFalse(os.path.isdir(data_dir))
             with self.assertLogs(level='WARNING') as cm:
                 check_user_hosts_configuration(True, data_dir)
             self.assertFalse(any(
-                'not configured' in msg for msg in cm.output
+                'user_hosts is enabled but no userdatadir' in msg
+                for msg in cm.output
             ))
+            self.assertTrue(os.path.isdir(data_dir))
         finally:
-            os.rmdir(data_dir)
+            if os.path.isdir(data_dir):
+                os.rmdir(data_dir)
+            os.rmdir(parent)
 
 
 class TestReloadConfig(unittest.TestCase):

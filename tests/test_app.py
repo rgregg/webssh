@@ -899,6 +899,52 @@ class TestUserDataApi(UserDataTestBase):
         data = json.loads(to_str(response.body))
         self.assertEqual(data['user_hosts'], [])
 
+    def test_put_hosts_missing_key_returns_400_and_preserves_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts', {})
+        self.assertEqual(response.code, 400)
+        response = self.put('/api/hosts', {'hosts_typo': []})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['user_hosts']), 1)
+        self.assertEqual(data['user_hosts'][0]['hostname'], 'good.lan')
+
+    def test_put_hosts_explicit_empty_clears_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts', {'hosts': []})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+
+    def test_put_settings_missing_key_returns_400_and_preserves_data(self):
+        self.put('/api/settings', {'settings': {'font_size': 15}})
+        response = self.put('/api/settings', {})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings']['font_size'], 15)
+
+    def test_put_settings_explicit_empty_clears_data(self):
+        self.put('/api/settings', {'settings': {'font_size': 15}})
+        response = self.put('/api/settings', {'settings': {}})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings'], {})
+
+    def test_put_invalid_host_returns_json_error_with_message(self):
+        response = self.put(
+            '/api/hosts', {'hosts': [{'hostname': 'bad', 'port': 0}]})
+        self.assertEqual(response.code, 400)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
+        self.assertTrue(data['error'])
+        self.assertNotIn('<html', data['error'].lower())
+
 
 class TestUserDataApiDisabled(UserDataTestBase):
 

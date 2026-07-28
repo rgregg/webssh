@@ -741,14 +741,26 @@ class UserDataMixin(object):
             raise tornado.web.HTTPError(400, 'Invalid username.')
         return username
 
-    def get_json_body(self, key, default):
+    def get_json_body(self, key):
         try:
             data = json.loads(self.request.body.decode('utf-8'))
         except (ValueError, UnicodeDecodeError):
             raise tornado.web.HTTPError(400, 'Malformed JSON body.')
         if not isinstance(data, dict):
             raise tornado.web.HTTPError(400, 'Body must be a JSON object.')
-        return data.get(key, default)
+        if key not in data:
+            raise tornado.web.HTTPError(
+                400, 'Missing "{}" key.'.format(key))
+        return data[key]
+
+    def write_error(self, status_code, **kwargs):
+        reason = self._reason
+        exc_info = kwargs.get('exc_info')
+        if exc_info:
+            log_message = getattr(exc_info[1], 'log_message', None)
+            if log_message:
+                reason = log_message
+        self.finish({'error': reason})
 
 
 class UserHostsHandler(UserDataMixin, MixinHandler,
@@ -765,7 +777,7 @@ class UserHostsHandler(UserDataMixin, MixinHandler,
     def put(self):
         self.check_feature_enabled()
         username = self.get_auth_username()
-        hosts = self.get_json_body('hosts', [])
+        hosts = self.get_json_body('hosts')
         try:
             stored = user_data.write_hosts(self.user_data_dir, username, hosts)
         except ValueError as exc:
@@ -786,7 +798,7 @@ class UserSettingsHandler(UserDataMixin, MixinHandler,
     def put(self):
         self.check_feature_enabled()
         username = self.get_auth_username()
-        settings = self.get_json_body('settings', {})
+        settings = self.get_json_body('settings')
         try:
             stored = user_data.write_settings(
                 self.user_data_dir, username, settings)
