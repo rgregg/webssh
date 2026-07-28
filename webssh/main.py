@@ -10,7 +10,7 @@ from tornado.options import options
 from webssh import handler
 from webssh.handler import (
     IndexHandler, WsockHandler, NotFoundHandler, UserKeyHandler,
-    UserHostsHandler, UserSettingsHandler
+    UserHostsHandler, UserSettingsHandler, SettingsPaneHandler
 )
 from webssh.policy import get_policy_class
 from webssh.settings import (
@@ -64,6 +64,7 @@ def make_handlers(loop, options, live_config=None):
         (r'/ws', WsockHandler, dict(loop=loop)),
         (r'/api/hosts', UserHostsHandler, user_data_kwargs),
         (r'/api/settings', UserSettingsHandler, user_data_kwargs),
+        (r'/settings-pane', SettingsPaneHandler, user_data_kwargs),
     ]
 
     if user_key_dir:

@@ -875,6 +875,18 @@ class UserSettingsHandler(UserDataMixin, MixinHandler,
         self.write({'settings': stored})
 
 
+class SettingsPaneHandler(UserDataMixin, MixinHandler,
+                          tornado.web.RequestHandler):
+
+    def get(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            raise tornado.web.HTTPError(404)
+        username = self.get_auth_username()
+        self.render('settings.html',
+                    auth_username=username,
+                    admin_hosts=self.allowed_hosts)
+
+
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
 
     def initialize(self, loop):

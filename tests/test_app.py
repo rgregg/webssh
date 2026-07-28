@@ -1005,6 +1005,12 @@ class TestUserDataApi(UserDataTestBase):
         self.assertNotIn('/', data['error'])
         self.assertTrue(any(secret_path in msg for msg in cm.output))
 
+    def test_settings_pane_returns_fragment(self):
+        response = self.fetch('/settings-pane', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertIn(b'settings-pane', response.body)
+        self.assertNotIn(b'<html', response.body)
+
 
 class TestUserDataApiDisabled(UserDataTestBase):
 
@@ -1017,6 +1023,10 @@ class TestUserDataApiDisabled(UserDataTestBase):
     def test_get_settings_returns_403(self):
         response = self.fetch('/api/settings', headers=self.headers)
         self.assertEqual(response.code, 403)
+
+    def test_settings_pane_returns_404(self):
+        response = self.fetch('/settings-pane', headers=self.headers)
+        self.assertEqual(response.code, 404)
 
 
 class TestEffectiveHosts(unittest.TestCase):
