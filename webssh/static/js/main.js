@@ -390,16 +390,66 @@ jQuery(function($){
 
   // ===================== Utility Functions =====================
 
+  var prefs = {
+    pending: null,
+    timer: null,
+
+    get: function(name) {
+      if (user_hosts_enabled && user_settings[name] !== undefined) {
+        return user_settings[name];
+      }
+      return window.localStorage.getItem(name);
+    },
+
+    set: function(name, value) {
+      window.localStorage.setItem(name, value);
+      if (!user_hosts_enabled) return;
+      user_settings[name] = value;
+      this.schedule();
+    },
+
+    schedule: function() {
+      var self = this;
+      if (this.timer) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(function() { self.flush(); }, 1000);
+    },
+
+    flush: function() {
+      if (!user_hosts_enabled) return;
+      this.timer = null;
+      $.ajax({
+        url: '/api/settings', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({settings: user_settings})
+      });
+    }
+  };
+
+
+  var ROAMING_FIELDS = {
+    hostname: 'last_hostname',
+    username: 'last_username',
+    port: 'last_port'
+  };
+
+
   function store_items(names, data) {
     var i, name, value;
 
     for (i = 0; i < names.length; i++) {
       name = names[i];
       value = data.get(name);
-      if (value){
+      if (value) {
         window.localStorage.setItem(name, value);
+        if (ROAMING_FIELDS[name]) {
+          var stored = (name === 'port') ? window.parseInt(value, 10) : value;
+          if (name !== 'port' || stored > 0) {
+            user_settings[ROAMING_FIELDS[name]] = stored;
+          }
+        }
       }
     }
+    prefs.schedule();
   }
 
 
@@ -408,6 +458,21 @@ jQuery(function($){
     var port = data.get ? data.get('port') : data.port;
     if (!hostname) return null;
     return 'command:' + hostname + ':' + (port || '22');
+  }
+
+
+  function find_user_host(hostname, port) {
+    var match = null;
+    $('#hostname option').each(function() {
+      var option = $(this);
+      // Only user hosts carry data-command; admin hosts never do.
+      if (option.attr('data-command') === undefined) return;
+      if (option.attr('value') !== hostname) return;
+      if (String(option.attr('data-port')) !== String(port || 22)) return;
+      match = option;
+      return false;
+    });
+    return match;
   }
 
 
@@ -420,11 +485,17 @@ jQuery(function($){
     } else {
       window.localStorage.removeItem(key);
     }
+    // Server-side hosts own their own default_command, edited in Settings.
   }
 
 
   function restore_default_command(hostname, port) {
     if (!hostname) return;
+    var option = find_user_host(hostname, port);
+    if (option) {
+      $('#default-command').val(option.attr('data-command') || '');
+      return;
+    }
     var key = get_host_key({hostname: hostname, port: port});
     if (!key) return;
     var command = window.localStorage.getItem(key);
@@ -435,17 +506,93 @@ jQuery(function($){
   function restore_items(names) {
     var i, name, value;
 
-    for (i=0; i < names.length; i++) {
+    for (i = 0; i < names.length; i++) {
       name = names[i];
-      value = window.localStorage.getItem(name);
+      value = null;
+      if (user_hosts_enabled && ROAMING_FIELDS[name]) {
+        var roamed = user_settings[ROAMING_FIELDS[name]];
+        if (roamed !== undefined && roamed !== null && roamed !== '') {
+          value = String(roamed);
+        }
+      }
+      if (value === null) {
+        value = window.localStorage.getItem(name);
+      }
       if (value) {
-        var el = $('#'+name);
+        var el = $('#' + name);
         el.val(value);
         if (name === 'hostname' && el.is('select')) {
           el.trigger('change');
         }
       }
     }
+  }
+
+
+  function migrate_local_commands() {
+    if (!user_hosts_enabled) return;
+    if (window.localStorage.getItem('webssh_migrated_commands')) return;
+    if (migrate_local_commands.running) return;
+    migrate_local_commands.running = true;
+
+    var found = [];
+    for (var i = 0; i < window.localStorage.length; i++) {
+      var key = window.localStorage.key(i);
+      if (key && key.indexOf('command:') === 0) {
+        var parts = key.split(':');
+        found.push({
+          hostname: parts[1],
+          port: window.parseInt(parts[2], 10) || 22,
+          command: window.localStorage.getItem(key)
+        });
+      }
+    }
+    if (!found.length) {
+      window.localStorage.setItem('webssh_migrated_commands', '1');
+      migrate_local_commands.running = false;
+      return;
+    }
+    $.get('/api/hosts').done(function(data) {
+      var hosts = data.user_hosts || [];
+      var index = {};
+      for (var i = 0; i < hosts.length; i++) {
+        index[hosts[i].hostname + ':' + hosts[i].port] = hosts[i];
+      }
+      var changed = false;
+      for (var j = 0; j < found.length; j++) {
+        var match = index[found[j].hostname + ':' + found[j].port];
+        if (match && !match.default_command) {
+          match.default_command = found[j].command;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        window.localStorage.setItem('webssh_migrated_commands', '1');
+        return;
+      }
+      var payload = [];
+      for (var k = 0; k < hosts.length; k++) {
+        payload.push({
+          name: hosts[k].name, hostname: hosts[k].hostname,
+          port: hosts[k].port, host_key: hosts[k].host_keys || [],
+          username: hosts[k].username || '',
+          default_command: hosts[k].default_command || ''
+        });
+      }
+      $.ajax({
+        url: '/api/hosts', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({hosts: payload})
+      }).done(function() {
+        window.localStorage.setItem('webssh_migrated_commands', '1');
+        refresh_host_list();
+      });
+    }).always(function() {
+      migrate_local_commands.running = false;
+    });
+    // Note: on GET failure, neither the migrated-flag nor a host PUT ever
+    // happens here -- .fail() is intentionally not handled, so nothing is
+    // written and the migration is simply retried on a future page load.
   }
 
 
@@ -994,19 +1141,19 @@ jQuery(function($){
           encoding = 'utf-8',
           decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
           termOptions = {
-            cursorBlink: true,
+            cursorBlink: user_settings.cursor_blink !== false,
             theme: {
-              background: url_opts_data.bgcolor || 'black',
-              foreground: url_opts_data.fontcolor || 'white',
-              cursor: url_opts_data.cursor || url_opts_data.fontcolor || 'white'
+              background: url_opts_data.bgcolor || user_settings.background || 'black',
+              foreground: url_opts_data.fontcolor || user_settings.foreground || 'white',
+              cursor: url_opts_data.cursor || user_settings.cursor ||
+                      url_opts_data.fontcolor || user_settings.foreground || 'white'
             }
           };
 
-      if (url_opts_data.fontsize) {
-        var fontsize = window.parseInt(url_opts_data.fontsize);
-        if (fontsize && fontsize > 0) {
-          termOptions.fontSize = fontsize;
-        }
+      var fontsize = window.parseInt(
+        url_opts_data.fontsize || user_settings.font_size, 10);
+      if (fontsize && fontsize > 0) {
+        termOptions.fontSize = fontsize;
       }
 
       var term = new window.Terminal(termOptions);
@@ -1842,7 +1989,20 @@ jQuery(function($){
 
   if (url_opts_data.term) {
     term_type.val(url_opts_data.term);
+  } else if (user_settings.term) {
+    term_type.val(user_settings.term);
   }
+
+  if (user_settings.key_source === 'stored' && user_key_enabled) {
+    $('#key_source_stored').prop('checked', true).trigger('change');
+  }
+
+  // One-time upgrade of any locally-stored per-host default commands onto
+  // the user's server-side host records. Safe to call before or after
+  // restore_default_command below; it only ever reads localStorage and the
+  // freshly-fetched /api/hosts list, and never PUTs a list it did not
+  // itself successfully fetch.
+  migrate_local_commands();
 
   // Create the first tab
   tabManager.createTab();
