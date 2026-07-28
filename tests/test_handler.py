@@ -327,6 +327,9 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
     def _make_handler(self, allowed_hosts=None):
         handler_obj = Mock(spec=IndexHandler)
         handler_obj.allowed_hosts = allowed_hosts or []
+        handler_obj.get_user_hosts = lambda: []
+        handler_obj.get_effective_hosts = lambda: \
+            IndexHandler.get_effective_hosts(handler_obj)
         handler_obj.check_allowed_hosts = lambda h, p: \
             IndexHandler.check_allowed_hosts(handler_obj, h, p)
         return handler_obj

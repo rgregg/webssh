@@ -344,6 +344,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
                    user_key_dir='', user_header='X-Authentik-Username',
+                   user_data_dir='', user_hosts_enabled=False,
                    live_config=None):
         super(IndexHandler, self).initialize(loop)
         self.live_config = live_config if live_config is not None else {}
@@ -354,6 +355,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             'allowed_hosts', allowed_hosts) or []
         self.user_key_dir = user_key_dir
         self.user_header = user_header
+        self.user_data_dir = user_data_dir
+        self.user_hosts_enabled = user_hosts_enabled
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
@@ -421,10 +424,30 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                             hostname, port)
                     )
 
+    def get_user_hosts(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            return []
+        username = self.request.headers.get(self.user_header, '')
+        if not username:
+            return []
+        try:
+            return user_data.read_hosts(self.user_data_dir, username)
+        except ValueError:
+            return []
+
+    def get_effective_hosts(self):
+        admin = self.allowed_hosts
+        seen = set((h['hostname'], h['port']) for h in admin)
+        merged = list(admin)
+        for host in self.get_user_hosts():
+            if (host['hostname'], host['port']) not in seen:
+                merged.append(host)
+        return merged
+
     def check_allowed_hosts(self, hostname, port):
         if not self.allowed_hosts:
             return
-        for host in self.allowed_hosts:
+        for host in self.get_effective_hosts():
             if host['hostname'] == hostname and host['port'] == port:
                 return
         raise tornado.web.HTTPError(
@@ -432,9 +455,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         )
 
     def load_configured_host_key(self, hostname, port):
-        if not self.allowed_hosts:
-            return
-        for host in self.allowed_hosts:
+        for host in self.get_effective_hosts():
             if host['hostname'] == hostname and host['port'] == port:
                 for key_str in host.get('host_keys', []):
                     self._add_host_key(hostname, port, key_str)
@@ -617,12 +638,24 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             except ValueError:
                 pass
 
+        user_hosts = self.get_user_hosts()
+        user_settings = {}
+        if self.user_hosts_enabled and auth_username:
+            try:
+                user_settings = user_data.read_settings(
+                    self.user_data_dir, auth_username)
+            except ValueError:
+                user_settings = {}
+
         self.render('index.html', debug=self.debug, font=self.font,
                     allowed_hosts=self.allowed_hosts,
                     user_key_enabled=user_key_enabled,
                     has_stored_key=has_key,
                     public_key=public_key,
                     auth_username=auth_username,
+                    user_hosts_enabled=self.user_hosts_enabled,
+                    user_hosts=user_hosts,
+                    user_settings=user_settings,
                     version=__version__)
 
     @tornado.gen.coroutine

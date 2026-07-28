@@ -54,6 +54,8 @@ def make_handlers(loop, options, live_config=None):
         allowed_hosts=allowed_hosts,
         user_key_dir=user_key_dir,
         user_header=user_header,
+        user_data_dir=user_data_dir,
+        user_hosts_enabled=user_hosts_enabled,
         live_config=live_config
     )
 

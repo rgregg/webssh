@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import tempfile
 import threading
@@ -1016,3 +1017,101 @@ class TestUserDataApiDisabled(UserDataTestBase):
     def test_get_settings_returns_403(self):
         response = self.fetch('/api/settings', headers=self.headers)
         self.assertEqual(response.code, 403)
+
+
+class TestEffectiveHosts(unittest.TestCase):
+    """Unit-level checks of the admin/user host merge."""
+
+    def _handler(self, admin_hosts, user_hosts):
+        from webssh.handler import IndexHandler
+        h = IndexHandler.__new__(IndexHandler)
+        h.allowed_hosts = admin_hosts
+        h._user_hosts = user_hosts
+        h.get_user_hosts = lambda: h._user_hosts
+        return h
+
+    def test_admin_host_wins_collision(self):
+        from webssh.handler import IndexHandler
+        admin = [{'name': 'prod', 'hostname': '10.0.1.5', 'port': 22,
+                  'host_keys': ['ssh-ed25519 AAAAadmin']}]
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 22,
+                 'host_keys': ['ssh-ed25519 AAAAuser']}]
+        h = self._handler(admin, user)
+        effective = IndexHandler.get_effective_hosts(h)
+        self.assertEqual(len(effective), 1)
+        self.assertEqual(effective[0]['host_keys'], ['ssh-ed25519 AAAAadmin'])
+
+    def test_different_port_is_not_a_collision(self):
+        from webssh.handler import IndexHandler
+        admin = [{'name': 'prod', 'hostname': '10.0.1.5', 'port': 22,
+                  'host_keys': []}]
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 2222,
+                 'host_keys': []}]
+        h = self._handler(admin, user)
+        self.assertEqual(len(IndexHandler.get_effective_hosts(h)), 2)
+
+    def test_user_hosts_appended(self):
+        from webssh.handler import IndexHandler
+        h = self._handler([{'name': 'a', 'hostname': 'a.com', 'port': 22,
+                            'host_keys': []}],
+                          [{'name': 'b', 'hostname': 'b.com', 'port': 22,
+                            'host_keys': []}])
+        names = [x['name'] for x in IndexHandler.get_effective_hosts(h)]
+        self.assertEqual(names, ['a', 'b'])
+
+
+class ConnectHostsTestBase(UserDataTestBase):
+    """Admin allowlist that deliberately excludes the user's saved host."""
+
+    admin_hostname = '10.9.9.9'
+
+    def setUp(self):
+        import yaml
+        fd, self.config_path = tempfile.mkstemp(suffix='.yaml')
+        with os.fdopen(fd, 'w') as f:
+            yaml.safe_dump({'hosts': [
+                {'name': 'other', 'hostname': self.admin_hostname,
+                 'port': 22}]}, f)
+        options.config = self.config_path
+        super(ConnectHostsTestBase, self).setUp()
+        from webssh.user_data import write_hosts
+        write_hosts(self.data_dir, 'alice',
+                    [{'hostname': '127.0.0.1', 'port': 7000}])
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        super(ConnectHostsTestBase, self).tearDown()
+
+    def post_hostname(self, hostname):
+        body = ('hostname={}&port=7000&username=robey&password=foo'
+                 '&_xsrf=yummy').format(hostname)
+        return self.fetch('/', method='POST', body=body,
+                          headers=self.headers)
+
+
+class TestConnectWithUserHostsEnabled(ConnectHostsTestBase):
+
+    user_hosts = True
+
+    def test_user_host_passes_the_allowlist(self):
+        # The allowlist must not reject it. The SSH connection itself will
+        # fail (no server on that port), which is fine and not what we assert.
+        self.assertNotIn(b'is not allowed',
+                         self.post_hostname('127.0.0.1').body)
+
+    def test_host_in_neither_list_is_rejected(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
+
+
+class TestConnectWithUserHostsDisabled(ConnectHostsTestBase):
+
+    user_hosts = False
+
+    def test_user_host_is_rejected_when_feature_disabled(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.1').body)
+
+    def test_host_in_neither_list_is_rejected(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
