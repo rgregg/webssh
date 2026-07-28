@@ -1158,7 +1158,8 @@ is supplied the same way production does it — through a config file — becaus
 `options.config`:
 
 ```python
-class TestConnectWithUserHosts(UserDataTestBase):
+class ConnectHostsTestBase(UserDataTestBase):
+    """Admin allowlist that deliberately excludes the user's saved host."""
 
     admin_hostname = '10.9.9.9'
 
@@ -1177,39 +1178,46 @@ class TestConnectWithUserHosts(UserDataTestBase):
 
     def tearDown(self):
         os.unlink(self.config_path)
-        super(TestConnectWithUserHosts, self).tearDown()
+        super(ConnectHostsTestBase, self).tearDown()
+
+    def post_hostname(self, hostname):
+        body = ('hostname={}&port=7000&username=robey&password=foo'
+                '&_xsrf=yummy').format(hostname)
+        return self.fetch('/', method='POST', body=body,
+                          headers=self.headers)
+
+
+class TestConnectWithUserHostsEnabled(ConnectHostsTestBase):
+
+    user_hosts = True
 
     def test_user_host_passes_the_allowlist(self):
-        body = ('hostname=127.0.0.1&port=7000&username=robey&password=foo'
-                '&_xsrf=yummy')
-        response = self.fetch('/', method='POST', body=body,
-                              headers=self.headers)
         # The allowlist must not reject it. The SSH connection itself will
         # fail (no server on that port), which is fine and not what we assert.
-        self.assertNotIn(b'is not allowed', response.body)
+        self.assertNotIn(b'is not allowed',
+                         self.post_hostname('127.0.0.1').body)
 
     def test_host_in_neither_list_is_rejected(self):
-        body = ('hostname=127.0.0.2&port=7000&username=robey&password=foo'
-                '&_xsrf=yummy')
-        response = self.fetch('/', method='POST', body=body,
-                              headers=self.headers)
-        self.assertIn(b'is not allowed', response.body)
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
 
 
-class TestConnectWithUserHostsDisabled(TestConnectWithUserHosts):
+class TestConnectWithUserHostsDisabled(ConnectHostsTestBase):
 
     user_hosts = False
 
     def test_user_host_is_rejected_when_feature_disabled(self):
-        body = ('hostname=127.0.0.1&port=7000&username=robey&password=foo'
-                '&_xsrf=yummy')
-        response = self.fetch('/', method='POST', body=body,
-                              headers=self.headers)
-        self.assertIn(b'is not allowed', response.body)
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.1').body)
 
-    def test_user_host_passes_the_allowlist(self):
-        pass  # inverted above; the enabled-case assertion does not apply
+    def test_host_in_neither_list_is_rejected(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
 ```
+
+Note the shape: a shared base holds the fixture, and each concrete class
+asserts its own behavior. No test inherits an assertion that does not apply to
+it, and no test body is empty.
 
 `tests/test_app.py` imports `json` but not `os`, so add `import os` too (Task 4
 already added `tempfile` and `unittest`).
