@@ -67,3 +67,6 @@ known_hosts
 
 data/
 .venv/
+
+# SDD scratch workspace
+.superpowers/
