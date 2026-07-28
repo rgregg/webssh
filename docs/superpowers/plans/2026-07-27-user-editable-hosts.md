@@ -56,7 +56,8 @@ class TestParseHostEntry(unittest.TestCase):
 
     def test_full_entry_with_string_host_key(self):
         from webssh.settings import parse_host_entry
-        key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh'
+        key = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzd'
+               'Knd2MlrZ2sAs5qF7XMRF')
         host = parse_host_entry({
             'name': 'Prod', 'hostname': '10.0.1.5', 'port': 2222,
             'host_key': key,
@@ -211,7 +212,8 @@ from webssh.user_data import (
 )
 
 
-VALID_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh'
+VALID_KEY = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzd'
+             'Knd2MlrZ2sAs5qF7XMRF')
 
 
 class TestGetUserDataDir(unittest.TestCase):
