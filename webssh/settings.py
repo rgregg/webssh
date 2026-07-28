@@ -283,6 +283,41 @@ def _validate_host_key(host_key, hostname):
         )
 
 
+def parse_host_entry(entry):
+    if not isinstance(entry, dict):
+        raise ValueError('Each host entry must be a mapping')
+    if 'hostname' not in entry:
+        raise ValueError('Each host entry must have a "hostname" field')
+    raw_keys = entry.get('host_key', [])
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys] if raw_keys else []
+    elif not isinstance(raw_keys, list):
+        raise ValueError(
+            'host_key for {!r} must be a string or list'.format(
+                entry['hostname'])
+        )
+    for k in raw_keys:
+        _validate_host_key(k, entry['hostname'])
+    try:
+        port = int(entry.get('port', 22))
+    except (TypeError, ValueError):
+        raise ValueError(
+            'Invalid port {!r} for host {!r}; must be 1-65535'.format(
+                entry.get('port'), entry['hostname'])
+        )
+    if port < 1 or port > 65535:
+        raise ValueError(
+            'Invalid port {!r} for host {!r}; must be 1-65535'.format(
+                port, entry['hostname'])
+        )
+    return {
+        'name': entry.get('name', entry['hostname']),
+        'hostname': entry['hostname'],
+        'port': port,
+        'host_keys': raw_keys,
+    }
+
+
 def parse_allowed_hosts(data):
     if 'hosts' not in data:
         return []
@@ -293,37 +328,7 @@ def parse_allowed_hosts(data):
             'Config file "hosts" must be a non-empty list'
         )
 
-    result = []
-    for entry in hosts:
-        if not isinstance(entry, dict):
-            raise ValueError('Each host entry must be a mapping')
-        if 'hostname' not in entry:
-            raise ValueError('Each host entry must have a "hostname" field')
-        raw_keys = entry.get('host_key', [])
-        if isinstance(raw_keys, str):
-            raw_keys = [raw_keys] if raw_keys else []
-        elif not isinstance(raw_keys, list):
-            raise ValueError(
-                'host_key for {!r} must be a string or list'.format(
-                    entry['hostname'])
-            )
-        for k in raw_keys:
-            _validate_host_key(k, entry['hostname'])
-        port = int(entry.get('port', 22))
-        if port < 1 or port > 65535:
-            raise ValueError(
-                'Invalid port {!r} for host {!r}; must be 1-65535'.format(
-                    port, entry['hostname'])
-            )
-        host = {
-            'name': entry.get('name', entry['hostname']),
-            'hostname': entry['hostname'],
-            'port': port,
-            'host_keys': raw_keys,
-        }
-        result.append(host)
-
-    return result
+    return [parse_host_entry(entry) for entry in hosts]
 
 
 def load_allowed_hosts(filepath):

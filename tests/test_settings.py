@@ -460,3 +460,55 @@ class TestSettings(unittest.TestCase):
                 self.assertIn('permission denied', str(ctx.exception))
             finally:
                 os.chmod(parent, 0o700)
+
+
+class TestParseHostEntry(unittest.TestCase):
+
+    def test_minimal_entry(self):
+        from webssh.settings import parse_host_entry
+        host = parse_host_entry({'hostname': 'example.com'})
+        self.assertEqual(host, {
+            'name': 'example.com',
+            'hostname': 'example.com',
+            'port': 22,
+            'host_keys': [],
+        })
+
+    def test_full_entry_with_string_host_key(self):
+        from webssh.settings import parse_host_entry
+        key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzdKnd2MlrZ2sAs5qF7XMRF'
+        host = parse_host_entry({
+            'name': 'Prod', 'hostname': '10.0.1.5', 'port': 2222,
+            'host_key': key,
+        })
+        self.assertEqual(host['name'], 'Prod')
+        self.assertEqual(host['port'], 2222)
+        self.assertEqual(host['host_keys'], [key])
+
+    def test_missing_hostname(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({'name': 'nope'})
+
+    def test_not_a_mapping(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry('example.com')
+
+    def test_invalid_port(self):
+        from webssh.settings import parse_host_entry
+        for port in [0, 70000, -1]:
+            with self.assertRaises(ValueError):
+                parse_host_entry({'hostname': 'a.com', 'port': port})
+
+    def test_invalid_host_key_type(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({
+                'hostname': 'a.com', 'host_key': 'ssh-dss AAAAB3Nz'})
+
+    def test_invalid_host_key_base64(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({
+                'hostname': 'a.com', 'host_key': 'ssh-ed25519 not!base64!'})
