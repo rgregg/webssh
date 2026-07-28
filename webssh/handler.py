@@ -778,10 +778,23 @@ class UserHostsHandler(UserDataMixin, MixinHandler,
         self.check_feature_enabled()
         username = self.get_auth_username()
         hosts = self.get_json_body('hosts')
+        # Validate first: ValueErrors from validation describe the
+        # caller's own input (bad hostname, bad port, ...) and are safe
+        # to return to the client as-is.
+        try:
+            user_data.validate_hosts(hosts)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        # A failure here is about server state (disk permissions, a bad
+        # data directory, ...), never the client's input. That detail
+        # must never reach the client -- log it and return a generic 500.
         try:
             stored = user_data.write_hosts(self.user_data_dir, username, hosts)
         except ValueError as exc:
-            raise tornado.web.HTTPError(400, str(exc))
+            logging.error(
+                'Failed to write hosts for user {!r}: {}'.format(
+                    username, exc))
+            raise tornado.web.HTTPError(500, 'Failed to save hosts.')
         self.write({'user_hosts': stored})
 
 
@@ -799,11 +812,23 @@ class UserSettingsHandler(UserDataMixin, MixinHandler,
         self.check_feature_enabled()
         username = self.get_auth_username()
         settings = self.get_json_body('settings')
+        # Validate first: ValueErrors from validation describe the
+        # caller's own input and are safe to return to the client as-is.
+        try:
+            user_data.validate_settings(settings)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        # A failure here is about server state, never the client's input.
+        # That detail must never reach the client -- log it and return a
+        # generic 500.
         try:
             stored = user_data.write_settings(
                 self.user_data_dir, username, settings)
         except ValueError as exc:
-            raise tornado.web.HTTPError(400, str(exc))
+            logging.error(
+                'Failed to write settings for user {!r}: {}'.format(
+                    username, exc))
+            raise tornado.web.HTTPError(500, 'Failed to save settings.')
         self.write({'settings': stored})
 
 

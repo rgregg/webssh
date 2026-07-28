@@ -3,6 +3,7 @@ import random
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import tornado.websocket
 import tornado.gen
 
@@ -877,6 +878,10 @@ class TestUserDataApi(UserDataTestBase):
             '/api/hosts', method='PUT', body=json.dumps({'hosts': []}),
             headers=self.headers)
         self.assertEqual(response.code, 403)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
 
     def test_settings_round_trip(self):
         response = self.put('/api/settings', {'settings': {'font_size': 15}})
@@ -944,6 +949,60 @@ class TestUserDataApi(UserDataTestBase):
         self.assertIn('error', data)
         self.assertTrue(data['error'])
         self.assertNotIn('<html', data['error'].lower())
+        # The message describes the caller's own input, not server state.
+        self.assertIn('port', data['error'].lower())
+
+    def test_put_hosts_write_failure_returns_500_without_leaking_path(self):
+        secret_path = '/very/secret/user/data/dir'
+        message = (
+            'Cannot create data directory for user {!r}: permission '
+            'denied. Check ownership of {!r}'.format('alice', secret_path)
+        )
+
+        def boom(base_dir, username, hosts):
+            raise ValueError(message)
+
+        with mock.patch('webssh.user_data.write_hosts', side_effect=boom):
+            with self.assertLogs(level='ERROR') as cm:
+                response = self.put(
+                    '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
+
+        self.assertEqual(response.code, 500)
+        body = to_str(response.body)
+        self.assertNotIn(secret_path, body)
+        self.assertNotIn(self.data_dir, body)
+        data = json.loads(body)
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Failed to save hosts.')
+        self.assertNotIn('/', data['error'])
+        # The real detail, including the path, must still be logged
+        # server-side for operators to diagnose.
+        self.assertTrue(any(secret_path in msg for msg in cm.output))
+
+    def test_put_settings_write_failure_returns_500_without_leaking_path(self):
+        secret_path = '/very/secret/user/data/dir'
+        message = (
+            'Cannot create data directory for user {!r}: permission '
+            'denied. Check ownership of {!r}'.format('alice', secret_path)
+        )
+
+        def boom(base_dir, username, settings):
+            raise ValueError(message)
+
+        with mock.patch('webssh.user_data.write_settings', side_effect=boom):
+            with self.assertLogs(level='ERROR') as cm:
+                response = self.put(
+                    '/api/settings', {'settings': {'font_size': 15}})
+
+        self.assertEqual(response.code, 500)
+        body = to_str(response.body)
+        self.assertNotIn(secret_path, body)
+        self.assertNotIn(self.data_dir, body)
+        data = json.loads(body)
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Failed to save settings.')
+        self.assertNotIn('/', data['error'])
+        self.assertTrue(any(secret_path in msg for msg in cm.output))
 
 
 class TestUserDataApiDisabled(UserDataTestBase):
