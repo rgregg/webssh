@@ -440,7 +440,17 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         seen = set((h['hostname'], h['port']) for h in admin)
         merged = list(admin)
         for host in self.get_user_hosts():
-            if (host['hostname'], host['port']) not in seen:
+            if not isinstance(host, dict):
+                logging.warning(
+                    'Skipping malformed user host entry: {!r}'.format(host))
+                continue
+            hostname = host.get('hostname')
+            port = host.get('port')
+            if hostname is None or port is None:
+                logging.warning(
+                    'Skipping malformed user host entry: {!r}'.format(host))
+                continue
+            if (hostname, port) not in seen:
                 merged.append(host)
         return merged
 

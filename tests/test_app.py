@@ -1084,7 +1084,7 @@ class ConnectHostsTestBase(UserDataTestBase):
 
     def post_hostname(self, hostname):
         body = ('hostname={}&port=7000&username=robey&password=foo'
-                 '&_xsrf=yummy').format(hostname)
+                '&_xsrf=yummy').format(hostname)
         return self.fetch('/', method='POST', body=body,
                           headers=self.headers)
 
