@@ -17,7 +17,7 @@ of preferences, both stored on the server so they roam across sessions.
 
 ## Scope
 
-In scope: per-user host records, per-user preferences, a settings page, and the
+In scope: per-user host records, per-user preferences, a settings tab, and the
 server-side storage and API behind them.
 
 Out of scope: administrator editing of `config.yaml` through the web UI, sharing
@@ -43,8 +43,8 @@ The feature is active only when all three conditions hold:
 2. a data directory resolves (`userdatadir`, or `userkeydir` as fallback), and
 3. the request carries a valid username in the configured header.
 
-When inactive, `/settings` returns 404, the APIs return 403, and the settings
-link is not rendered. Behavior for existing deployments is unchanged.
+When inactive, `/settings-pane` returns 404, the APIs return 403, and the gear
+control is not rendered. Behavior for existing deployments is unchanged.
 
 `userdatadir` defaults to `userkeydir` so that a deployment already using
 per-user keys needs no new configuration; the JSON files land in the same
@@ -137,13 +137,36 @@ protection applies, since `xsrf_cookies` is enabled by default.
 
 `PUT` validates every entry before writing anything, so a rejected request leaves
 stored data untouched. Full-list replacement rather than per-host `POST` and
-`DELETE` matches a settings page with a Save button and keeps the server free of
+`DELETE` matches a settings pane with a Save button and keeps the server free of
 any opinion about ordering.
 
-## Settings Page
+## Settings Tab
 
-A new `SettingsHandler` serves `/settings` from a `settings.html` template styled
-with the existing `main.css` tokens. Three tabs:
+Settings open as a tab inside the existing WebSSH tab bar, not as a browser
+navigation. The application already has a tab system, and reusing it means
+opening settings never disturbs a live terminal session.
+
+`tabManager.createTab` gains a `kind` field, `"terminal"` or `"settings"`,
+defaulting to terminal. The existing machinery needs little change: `createTab`
+already builds a generic pane div, and `activateTab` and `closeTab` already guard
+on `tab.term` and `tab.sock` being null, which is exactly the state a settings tab
+is in. Three adjustments:
+
+- `activateTab` branches on `kind === "settings"`: hide the shared connect form,
+  as it does for a connected terminal, but skip the fit-and-focus path and set
+  the page title to "Settings".
+- `closeTab`, when the last tab closes, creates a terminal tab rather than
+  whatever kind was just closed.
+- A settings tab is a singleton. The gear control focuses the existing settings
+  tab if one is open and creates one otherwise.
+
+A new `SettingsHandler` serves `/settings-pane`, a `settings.html` Tornado
+template rendering an HTML *fragment* — no `<html>` or `<body>` wrapper — which
+the client injects into the tab's pane. Keeping the markup in a template matches
+how `index.html` is built and avoids introducing a client-side templating layer.
+The endpoint is internal and not meant to be navigated to directly.
+
+The pane has three sub-sections:
 
 **Hosts.** Administrator hosts first, greyed and badged read-only, then the
 user's editable entries. Each editable row supports add, edit, and delete, with a
@@ -158,10 +181,9 @@ still override stored values, so existing links keep working.
 **Connection.** Default encoding, terminal type, and preferred key source
 (stored or uploaded).
 
-The header link opens the page with `target="_blank"`. A separate page would
-otherwise tear down live terminal sessions on navigation; opening in a new
-browser tab removes that cost. The main page refetches its host list on
-`window.focus` so edits appear without a manual reload.
+Because the pane lives in the same document as the connect form, saving changes
+calls a `refresh_host_list()` function directly. No cross-document coordination,
+no polling, and no reload is needed.
 
 ## Client Changes
 
@@ -169,8 +191,9 @@ In `main.js`, `store_items` / `restore_items` and `store_default_command` /
 `restore_default_command` become thin wrappers over a small `prefs` object. It
 hydrates from a blob that `IndexHandler.get` embeds in the rendered page, which
 avoids an extra round trip before the first connect, and issues debounced `PUT`
-requests to `/api/settings` on change. The settings page, being a separate
-document, uses the `GET` endpoints instead. `localStorage` is retained as the offline fallback, and as
+requests to `/api/settings` on change. The settings pane shares this same
+document and therefore the same `prefs` object; it reads current values from it
+rather than refetching. `localStorage` is retained as the offline fallback, and as
 the sole store when the feature is disabled.
 
 Per-host default commands move from the `command:<hostname>:<port>` keys onto the
@@ -199,7 +222,14 @@ Additions to `tests/test_handler.py`:
 - With `user_hosts: false`, a user-added host is still rejected by the allowlist
 
 Additions to `tests/test_settings.py` for `userdatadir` resolution, including the
-fallback to `userkeydir`.
+fallback to `userkeydir`, and a `test_app.py` case asserting `/settings-pane`
+returns 404 when the feature is off and a fragment when it is on.
+
+The repository has no JavaScript test harness, so the tab behavior is verified
+manually: opening settings while a terminal is connected leaves that session
+alive, the gear focuses rather than duplicates an open settings tab, closing the
+last tab yields a terminal tab, and saving a host updates the connect form's host
+dropdown without a reload.
 
 Note for whoever runs the suite: `settings.py` loads the real
 `~/.ssh/known_hosts`, so a malformed line in a developer's own file fails 53
