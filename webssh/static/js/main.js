@@ -391,22 +391,7 @@ jQuery(function($){
   // ===================== Utility Functions =====================
 
   var prefs = {
-    pending: null,
     timer: null,
-
-    get: function(name) {
-      if (user_hosts_enabled && user_settings[name] !== undefined) {
-        return user_settings[name];
-      }
-      return window.localStorage.getItem(name);
-    },
-
-    set: function(name, value) {
-      window.localStorage.setItem(name, value);
-      if (!user_hosts_enabled) return;
-      user_settings[name] = value;
-      this.schedule();
-    },
 
     schedule: function() {
       var self = this;
@@ -493,8 +478,14 @@ jQuery(function($){
     if (!hostname) return;
     var option = find_user_host(hostname, port);
     if (option) {
-      $('#default-command').val(option.attr('data-command') || '');
-      return;
+      var host_command = option.attr('data-command');
+      if (host_command) {
+        $('#default-command').val(host_command);
+        return;
+      }
+      // An empty default_command means "no host-specific override" -- fall
+      // through to the localStorage value below rather than blanking
+      // whatever the user has set locally for this host.
     }
     var key = get_host_key({hostname: hostname, port: port});
     if (!key) return;
@@ -909,6 +900,16 @@ jQuery(function($){
     }
     settings.cursor_blink = pane.find('#set-cursor-blink').is(':checked');
     settings.key_source = pane.find('#set-key-source').val();
+    // The settings PUT replaces the whole stored blob, and this pane only
+    // knows about appearance keys. Carry over the roamed last-used values
+    // (and only those known keys, to keep the secrets invariant structural)
+    // so a Save here doesn't wipe them out for the user on another machine.
+    for (var roam_name in ROAMING_FIELDS) {
+      var roam_key = ROAMING_FIELDS[roam_name];
+      if (user_settings[roam_key] !== undefined) {
+        settings[roam_key] = user_settings[roam_key];
+      }
+    }
     return settings;
   }
 
@@ -967,6 +968,16 @@ jQuery(function($){
       if (collected.error) {
         settings_status(pane, collected.error, true);
         return;
+      }
+      // Cancel any pending debounced flush from prefs.schedule() (armed by
+      // a recent connect via store_items). That flush closes over the
+      // outer user_settings binding and would otherwise race this save's
+      // own PUT: if it fires while this save is still in flight, it can
+      // land at the server with the pre-save object and silently revert
+      // whatever this pane just saved.
+      if (prefs.timer) {
+        window.clearTimeout(prefs.timer);
+        prefs.timer = null;
       }
       settings_status(pane, 'Saving...');
       var hosts = collected.hosts;
