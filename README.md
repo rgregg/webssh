@@ -195,3 +195,14 @@ Run tests:
 pip install pytest
 python -m pytest tests
 ```
+
+Browser client tests require Node 20+ and install nothing:
+
+```bash
+node --test tests/js/*.test.js
+```
+
+They cover the pure decision logic in `webssh/static/js/user-hosts.js` — host
+payload construction, port validation, settings merging, preference precedence,
+and the legacy command migration. DOM behaviour in `main.js` (tab lifecycle, the
+hostname input/select upgrade, asynchronous save sequencing) is not covered.

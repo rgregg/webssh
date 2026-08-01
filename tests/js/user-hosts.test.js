@@ -371,3 +371,50 @@ test('merge_migrated_commands reports no change when nothing matches', function 
   assert.strictEqual(out.changed, false);
   assert.deepStrictEqual(out.payload, []);
 });
+
+var SECRETS = ['credential', 'totp', 'password', 'passphrase', 'privatekey'];
+
+function assert_no_secrets(label, value) {
+  var text = JSON.stringify(value);
+  for (var i = 0; i < SECRETS.length; i++) {
+    assert.ok(text.indexOf(SECRETS[i]) === -1,
+              label + ' must never carry ' + SECRETS[i] + ', got: ' + text);
+  }
+}
+
+test('no builder output can carry a secret field', function () {
+  // The server whitelists keys as a backstop, but a client-side leak would
+  // still transmit the secret over the wire and log it on a validation error.
+  var poisoned = {
+    name: 'a', hostname: 'a.com', port_text: '22', keys_text: '',
+    username: 'u', default_command: 'cmd',
+    credential: 'hunter2', totp: '123456', password: 'p',
+    passphrase: 'pp', privatekey: 'pk'
+  };
+  assert_no_secrets('build_host_payload',
+                    hosts.build_host_payload([poisoned]).hosts);
+
+  var poisoned_current = {
+    last_hostname: 'nas.lan', credential: 'hunter2', totp: '123456',
+    password: 'p', passphrase: 'pp', privatekey: 'pk'
+  };
+  var poisoned_ui = {
+    font_size_text: '14', background: '', foreground: '', cursor: '',
+    encoding: '', term: '', cursor_blink: true, key_source: 'upload',
+    credential: 'hunter2', totp: '123456'
+  };
+  assert_no_secrets('merge_settings',
+                    hosts.merge_settings(poisoned_current, poisoned_ui));
+
+  assert_no_secrets('merge_migrated_commands', hosts.merge_migrated_commands(
+    [{name: 'a', hostname: 'a.com', port: 22, host_keys: [], username: '',
+      default_command: '', credential: 'hunter2', totp: '123456'}],
+    [{hostname: 'a.com', port: 22, command: 'htop'}]).payload);
+});
+
+test('roaming_update refuses every secret-bearing form field', function () {
+  for (var i = 0; i < SECRETS.length; i++) {
+    assert.strictEqual(hosts.roaming_update(SECRETS[i], 'leaked'), null,
+                       SECRETS[i] + ' must not roam');
+  }
+});
