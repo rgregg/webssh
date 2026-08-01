@@ -372,13 +372,39 @@ test('merge_migrated_commands reports no change when nothing matches', function 
   assert.deepStrictEqual(out.payload, []);
 });
 
-var SECRETS = ['credential', 'totp', 'password', 'passphrase', 'privatekey'];
+// This property covers every builder that takes an object-shaped input and
+// constructs its output by explicit key access: build_host_payload,
+// merge_settings, merge_migrated_commands, resolve_terminal_options, and
+// save_error_text. validate_port and parse_command_key take plain strings,
+// not objects, so they are out of scope by construction.
+//
+// It checks two independent things: that none of the secret KEY NAMES
+// appear in the stringified output (catching a wholesale copy of the input,
+// e.g. a `for...in` spread), and that none of the poisoned sentinel VALUES
+// appear either (catching a rename leak, e.g. `settings.saved_cred =
+// current.credential`, where the key name never shows up but the value
+// still ships). Passing both halves is required; passing only the key-name
+// half would miss a leak that forwards a secret's value under an innocuous
+// key. Sentinel values (not realistic-looking secrets like 'hunter2') are
+// used so a legitimate fixture string can never collide with the check.
+var SECRET_KEYS = ['credential', 'totp', 'password', 'passphrase', 'privatekey'];
+var SECRET_VALUES = [
+  'SEKRIT-credential-value', 'SEKRIT-totp-value', 'SEKRIT-password-value',
+  'SEKRIT-passphrase-value', 'SEKRIT-privatekey-value'
+];
 
 function assert_no_secrets(label, value) {
   var text = JSON.stringify(value);
-  for (var i = 0; i < SECRETS.length; i++) {
-    assert.ok(text.indexOf(SECRETS[i]) === -1,
-              label + ' must never carry ' + SECRETS[i] + ', got: ' + text);
+  var i;
+  for (i = 0; i < SECRET_KEYS.length; i++) {
+    assert.ok(text.indexOf(SECRET_KEYS[i]) === -1,
+              label + ' must never carry the key "' + SECRET_KEYS[i] +
+              '", got: ' + text);
+  }
+  for (i = 0; i < SECRET_VALUES.length; i++) {
+    assert.ok(text.indexOf(SECRET_VALUES[i]) === -1,
+              label + ' must never carry the value "' + SECRET_VALUES[i] +
+              '", got: ' + text);
   }
 }
 
@@ -388,33 +414,54 @@ test('no builder output can carry a secret field', function () {
   var poisoned = {
     name: 'a', hostname: 'a.com', port_text: '22', keys_text: '',
     username: 'u', default_command: 'cmd',
-    credential: 'hunter2', totp: '123456', password: 'p',
-    passphrase: 'pp', privatekey: 'pk'
+    credential: SECRET_VALUES[0], totp: SECRET_VALUES[1],
+    password: SECRET_VALUES[2], passphrase: SECRET_VALUES[3],
+    privatekey: SECRET_VALUES[4]
   };
   assert_no_secrets('build_host_payload',
                     hosts.build_host_payload([poisoned]).hosts);
 
   var poisoned_current = {
-    last_hostname: 'nas.lan', credential: 'hunter2', totp: '123456',
-    password: 'p', passphrase: 'pp', privatekey: 'pk'
+    last_hostname: 'nas.lan', credential: SECRET_VALUES[0], totp: SECRET_VALUES[1],
+    password: SECRET_VALUES[2], passphrase: SECRET_VALUES[3],
+    privatekey: SECRET_VALUES[4]
   };
   var poisoned_ui = {
     font_size_text: '14', background: '', foreground: '', cursor: '',
     encoding: '', term: '', cursor_blink: true, key_source: 'upload',
-    credential: 'hunter2', totp: '123456'
+    credential: SECRET_VALUES[0], totp: SECRET_VALUES[1]
   };
   assert_no_secrets('merge_settings',
                     hosts.merge_settings(poisoned_current, poisoned_ui));
 
   assert_no_secrets('merge_migrated_commands', hosts.merge_migrated_commands(
     [{name: 'a', hostname: 'a.com', port: 22, host_keys: [], username: '',
-      default_command: '', credential: 'hunter2', totp: '123456'}],
+      default_command: '', credential: SECRET_VALUES[0], totp: SECRET_VALUES[1]}],
     [{hostname: 'a.com', port: 22, command: 'htop'}]).payload);
+
+  var poisoned_stored = {
+    cursor_blink: true, background: '', foreground: '', cursor: '',
+    font_size: '14',
+    credential: SECRET_VALUES[0], totp: SECRET_VALUES[1],
+    password: SECRET_VALUES[2], passphrase: SECRET_VALUES[3],
+    privatekey: SECRET_VALUES[4]
+  };
+  assert_no_secrets('resolve_terminal_options',
+                    hosts.resolve_terminal_options({}, poisoned_stored));
+
+  var poisoned_body = {
+    error: 'Rejected: check hostnames, ports, and host keys.',
+    credential: SECRET_VALUES[0], totp: SECRET_VALUES[1],
+    password: SECRET_VALUES[2], passphrase: SECRET_VALUES[3],
+    privatekey: SECRET_VALUES[4]
+  };
+  assert_no_secrets('save_error_text', hosts.save_error_text(400, poisoned_body));
+  assert_no_secrets('save_error_text', hosts.save_error_text(500, poisoned_body));
 });
 
 test('roaming_update refuses every secret-bearing form field', function () {
-  for (var i = 0; i < SECRETS.length; i++) {
-    assert.strictEqual(hosts.roaming_update(SECRETS[i], 'leaked'), null,
-                       SECRETS[i] + ' must not roam');
+  for (var i = 0; i < SECRET_KEYS.length; i++) {
+    assert.strictEqual(hosts.roaming_update(SECRET_KEYS[i], 'leaked'), null,
+                       SECRET_KEYS[i] + ' must not roam');
   }
 });
