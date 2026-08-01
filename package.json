@@ -1,0 +1,11 @@
+{
+  "name": "webssh-client-tests",
+  "private": true,
+  "description": "Unit tests for the WebSSH browser client. No runtime dependencies.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/js/"
+  }
+}

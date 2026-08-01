@@ -902,14 +902,14 @@ jQuery(function($){
       // Leave port unset when blank so the server applies its documented
       // default; never rewrite a value the user actually typed.
       var port_text = row.find('.host-port').val().trim();
-      if (port_text) {
-        var port = window.parseInt(port_text, 10);
-        if (!(port > 0 && port <= 65535)) {
-          row.find('.host-port').addClass('input-error');
-          error = 'Invalid port "' + port_text + '" for host "' + name + '" (must be 1-65535).';
-          return;
-        }
-        host.port = port;
+      var port_result = webssh_hosts.validate_port(port_text);
+      if (port_result.invalid) {
+        row.find('.host-port').addClass('input-error');
+        error = 'Invalid port "' + port_text + '" for host "' + name + '" (must be 1-65535).';
+        return;
+      }
+      if (port_result.port) {
+        host.port = port_result.port;
       }
       hosts.push(host);
     });
