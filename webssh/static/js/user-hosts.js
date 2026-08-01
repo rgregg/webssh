@@ -63,8 +63,13 @@ var webssh_hosts = (function () {
       };
       var port_result = validate_port(r.port_text);
       if (port_result.invalid) {
+        // Preserve hosts collected before this row, matching the original
+        // inline behaviour. Returning [] here looks tidy but is a trap:
+        // PUT /api/hosts treats an explicit empty list as "clear my hosts",
+        // so a caller that reads .hosts without checking .error would wipe
+        // the user's saved hosts and pinned keys.
         return {
-          hosts: [],
+          hosts: result,
           error: 'Invalid port "' + trimmed(r.port_text) +
                  '" for host "' + name + '" (must be 1-65535).',
           error_index: i

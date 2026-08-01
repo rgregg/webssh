@@ -114,6 +114,20 @@ test('build_host_payload stops at the first invalid row', function () {
   assert.strictEqual(out.error_index, 0);
 });
 
+test('build_host_payload keeps hosts collected before an invalid row', function () {
+  // Matches the original inline behaviour. Deliberately NOT an empty
+  // list: PUT /api/hosts treats an explicit empty list as "clear my
+  // hosts", so a caller that read .hosts while ignoring .error would
+  // wipe the user's saved hosts.
+  var out = hosts.build_host_payload([
+    row({hostname: 'good.lan'}),
+    row({hostname: 'bad.lan', port_text: '99999'})
+  ]);
+  assert.strictEqual(out.error_index, 1);
+  assert.strictEqual(out.hosts.length, 1);
+  assert.strictEqual(out.hosts[0].hostname, 'good.lan');
+});
+
 test('build_host_payload returns an empty list for no rows', function () {
   // An explicit empty list is a legitimate "clear my hosts", distinct from
   // a failure, and the server honours it as such.
