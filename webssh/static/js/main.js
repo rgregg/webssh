@@ -419,13 +419,6 @@ jQuery(function($){
   };
 
 
-  var ROAMING_FIELDS = {
-    hostname: 'last_hostname',
-    username: 'last_username',
-    port: 'last_port'
-  };
-
-
   function store_items(names, data) {
     var i, name, value;
 
@@ -434,11 +427,9 @@ jQuery(function($){
       value = data.get(name);
       if (value) {
         window.localStorage.setItem(name, value);
-        if (ROAMING_FIELDS[name]) {
-          var stored = (name === 'port') ? window.parseInt(value, 10) : value;
-          if (name !== 'port' || stored > 0) {
-            user_settings[ROAMING_FIELDS[name]] = stored;
-          }
+        var roamed = webssh_hosts.roaming_update(name, value);
+        if (roamed) {
+          user_settings[roamed.key] = roamed.value;
         }
       }
     }
@@ -525,8 +516,8 @@ jQuery(function($){
         continue;
       }
       value = null;
-      if (user_hosts_enabled && ROAMING_FIELDS[name]) {
-        var roamed = user_settings[ROAMING_FIELDS[name]];
+      if (user_hosts_enabled && webssh_hosts.ROAMING_FIELDS[name]) {
+        var roamed = user_settings[webssh_hosts.ROAMING_FIELDS[name]];
         if (roamed !== undefined && roamed !== null && roamed !== '') {
           value = String(roamed);
         }
@@ -902,30 +893,16 @@ jQuery(function($){
 
 
   function collect_settings(pane) {
-    var settings = {};
-    var size = window.parseInt(pane.find('#set-font-size').val(), 10);
-    if (size > 0) settings.font_size = size;
-    var pairs = {
-      background: '#set-background', foreground: '#set-foreground',
-      cursor: '#set-cursor', encoding: '#set-encoding', term: '#set-term'
-    };
-    for (var key in pairs) {
-      var value = pane.find(pairs[key]).val().trim();
-      if (value) settings[key] = value;
-    }
-    settings.cursor_blink = pane.find('#set-cursor-blink').is(':checked');
-    settings.key_source = pane.find('#set-key-source').val();
-    // The settings PUT replaces the whole stored blob, and this pane only
-    // knows about appearance keys. Carry over the roamed last-used values
-    // (and only those known keys, to keep the secrets invariant structural)
-    // so a Save here doesn't wipe them out for the user on another machine.
-    for (var roam_name in ROAMING_FIELDS) {
-      var roam_key = ROAMING_FIELDS[roam_name];
-      if (user_settings[roam_key] !== undefined) {
-        settings[roam_key] = user_settings[roam_key];
-      }
-    }
-    return settings;
+    return webssh_hosts.merge_settings(user_settings, {
+      font_size_text: pane.find('#set-font-size').val(),
+      background: pane.find('#set-background').val(),
+      foreground: pane.find('#set-foreground').val(),
+      cursor: pane.find('#set-cursor').val(),
+      encoding: pane.find('#set-encoding').val(),
+      term: pane.find('#set-term').val(),
+      cursor_blink: pane.find('#set-cursor-blink').is(':checked'),
+      key_source: pane.find('#set-key-source').val()
+    });
   }
 
 

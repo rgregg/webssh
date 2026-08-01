@@ -83,9 +83,65 @@ var webssh_hosts = (function () {
     return {hosts: result, error: null, error_index: -1};
   }
 
+  // Form field name -> stored settings key. These three are the ONLY fields
+  // that roam. Everything else in the form, including credential and totp,
+  // is deliberately absent so secrets cannot reach the server structurally.
+  var ROAMING_FIELDS = {
+    hostname: 'last_hostname',
+    username: 'last_username',
+    port: 'last_port'
+  };
+
+  var APPEARANCE_KEYS = ['background', 'foreground', 'cursor', 'encoding', 'term'];
+
+  function merge_settings(current, ui) {
+    var settings = {};
+    var size = parseInt(ui.font_size_text, 10);
+    if (size > 0) {
+      settings.font_size = size;
+    }
+    for (var i = 0; i < APPEARANCE_KEYS.length; i++) {
+      var key = APPEARANCE_KEYS[i];
+      var value = trimmed(ui[key]);
+      if (value) {
+        settings[key] = value;
+      }
+    }
+    settings.cursor_blink = ui.cursor_blink;
+    settings.key_source = ui.key_source;
+    // The settings PUT replaces the whole stored blob and this pane only
+    // knows appearance keys, so carry the roamed values forward. Only the
+    // known keys, to keep the secrets invariant structural.
+    for (var name in ROAMING_FIELDS) {
+      var roam_key = ROAMING_FIELDS[name];
+      if (current[roam_key] !== undefined) {
+        settings[roam_key] = current[roam_key];
+      }
+    }
+    return settings;
+  }
+
+  function roaming_update(name, value) {
+    var roam_key = ROAMING_FIELDS[name];
+    if (!roam_key) {
+      return null;
+    }
+    if (name === 'port') {
+      var port = parseInt(value, 10);
+      if (!(port > 0)) {
+        return null;
+      }
+      return {key: roam_key, value: port};
+    }
+    return {key: roam_key, value: value};
+  }
+
   return {
     validate_port: validate_port,
-    build_host_payload: build_host_payload
+    build_host_payload: build_host_payload,
+    ROAMING_FIELDS: ROAMING_FIELDS,
+    merge_settings: merge_settings,
+    roaming_update: roaming_update
   };
 }());
 

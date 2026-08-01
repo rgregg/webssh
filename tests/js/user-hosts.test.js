@@ -134,3 +134,79 @@ test('build_host_payload returns an empty list for no rows', function () {
   assert.deepStrictEqual(hosts.build_host_payload([]),
                          {hosts: [], error: null, error_index: -1});
 });
+
+function ui(over) {
+  var base = {font_size_text: '', background: '', foreground: '', cursor: '',
+              encoding: '', term: '', cursor_blink: true, key_source: 'upload'};
+  for (var k in over) { base[k] = over[k]; }
+  return base;
+}
+
+test('merge_settings carries roamed last-used values forward', function () {
+  // Regression: the pane only knows appearance keys, and the settings PUT
+  // replaces the whole blob, so every save used to wipe the roamed values.
+  // That is invisible on one machine because localStorage covers it, and
+  // only shows up on a second machine -- which is the point of roaming.
+  var current = {last_hostname: 'nas.lan', last_username: 'ryan', last_port: 2222};
+  var out = hosts.merge_settings(current, ui({font_size_text: '16'}));
+  assert.strictEqual(out.last_hostname, 'nas.lan');
+  assert.strictEqual(out.last_username, 'ryan');
+  assert.strictEqual(out.last_port, 2222);
+  assert.strictEqual(out.font_size, 16);
+});
+
+test('merge_settings omits roaming keys absent from current settings', function () {
+  var out = hosts.merge_settings({}, ui({font_size_text: '16'}));
+  assert.ok(!('last_hostname' in out),
+            'absent keys must be omitted, not sent as null/undefined');
+  assert.ok(!('last_port' in out));
+});
+
+test('merge_settings carries only the three known roaming keys', function () {
+  var out = hosts.merge_settings(
+    {last_hostname: 'a', nonsense: 'x', credential: 'secret'}, ui({}));
+  assert.strictEqual(out.last_hostname, 'a');
+  assert.ok(!('nonsense' in out));
+  assert.ok(!('credential' in out));
+});
+
+test('merge_settings includes appearance values only when non-empty', function () {
+  var out = hosts.merge_settings({}, ui({background: ' black ', foreground: ''}));
+  assert.strictEqual(out.background, 'black');
+  assert.ok(!('foreground' in out));
+});
+
+test('merge_settings omits a non-positive font size', function () {
+  assert.ok(!('font_size' in hosts.merge_settings({}, ui({font_size_text: ''}))));
+  assert.ok(!('font_size' in hosts.merge_settings({}, ui({font_size_text: '0'}))));
+  assert.ok(!('font_size' in hosts.merge_settings({}, ui({font_size_text: 'abc'}))));
+});
+
+test('merge_settings always includes cursor_blink and key_source', function () {
+  var out = hosts.merge_settings({}, ui({cursor_blink: false, key_source: 'stored'}));
+  assert.strictEqual(out.cursor_blink, false);
+  assert.strictEqual(out.key_source, 'stored');
+});
+
+test('roaming_update maps only the three roaming form fields', function () {
+  assert.deepStrictEqual(hosts.roaming_update('hostname', 'nas.lan'),
+                         {key: 'last_hostname', value: 'nas.lan'});
+  assert.deepStrictEqual(hosts.roaming_update('username', 'ryan'),
+                         {key: 'last_username', value: 'ryan'});
+  assert.strictEqual(hosts.roaming_update('credential', 'hunter2'), null);
+  assert.strictEqual(hosts.roaming_update('totp', '123456'), null);
+  assert.strictEqual(hosts.roaming_update('passphrase', 'x'), null);
+});
+
+test('roaming_update coerces port to an integer', function () {
+  // The server validates last_port as an int 1-65535; a string would be
+  // rejected with a 400 the user never sees.
+  assert.deepStrictEqual(hosts.roaming_update('port', '2222'),
+                         {key: 'last_port', value: 2222});
+  assert.strictEqual(typeof hosts.roaming_update('port', '2222').value, 'number');
+});
+
+test('roaming_update drops an unusable port instead of sending it', function () {
+  assert.strictEqual(hosts.roaming_update('port', 'abc'), null);
+  assert.strictEqual(hosts.roaming_update('port', '0'), null);
+});
