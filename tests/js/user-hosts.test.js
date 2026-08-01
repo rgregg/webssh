@@ -254,6 +254,22 @@ test('resolve_terminal_options falls back through fontcolor for the cursor', fun
   assert.strictEqual(out.theme.cursor, 'lime');
 });
 
+test('resolve_terminal_options prefers a URL cursor over a stored cursor', function () {
+  var out = hosts.resolve_terminal_options(
+    {cursor: 'red'}, {cursor: 'blue', foreground: 'green'});
+  assert.strictEqual(out.theme.cursor, 'red');
+});
+
+test('resolve_terminal_options prefers a stored cursor over URL fontcolor', function () {
+  // The chain is url cursor -> stored cursor -> url fontcolor ->
+  // stored foreground -> 'white'. The ordering looks arbitrary but is
+  // deliberate: an explicitly chosen cursor colour, from either source,
+  // outranks a foreground colour being reused as a fallback.
+  var out = hosts.resolve_terminal_options(
+    {fontcolor: 'lime'}, {cursor: 'blue'});
+  assert.strictEqual(out.theme.cursor, 'blue');
+});
+
 test('save_error_text surfaces the server message on 400', function () {
   assert.strictEqual(
     hosts.save_error_text(400, {error: 'Invalid port "99999" for host "db".'}),
