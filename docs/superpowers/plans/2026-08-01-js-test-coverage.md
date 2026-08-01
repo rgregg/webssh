@@ -19,7 +19,7 @@
 - **Secrets never leave the client.** No function in the new module may ever emit `credential`, `totp`, `password`, `passphrase`, or `privatekey`. Task 6 enforces this as a property over every builder.
 - **The Python suite must stay green at 234 passed.** Run `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q` (the venv lives at the ORIGINAL repo path, not the worktree).
 
-**Baseline:** `node --test tests/js/` does not exist yet. `pytest` is green at 234. Verify the Python baseline before starting.
+**Baseline:** `node --test tests/js/*.test.js` does not exist yet. `pytest` is green at 234. Verify the Python baseline before starting.
 
 **A note on why this exists.** Review of the client-side tasks found one Critical and eight Important defects, versus roughly one per server-side task. Every test in this plan traces to a defect that review or browser testing actually found; the table in each task names it. Do not add tests that guard nothing — they cost maintenance and buy no signal.
 
@@ -81,7 +81,7 @@ test('validate_port rejects non-numeric text', function () {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: FAIL — `Cannot find module '../../webssh/static/js/user-hosts.js'`
 
 - [ ] **Step 3: Create the module**
@@ -130,7 +130,7 @@ Note `parseInt('22abc', 10)` is `22`, matching the current behaviour in `main.js
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 4 tests.
 
 - [ ] **Step 5: Add package.json**
@@ -146,7 +146,7 @@ Create `package.json`:
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/js/"
+    "test": "node --test tests/js/*.test.js"
   }
 }
 ```
@@ -194,14 +194,14 @@ In `.github/workflows/python.yml`, add a `js` job alongside `lint` and `test`:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: node --test tests/js/
+      - run: node --test tests/js/*.test.js
 ```
 
 Then add `js` to the `docker` job's `needs:` list so a JavaScript failure blocks the release exactly as a Python failure does. It currently reads `needs: [lint, test]`; make it `needs: [lint, test, js]`.
 
 - [ ] **Step 9: Verify nothing regressed**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 4 tests.
 
 Run: `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q`
@@ -325,7 +325,7 @@ test('build_host_payload returns an empty list for no rows', function () {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: FAIL — `hosts.build_host_payload is not a function`
 
 - [ ] **Step 3: Implement it**
@@ -389,7 +389,7 @@ Add to `user-hosts.js` above the `return` block, and add `build_host_payload` to
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 13 tests.
 
 - [ ] **Step 5: Rewrite collect_host_rows to use it**
@@ -426,7 +426,7 @@ The returned shape `{hosts, error}` is unchanged, so the caller needs no edit.
 
 - [ ] **Step 6: Verify nothing regressed**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 13 tests.
 
 Run: `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q`
@@ -544,7 +544,7 @@ test('roaming_update drops an unusable port instead of sending it', function () 
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: FAIL — `hosts.merge_settings is not a function`
 
 - [ ] **Step 3: Implement them**
@@ -608,7 +608,7 @@ Add to `user-hosts.js`, and add `ROAMING_FIELDS`, `merge_settings`, and `roaming
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 22 tests.
 
 - [ ] **Step 5: Use them from main.js**
@@ -646,7 +646,7 @@ The roaming branch of `store_items` becomes:
 
 - [ ] **Step 6: Verify nothing regressed**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 22 tests.
 
 Run: `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q`
@@ -748,7 +748,7 @@ test('save_error_text never surfaces server detail on 500', function () {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: FAIL — `hosts.resolve_terminal_options is not a function`
 
 - [ ] **Step 3: Implement them**
@@ -789,7 +789,7 @@ Add to `user-hosts.js` and to the returned object:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 32 tests.
 
 - [ ] **Step 5: Use them from main.js**
@@ -814,7 +814,7 @@ Replace `save_error_text` with a thin adapter that keeps the existing single-arg
 
 - [ ] **Step 6: Verify nothing regressed**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 32 tests.
 
 Run: `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q`
@@ -937,7 +937,7 @@ test('merge_migrated_commands reports no change when nothing matches', function 
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: FAIL — `hosts.parse_command_key is not a function`
 
 - [ ] **Step 3: Implement them**
@@ -995,7 +995,7 @@ Add to `user-hosts.js` and to the returned object:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 41 tests.
 
 - [ ] **Step 5: Use them from main.js**
@@ -1032,7 +1032,7 @@ Leave every guard around this untouched: the `running` flag, the `.always`, the 
 
 - [ ] **Step 6: Verify nothing regressed**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 41 tests.
 
 Run: `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q`
@@ -1114,7 +1114,7 @@ test('roaming_update refuses every secret-bearing form field', function () {
 
 - [ ] **Step 2: Run the tests**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 43 tests. These should pass without any implementation change — the builders construct fresh objects with known keys rather than copying their input, which is exactly the property being pinned. If either test FAILS, stop and report: a builder is copying its input wholesale, which is a real defect rather than a test to adjust.
 
 - [ ] **Step 3: Document how to run the suite**
@@ -1133,7 +1133,7 @@ python -m pytest tests
 Browser client tests require Node 20+ and install nothing:
 
 ```bash
-node --test tests/js/
+node --test tests/js/*.test.js
 ```
 
 They cover the pure decision logic in `webssh/static/js/user-hosts.js` — host
@@ -1144,7 +1144,7 @@ hostname input/select upgrade, asynchronous save sequencing) is not covered.
 
 - [ ] **Step 4: Final verification**
 
-Run: `node --test tests/js/`
+Run: `node --test tests/js/*.test.js`
 Expected: PASS, 43 tests.
 
 Run: `npm test`
@@ -1169,7 +1169,7 @@ git commit -m "test: pin the no-secrets invariant and document the JS suite"
 
 Before considering this complete:
 
-- [ ] `node --test tests/js/` passes with 43 tests
+- [ ] `node --test tests/js/*.test.js` passes with 43 tests
 - [ ] `/home/ryan/github/rgregg/webssh/.venv/bin/python -m pytest -q` passes with 234
 - [ ] `package.json` has no `dependencies` and no `devDependencies`
 - [ ] No file under `webssh/static/js/` uses `const`, `let`, arrow functions, or template literals
