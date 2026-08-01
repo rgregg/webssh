@@ -545,11 +545,11 @@ jQuery(function($){
     var found = [];
     for (var i = 0; i < window.localStorage.length; i++) {
       var key = window.localStorage.key(i);
-      if (key && key.indexOf('command:') === 0) {
-        var parts = key.split(':');
+      var parsed = webssh_hosts.parse_command_key(key);
+      if (parsed) {
         found.push({
-          hostname: parts[1],
-          port: window.parseInt(parts[2], 10) || 22,
+          hostname: parsed.hostname,
+          port: parsed.port,
           command: window.localStorage.getItem(key)
         });
       }
@@ -560,32 +560,12 @@ jQuery(function($){
       return;
     }
     $.get('/api/hosts').done(function(data) {
-      var hosts = data.user_hosts || [];
-      var index = {};
-      for (var i = 0; i < hosts.length; i++) {
-        index[hosts[i].hostname + ':' + hosts[i].port] = hosts[i];
-      }
-      var changed = false;
-      for (var j = 0; j < found.length; j++) {
-        var match = index[found[j].hostname + ':' + found[j].port];
-        if (match && !match.default_command) {
-          match.default_command = found[j].command;
-          changed = true;
-        }
-      }
-      if (!changed) {
+      var merged = webssh_hosts.merge_migrated_commands(data.user_hosts || [], found);
+      if (!merged.changed) {
         window.localStorage.setItem('webssh_migrated_commands', '1');
         return;
       }
-      var payload = [];
-      for (var k = 0; k < hosts.length; k++) {
-        payload.push({
-          name: hosts[k].name, hostname: hosts[k].hostname,
-          port: hosts[k].port, host_key: hosts[k].host_keys || [],
-          username: hosts[k].username || '',
-          default_command: hosts[k].default_command || ''
-        });
-      }
+      var payload = merged.payload;
       $.ajax({
         url: '/api/hosts', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},

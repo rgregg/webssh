@@ -288,3 +288,86 @@ test('save_error_text never surfaces server detail on 500', function () {
     hosts.save_error_text(500, {error: '/var/lib/webssh/user-data denied'}),
     'Save failed.');
 });
+
+test('parse_command_key reads a legacy command key', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:nas.lan:2222'),
+                         {hostname: 'nas.lan', port: 2222});
+});
+
+test('parse_command_key defaults a missing port to 22', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:nas.lan:'),
+                         {hostname: 'nas.lan', port: 22});
+});
+
+test('parse_command_key ignores unrelated localStorage keys', function () {
+  assert.strictEqual(hosts.parse_command_key('hostname'), null);
+  assert.strictEqual(hosts.parse_command_key('webssh_migrated_commands'), null);
+  assert.strictEqual(hosts.parse_command_key(''), null);
+  assert.strictEqual(hosts.parse_command_key(null), null);
+});
+
+test('merge_migrated_commands preserves every field of every host', function () {
+  // This payload replaces the user's whole host list. A dropped field here
+  // silently destroys pinned host keys.
+  var stored = [{
+    name: 'homelab', hostname: 'nas.lan', port: 2222,
+    host_keys: ['ssh-ed25519 AAA'], username: 'ryan', default_command: ''
+  }];
+  var out = hosts.merge_migrated_commands(
+    stored, [{hostname: 'nas.lan', port: 2222, command: 'tmux attach'}]);
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.payload, [{
+    name: 'homelab', hostname: 'nas.lan', port: 2222,
+    host_key: ['ssh-ed25519 AAA'], username: 'ryan',
+    default_command: 'tmux attach'
+  }]);
+});
+
+test('merge_migrated_commands converts host_keys to host_key', function () {
+  var out = hosts.merge_migrated_commands(
+    [{name: 'a', hostname: 'a.com', port: 22, host_keys: ['ssh-rsa AAA'],
+      username: '', default_command: ''}],
+    [{hostname: 'a.com', port: 22, command: 'htop'}]);
+  assert.deepStrictEqual(out.payload[0].host_key, ['ssh-rsa AAA']);
+  assert.ok(!('host_keys' in out.payload[0]));
+});
+
+test('merge_migrated_commands carries through hosts it does not migrate', function () {
+  var stored = [
+    {name: 'a', hostname: 'a.com', port: 22, host_keys: [], username: '',
+     default_command: ''},
+    {name: 'b', hostname: 'b.com', port: 22, host_keys: ['ssh-rsa BBB'],
+     username: 'bob', default_command: 'top'}
+  ];
+  var out = hosts.merge_migrated_commands(
+    stored, [{hostname: 'a.com', port: 22, command: 'htop'}]);
+  assert.strictEqual(out.payload.length, 2);
+  assert.deepStrictEqual(out.payload[1], {
+    name: 'b', hostname: 'b.com', port: 22, host_key: ['ssh-rsa BBB'],
+    username: 'bob', default_command: 'top'
+  });
+});
+
+test('merge_migrated_commands never invents a host', function () {
+  var out = hosts.merge_migrated_commands(
+    [], [{hostname: 'ghost.lan', port: 22, command: 'htop'}]);
+  assert.strictEqual(out.changed, false);
+  assert.deepStrictEqual(out.payload, []);
+});
+
+test('merge_migrated_commands does not overwrite an existing command', function () {
+  var out = hosts.merge_migrated_commands(
+    [{name: 'a', hostname: 'a.com', port: 22, host_keys: [], username: '',
+      default_command: 'already set'}],
+    [{hostname: 'a.com', port: 22, command: 'from localStorage'}]);
+  assert.strictEqual(out.changed, false);
+});
+
+test('merge_migrated_commands reports no change when nothing matches', function () {
+  var out = hosts.merge_migrated_commands(
+    [{name: 'a', hostname: 'a.com', port: 22, host_keys: [], username: '',
+      default_command: ''}],
+    [{hostname: 'other.lan', port: 22, command: 'htop'}]);
+  assert.strictEqual(out.changed, false);
+  assert.deepStrictEqual(out.payload, []);
+});

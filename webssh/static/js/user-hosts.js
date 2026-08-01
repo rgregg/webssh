@@ -166,6 +166,53 @@ var webssh_hosts = (function () {
     return 'Save failed.';
   }
 
+  // Legacy per-host default commands were stored under 'command:<host>:<port>'.
+  function parse_command_key(key) {
+    if (!key || String(key).indexOf('command:') !== 0) {
+      return null;
+    }
+    var parts = String(key).split(':');
+    return {
+      hostname: parts[1],
+      port: parseInt(parts[2], 10) || 22
+    };
+  }
+
+  // Returns the full replacement payload, since PUT /api/hosts replaces the
+  // whole list. Every stored field is carried through; only default_command
+  // is filled in, and only where the host has none.
+  function merge_migrated_commands(stored_hosts, found) {
+    var index = {};
+    var i;
+    for (i = 0; i < stored_hosts.length; i++) {
+      index[stored_hosts[i].hostname + ':' + stored_hosts[i].port] = stored_hosts[i];
+    }
+    var changed = false;
+    for (i = 0; i < found.length; i++) {
+      var match = index[found[i].hostname + ':' + found[i].port];
+      if (match && !match.default_command) {
+        match.default_command = found[i].command;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return {payload: [], changed: false};
+    }
+    var payload = [];
+    for (i = 0; i < stored_hosts.length; i++) {
+      var h = stored_hosts[i];
+      payload.push({
+        name: h.name,
+        hostname: h.hostname,
+        port: h.port,
+        host_key: h.host_keys || [],
+        username: h.username || '',
+        default_command: h.default_command || ''
+      });
+    }
+    return {payload: payload, changed: true};
+  }
+
   return {
     validate_port: validate_port,
     build_host_payload: build_host_payload,
@@ -173,7 +220,9 @@ var webssh_hosts = (function () {
     merge_settings: merge_settings,
     roaming_update: roaming_update,
     resolve_terminal_options: resolve_terminal_options,
-    save_error_text: save_error_text
+    save_error_text: save_error_text,
+    parse_command_key: parse_command_key,
+    merge_migrated_commands: merge_migrated_commands
   };
 }());
 
