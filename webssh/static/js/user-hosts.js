@@ -25,8 +25,62 @@ var webssh_hosts = (function () {
     return {port: port};
   }
 
+  function split_keys(text) {
+    var raw = (text === undefined || text === null) ? '' : String(text);
+    var parts = raw.split('\n');
+    var cleaned = [];
+    for (var i = 0; i < parts.length; i++) {
+      var k = parts[i].trim();
+      if (k) {
+        cleaned.push(k);
+      }
+    }
+    return cleaned;
+  }
+
+  function trimmed(value) {
+    return (value === undefined || value === null) ? '' : String(value).trim();
+  }
+
+  // rows: [{name, hostname, port_text, keys_text, username, default_command}]
+  // Rows with a blank hostname are skipped, matching the pane's behaviour of
+  // ignoring a half-filled row rather than submitting it.
+  function build_host_payload(rows) {
+    var result = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var hostname = trimmed(r.hostname);
+      if (!hostname) {
+        continue;
+      }
+      var name = trimmed(r.name) || hostname;
+      var host = {
+        name: name,
+        hostname: hostname,
+        host_key: split_keys(r.keys_text),
+        username: trimmed(r.username),
+        default_command: trimmed(r.default_command)
+      };
+      var port_result = validate_port(r.port_text);
+      if (port_result.invalid) {
+        return {
+          hosts: [],
+          error: 'Invalid port "' + trimmed(r.port_text) +
+                 '" for host "' + name + '" (must be 1-65535).',
+          error_index: i
+        };
+      }
+      if (port_result.port) {
+        host.port = port_result.port;
+      }
+      result.push(host);
+    }
+    return {hosts: result, error: null, error_index: -1};
+  }
+
   return {
-    validate_port: validate_port
+    validate_port: validate_port,
+    build_host_payload: build_host_payload
   };
 }());
 

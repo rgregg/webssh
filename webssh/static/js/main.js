@@ -877,43 +877,27 @@ jQuery(function($){
 
 
   function collect_host_rows(pane) {
-    var hosts = [];
-    var error = null;
+    var rows = [];
+    var row_els = [];
     pane.find('#user-host-rows .host-port').removeClass('input-error');
     pane.find('#user-host-rows tr.user-host').each(function() {
-      if (error) return;
       var row = $(this);
-      var hostname = row.find('.host-hostname').val().trim();
-      if (!hostname) return;
-      var keys = row.find('.host-keys').val().split('\n');
-      var cleaned = [];
-      for (var i = 0; i < keys.length; i++) {
-        var k = keys[i].trim();
-        if (k) cleaned.push(k);
-      }
-      var name = row.find('.host-name').val().trim() || hostname;
-      var host = {
-        name: name,
-        hostname: hostname,
-        host_key: cleaned,
-        username: row.find('.host-username').val().trim(),
-        default_command: row.find('.host-command').val().trim()
-      };
-      // Leave port unset when blank so the server applies its documented
-      // default; never rewrite a value the user actually typed.
-      var port_text = row.find('.host-port').val().trim();
-      var port_result = webssh_hosts.validate_port(port_text);
-      if (port_result.invalid) {
-        row.find('.host-port').addClass('input-error');
-        error = 'Invalid port "' + port_text + '" for host "' + name + '" (must be 1-65535).';
-        return;
-      }
-      if (port_result.port) {
-        host.port = port_result.port;
-      }
-      hosts.push(host);
+      row_els.push(row);
+      rows.push({
+        name: row.find('.host-name').val(),
+        hostname: row.find('.host-hostname').val(),
+        port_text: row.find('.host-port').val(),
+        keys_text: row.find('.host-keys').val(),
+        username: row.find('.host-username').val(),
+        default_command: row.find('.host-command').val()
+      });
     });
-    return {hosts: hosts, error: error};
+
+    var built = webssh_hosts.build_host_payload(rows);
+    if (built.error && built.error_index >= 0) {
+      row_els[built.error_index].find('.host-port').addClass('input-error');
+    }
+    return {hosts: built.hosts, error: built.error};
   }
 
 
