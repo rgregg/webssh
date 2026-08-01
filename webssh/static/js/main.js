@@ -1006,13 +1006,8 @@ jQuery(function($){
 
 
   function save_error_text(xhr) {
-    if (xhr && xhr.status === 400) {
-      if (xhr.responseJSON && xhr.responseJSON.error) {
-        return xhr.responseJSON.error;
-      }
-      return 'Rejected: check hostnames, ports, and host keys.';
-    }
-    return 'Save failed.';
+    return webssh_hosts.save_error_text(
+      xhr ? xhr.status : 0, xhr ? xhr.responseJSON : null);
   }
 
 
@@ -1143,21 +1138,8 @@ jQuery(function($){
           sock = new window.WebSocket(url),
           encoding = 'utf-8',
           decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
-          termOptions = {
-            cursorBlink: user_settings.cursor_blink !== false,
-            theme: {
-              background: url_opts_data.bgcolor || user_settings.background || 'black',
-              foreground: url_opts_data.fontcolor || user_settings.foreground || 'white',
-              cursor: url_opts_data.cursor || user_settings.cursor ||
-                      url_opts_data.fontcolor || user_settings.foreground || 'white'
-            }
-          };
-
-      var fontsize = window.parseInt(
-        url_opts_data.fontsize || user_settings.font_size, 10);
-      if (fontsize && fontsize > 0) {
-        termOptions.fontSize = fontsize;
-      }
+          termOptions = webssh_hosts.resolve_terminal_options(
+            url_opts_data, user_settings);
 
       var term = new window.Terminal(termOptions);
       var fitAddon = new window.FitAddon.FitAddon();

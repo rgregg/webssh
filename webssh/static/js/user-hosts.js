@@ -136,12 +136,44 @@ var webssh_hosts = (function () {
     return {key: roam_key, value: value};
   }
 
+  // Precedence: URL parameter, then stored preference, then built-in default.
+  function resolve_terminal_options(url_opts, stored) {
+    var options = {
+      cursorBlink: stored.cursor_blink !== false,
+      theme: {
+        background: url_opts.bgcolor || stored.background || 'black',
+        foreground: url_opts.fontcolor || stored.foreground || 'white',
+        cursor: url_opts.cursor || stored.cursor ||
+                url_opts.fontcolor || stored.foreground || 'white'
+      }
+    };
+    var fontsize = parseInt(url_opts.fontsize || stored.font_size, 10);
+    if (fontsize && fontsize > 0) {
+      options.fontSize = fontsize;
+    }
+    return options;
+  }
+
+  // A 400 describes the user's own input and is safe to show. Anything else
+  // may describe server state, so it gets a fixed generic message.
+  function save_error_text(status, body) {
+    if (status === 400) {
+      if (body && body.error) {
+        return body.error;
+      }
+      return 'Rejected: check hostnames, ports, and host keys.';
+    }
+    return 'Save failed.';
+  }
+
   return {
     validate_port: validate_port,
     build_host_payload: build_host_payload,
     ROAMING_FIELDS: ROAMING_FIELDS,
     merge_settings: merge_settings,
-    roaming_update: roaming_update
+    roaming_update: roaming_update,
+    resolve_terminal_options: resolve_terminal_options,
+    save_error_text: save_error_text
   };
 }());
 

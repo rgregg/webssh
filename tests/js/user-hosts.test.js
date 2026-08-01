@@ -210,3 +210,65 @@ test('roaming_update drops an unusable port instead of sending it', function () 
   assert.strictEqual(hosts.roaming_update('port', 'abc'), null);
   assert.strictEqual(hosts.roaming_update('port', '0'), null);
 });
+
+test('resolve_terminal_options lets a URL parameter beat a stored value', function () {
+  // Existing shared links carry ?fontsize= and ?bgcolor=; a stored
+  // preference must never override an explicit URL parameter.
+  var out = hosts.resolve_terminal_options(
+    {fontsize: '20', bgcolor: 'navy'},
+    {font_size: 19, background: 'black'});
+  assert.strictEqual(out.fontSize, 20);
+  assert.strictEqual(out.theme.background, 'navy');
+});
+
+test('resolve_terminal_options falls back to stored values', function () {
+  var out = hosts.resolve_terminal_options({}, {font_size: 19, background: 'black'});
+  assert.strictEqual(out.fontSize, 19);
+  assert.strictEqual(out.theme.background, 'black');
+});
+
+test('resolve_terminal_options falls back to built-in defaults', function () {
+  var out = hosts.resolve_terminal_options({}, {});
+  assert.strictEqual(out.theme.background, 'black');
+  assert.strictEqual(out.theme.foreground, 'white');
+  assert.strictEqual(out.theme.cursor, 'white');
+  assert.strictEqual(out.cursorBlink, true);
+});
+
+test('resolve_terminal_options omits fontSize when nothing resolves', function () {
+  assert.ok(!('fontSize' in hosts.resolve_terminal_options({}, {})));
+});
+
+test('resolve_terminal_options ignores a malformed font size', function () {
+  // A bad stored value must not break the terminal.
+  assert.ok(!('fontSize' in hosts.resolve_terminal_options({fontsize: 'abc'}, {})));
+});
+
+test('resolve_terminal_options honours cursor_blink false', function () {
+  assert.strictEqual(
+    hosts.resolve_terminal_options({}, {cursor_blink: false}).cursorBlink, false);
+});
+
+test('resolve_terminal_options falls back through fontcolor for the cursor', function () {
+  var out = hosts.resolve_terminal_options({fontcolor: 'lime'}, {});
+  assert.strictEqual(out.theme.cursor, 'lime');
+});
+
+test('save_error_text surfaces the server message on 400', function () {
+  assert.strictEqual(
+    hosts.save_error_text(400, {error: 'Invalid port "99999" for host "db".'}),
+    'Invalid port "99999" for host "db".');
+});
+
+test('save_error_text falls back to a generic message on a bodyless 400', function () {
+  assert.strictEqual(hosts.save_error_text(400, null),
+                     'Rejected: check hostnames, ports, and host keys.');
+});
+
+test('save_error_text never surfaces server detail on 500', function () {
+  // Server-state messages can embed filesystem paths. The server already
+  // genericises them; the client must not undo that by echoing a body.
+  assert.strictEqual(
+    hosts.save_error_text(500, {error: '/var/lib/webssh/user-data denied'}),
+    'Save failed.');
+});
