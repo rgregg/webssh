@@ -29,3 +29,9 @@ test('validate_port rejects out-of-range values instead of rewriting them', func
 test('validate_port rejects non-numeric text', function () {
   assert.deepStrictEqual(hosts.validate_port('abc'), {invalid: true});
 });
+
+test('validate_port preserves parseInt leniency for a numeric prefix', function () {
+  // Deliberate: the original inline logic accepted this, and the
+  // extraction must not tighten behaviour. Not a bug to "fix".
+  assert.deepStrictEqual(hosts.validate_port('22abc'), {port: 22});
+});
