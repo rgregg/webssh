@@ -66,10 +66,10 @@ Eight functions move, grouped below by the call site they come from:
 
 | Function | Replaces logic now in |
 | --- | --- |
-| `validate_port(text)` → `{port}`, `{omit: true}`, or `{error}` | the port branch of `collect_host_rows` |
+| `validate_port(text)` → `{port}`, `{omit: true}`, or `{invalid: true}` | the port branch of `collect_host_rows` |
 | `build_host_payload(rows)` → `{hosts}` or `{error}` | the row-to-payload mapping in `collect_host_rows` |
 | `merge_settings(current, ui)` | the roaming carry-forward in `collect_settings` |
-| `roaming_from_form(names, values)` | the `ROAMING_FIELDS` mapping in `store_items` |
+| `roaming_update(name, value)` | the `ROAMING_FIELDS` mapping in `store_items` |
 | `resolve_terminal_options(url_opts, stored)` | the `termOptions` precedence chain |
 | `parse_command_key(key)` and `merge_migrated_commands(hosts, found)` | `migrate_local_commands` |
 | `save_error_text(status, body)` | `save_error_text`, already nearly pure |
@@ -81,10 +81,11 @@ be unchanged.
 
 ## Harness
 
-`node --test tests/js/`, built into Node 20. A `package.json` exists only to
-declare the test script and the Node version floor; it has no `dependencies` and
-no `devDependencies`, so there is nothing to install and no lockfile to maintain
-in a repository that is otherwise pure Python.
+`node --test tests/js/*.test.js`, built into Node 20. A `package.json` exists
+only to declare the test script and the Node version floor (`engines.node:
+">=20"`); it has no `dependencies` and no `devDependencies`, so there is
+nothing to install and no lockfile to maintain in a repository that is
+otherwise pure Python.
 
 ## Coverage
 
@@ -108,22 +109,33 @@ than needing a new test.
 
 ## CI
 
-A new job in `.github/workflows/python.yml`, parallel to `lint` and `test`:
+A new job in `.github/workflows/python.yml`, parallel to `lint` and `test`,
+matrixed over Node versions the same way the Python job is matrixed over
+Python versions:
 
 ```yaml
   js:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22", "24"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-      - run: node --test tests/js/
+          node-version: ${{ matrix.node-version }}
+      # `ls` fails loudly if the glob matches nothing (e.g. a test file
+      # renamed off *.test.js or moved into a subdirectory), so the gate
+      # cannot pass vacuously. The glob is non-recursive; a future
+      # tests/js/<subdir>/*.test.js needs this pattern updated.
+      - run: ls tests/js/*.test.js && node --test tests/js/*.test.js
 ```
 
-The `docker` job's `needs:` list gains `js`, so a JavaScript failure blocks the
-release exactly as a Python failure does. Expected runtime is a few seconds:
-there is no browser to download and nothing to install.
+The `docker` job's `needs:` list gains `js`, so a JavaScript failure on any
+matrixed Node version blocks the release exactly as a Python failure does.
+Expected runtime is a few seconds: there is no browser to download and
+nothing to install.
 
 ## Out of Scope
 

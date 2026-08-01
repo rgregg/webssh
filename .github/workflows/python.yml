@@ -33,13 +33,24 @@ jobs:
       - run: pytest
 
   js:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22", "24"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-      - run: node --test tests/js/*.test.js
+          node-version: ${{ matrix.node-version }}
+      # `ls` fails loudly if the glob matches nothing, e.g. after a test
+      # file is renamed off *.test.js or moved into a subdirectory.
+      # Without it, an unmatched glob is passed through to `node --test`
+      # literally, which reports 0/0/0 passing and exits 0 -- a green,
+      # empty, silent gate. Note the glob is also NON-RECURSIVE: a future
+      # tests/js/<subdir>/*.test.js would not be picked up here and would
+      # need this pattern updated (e.g. to also glob tests/js/**/*.test.js).
+      - run: ls tests/js/*.test.js && node --test tests/js/*.test.js
 
   docker:
     needs: [lint, test, js]

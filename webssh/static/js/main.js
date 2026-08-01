@@ -387,6 +387,19 @@ jQuery(function($){
     }
   };
 
+  // Guard against user-hosts.js failing to load (404, blocked, etc).
+  // Placed here rather than at the very top of the closure because
+  // log_status() depends on status/waiter/form_container/validated_form_data
+  // (declared above) and on tabManager (defined immediately above this
+  // line) all being initialized. Without this guard, a missing
+  // webssh_hosts silently parses fine and the first ReferenceError does
+  // not fire until deep inside the connect .done() callback, after the
+  // WebSocket has already been opened.
+  if (typeof webssh_hosts === 'undefined') {
+    log_status('Client script failed to load; reload the page.', false);
+    return;
+  }
+
 
   // ===================== Utility Functions =====================
 

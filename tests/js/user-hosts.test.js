@@ -465,3 +465,37 @@ test('roaming_update refuses every secret-bearing form field', function () {
                        SECRET_KEYS[i] + ' must not roam');
   }
 });
+
+// Seam test: collect_host_rows in main.js builds a plain object per DOM row
+// using literal keys (name, hostname, port_text, keys_text, username,
+// default_command), and build_host_payload here reads those same literal
+// keys back off the object. Nothing but this shared spelling connects the
+// two files -- a module boundary, not a shared type -- so a one-character
+// typo on either side (e.g. keys_text -> key_text in main.js) compiles
+// cleanly, every existing unit test here still passes (they exercise this
+// module in isolation and construct rows using the *correct* key names),
+// and the bug only shows up in the browser: r.keys_text becomes undefined,
+// split_keys('') returns [], and every host in the next Save silently ships
+// with host_key: [], wiping the user's pinned host keys.
+//
+// A pure unit test cannot see main.js's DOM-reading code at all, so this
+// test reads main.js as plain text (fs is a Node builtin; that is allowed
+// in a TEST file, just not inside the module) and asserts every key
+// user-hosts.js declares it depends on is still spelled out somewhere in
+// main.js. This is a deliberately narrow, low-fidelity check -- it would
+// not catch every possible bug at this seam -- but it directly catches the
+// silent-data-loss typo class above, which unit tests structurally cannot.
+test('HOST_ROW_KEYS stay in sync with main.js collect_host_rows', function () {
+  var fs = require('node:fs');
+  var path = require('node:path');
+  var main_js = fs.readFileSync(
+    path.join(__dirname, '../../webssh/static/js/main.js'), 'utf8');
+
+  assert.ok(hosts.HOST_ROW_KEYS.length > 0, 'HOST_ROW_KEYS must not be empty');
+  for (var i = 0; i < hosts.HOST_ROW_KEYS.length; i++) {
+    var key = hosts.HOST_ROW_KEYS[i];
+    assert.ok(main_js.indexOf(key) !== -1,
+              'main.js no longer references row key "' + key + '"; ' +
+              'collect_host_rows and build_host_payload have drifted apart');
+  }
+});

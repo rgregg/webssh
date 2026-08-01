@@ -42,7 +42,20 @@ var webssh_hosts = (function () {
     return (value === undefined || value === null) ? '' : String(value).trim();
   }
 
+  // The row keys build_host_payload reads from each element of `rows`, in
+  // the same order they are read below. This list is the ONLY thing tying
+  // main.js's DOM-reading collect_host_rows to what this module consumes --
+  // main.js has no other reference to these names, so a typo on either side
+  // (e.g. keys_text -> key_text) compiles fine and silently breaks at
+  // runtime. Keep this array and the r.<key> reads immediately below it in
+  // sync. tests/js/user-hosts.test.js has a seam test that reads main.js as
+  // text and asserts every one of these keys still appears there, which is
+  // the only way to catch a rename on the main.js side: a pure module has
+  // no way to observe its DOM-reading caller directly.
+  var HOST_ROW_KEYS = ['name', 'hostname', 'port_text', 'keys_text', 'username', 'default_command'];
+
   // rows: [{name, hostname, port_text, keys_text, username, default_command}]
+  // (see HOST_ROW_KEYS above)
   // Rows with a blank hostname are skipped, matching the pane's behaviour of
   // ignoring a half-filled row rather than submitting it.
   function build_host_payload(rows) {
@@ -216,6 +229,7 @@ var webssh_hosts = (function () {
   return {
     validate_port: validate_port,
     build_host_payload: build_host_payload,
+    HOST_ROW_KEYS: HOST_ROW_KEYS,
     ROAMING_FIELDS: ROAMING_FIELDS,
     merge_settings: merge_settings,
     roaming_update: roaming_update,
