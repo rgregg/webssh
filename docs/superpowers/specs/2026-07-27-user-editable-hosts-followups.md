@@ -94,6 +94,39 @@ store — was fixed in `e1b184f` and is covered by tests.
   harness would be the single largest durable improvement to this feature's
   safety net.
 
+## Lint modernisation backlog
+
+CI's `lint` job installed `ruff` unpinned, so the 0.16 release turned the gate
+red across the whole repository without any code change — 250 errors on `main`,
+308 on the user-hosts branch. The job is now pinned to `ruff==0.15.6`, the last
+version under which the repository is clean. Upgrading the pin is worth doing,
+but it is a deliberate piece of work rather than a version bump:
+
+- **`UP032`** (88) — `.format()` calls that ruff wants as f-strings.
+- **`LOG015`** (63) — `logging.info()` and friends on the root logger. The whole
+  codebase does this; there are 61 such calls in `webssh/` alone.
+- **`UP025`** (27) — `u''` prefixes.
+- **`I001`** (25) — import blocks in the repository's compact parenthesised
+  style rather than ruff's one-per-line isort profile.
+- **`UP008`** (14) — `super(ClassName, self)` rather than bare `super()`.
+- **`UP004`** (9) — explicit `object` inheritance.
+
+Two cautions for whoever does it:
+
+- **`TRY004` must not be auto-fixed.** It wants `TypeError` where
+  `user_data.validate_hosts` and `validate_settings` raise `ValueError` for a
+  malformed payload. `handler.py` catches `ValueError` at five sites to return
+  400; raising `TypeError` would turn a bad request into an unhandled 500 and
+  break twelve tests. The current behaviour is correct.
+- Fix the whole repository in one pass or not at all. Modernising individual
+  files leaves them stylistically inconsistent with the modules they mirror —
+  `user_data.py` was written to match `user_keys.py`, and `test_user_data.py` to
+  match `test_user_keys.py`, down to the import formatting.
+
+Note that the plans and specs under `docs/superpowers/` mandate the current
+style as an explicit constraint. If the codebase modernises, that guidance
+becomes stale and should be updated or marked historical.
+
 ## Cosmetic
 
 - The administrator and user host tables have different column counts, so their

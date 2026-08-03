@@ -13,7 +13,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pinned deliberately. An unpinned `pip install ruff` means every ruff
+      # release can turn this gate red without a code change, which is what
+      # happened on 0.16: it added rules (f-strings over .format(), no u''
+      # prefixes, bare super(), module loggers) that flag this codebase's
+      # long-standing Python-2-era style, producing 250 errors on main alone.
+      # Upgrading the pin is fine, but it means taking on that modernisation
+      # in one deliberate pass rather than discovering it mid-review.
+      - run: pip install ruff==0.15.6
       - run: ruff check .
 
   test:
