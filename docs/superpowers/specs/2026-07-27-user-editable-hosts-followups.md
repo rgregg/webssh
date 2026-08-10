@@ -73,13 +73,17 @@ store — was fixed in `e1b184f` and is covered by tests.
 
 ## Tests
 
-- **`_restore_options` restores 3 of 10 mutated tornado globals**, to hardcoded
-  values rather than saved originals. Safe only because every other `get_app` in
-  the suite sets those options itself — that is execution-order luck, not
-  construction. The suite is the only automated guard on the security invariants,
-  so this is the highest-value item in this section.
-- **A new test class leaves `options.policy = 'reject'` behind** on cleanup. Same
-  class of problem; group the fix with the item above.
+- ~~**`_restore_options` restores 3 of 10 mutated tornado globals**, to hardcoded
+  values rather than saved originals.~~ Fixed. `OptionsRestoreMixin.override_options`
+  snapshots the previous value of every option a test overrides and restores
+  exactly that. `TestSuiteLeavesOptionsClean` pins the invariant; it failed
+  against the old code with `policy: ('warning', 'reject')`.
+- ~~**A new test class leaves `options.policy = 'reject'` behind** on cleanup.~~
+  Fixed with the item above.
+- **`OtherTestBase` still restores nothing at all.** It mutates eight globals and
+  puts none of them back, so the rest of the suite continues to pass by
+  execution-order luck rather than construction. `override_options` is now
+  available to it; converting it is the remaining half of this item.
 - **Tests leak one `tempfile.mkdtemp` per test method** (about a dozen per run)
   with no cleanup.
 - **Coverage gaps**: PUT while the feature is disabled, XSRF on `/api/settings`,

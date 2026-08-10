@@ -31,7 +31,113 @@ swallow_http_errors = handler.swallow_http_errors
 server_encodings = {e.strip() for e in Server.encodings}
 
 
-class TestAppBase(AsyncHTTPTestCase):
+class OptionsRestoreMixin(object):
+    """Restore tornado's global options after a test mutates them.
+
+    ``options`` is process-global, so a test class that sets an option
+    and does not put it back leaks that value into whichever test runs
+    next. Snapshot the previous value of every option a test overrides
+    and restore exactly that, rather than a hardcoded guess at what it
+    used to be.
+    """
+
+    def override_options(self, **overrides):
+        saved = {}
+        for name in overrides:
+            saved[name] = getattr(options, name)
+        # Registered before anything is mutated, so a failure partway
+        # through still restores whatever was already changed.
+        self.addCleanup(self._restore_options_snapshot, saved)
+        for name, value in overrides.items():
+            setattr(options, name, value)
+
+    def _restore_options_snapshot(self, saved):
+        for name, value in saved.items():
+            setattr(options, name, value)
+
+
+class TestOptionsRestoreMixin(unittest.TestCase):
+
+    class Case(OptionsRestoreMixin, unittest.TestCase):
+        overrides = {}
+        raises = False
+
+        def runTest(self):
+            self.override_options(**self.overrides)
+            if self.raises:
+                raise RuntimeError('boom')
+
+    def run_case(self, overrides, raises=False):
+        case = self.Case()
+        case.overrides = overrides
+        case.raises = raises
+        case.run(unittest.TestResult())
+
+    def test_restores_previous_values(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        self.addCleanup(setattr, options, 'user_hosts', options.user_hosts)
+        options.policy = 'warning'
+        options.user_hosts = False
+
+        self.run_case({'policy': 'reject', 'user_hosts': True})
+
+        self.assertEqual(options.policy, 'warning')
+        self.assertIs(options.user_hosts, False)
+
+    def test_restores_when_the_test_fails(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        options.policy = 'warning'
+
+        self.run_case({'policy': 'reject'}, raises=True)
+
+        self.assertEqual(options.policy, 'warning')
+
+    def test_leaves_untouched_options_alone(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        self.addCleanup(setattr, options, 'origin', options.origin)
+        options.policy = 'warning'
+        options.origin = 'same'
+
+        self.run_case({'policy': 'reject'})
+
+        self.assertEqual(options.origin, 'same')
+
+
+class TestSuiteLeavesOptionsClean(unittest.TestCase):
+    """The suite is the only automated guard on the security invariants,
+    so it must not depend on which test happened to run first.
+
+    Run the classes that mutate the most options and assert every one of
+    them is handed back as it was found.
+    """
+
+    watched = ('debug', 'xsrf', 'policy', 'hostfile', 'syshostfile',
+               'tdstream', 'origin', 'user_hosts', 'userdatadir',
+               'userheader', 'config', 'maxconn')
+
+    def assert_no_leak(self, cls):
+        before = {}
+        for name in self.watched:
+            before[name] = getattr(options, name)
+
+        suite = unittest.TestLoader().loadTestsFromTestCase(cls)
+        suite.run(unittest.TestResult())
+
+        leaked = {}
+        for name in self.watched:
+            after = getattr(options, name)
+            if after != before[name]:
+                leaked[name] = (before[name], after)
+        self.assertEqual(leaked, {})
+
+    def test_user_host_key_isolation_leaves_options_clean(self):
+        self.assert_no_leak(TestUserHostKeyIsolation)
+
+    def test_user_data_api_leaves_options_clean(self):
+        self.assert_no_leak(TestUserDataApi)
+
+
+class TestAppBase(OptionsRestoreMixin, AsyncHTTPTestCase):
 
     def get_httpserver_options(self):
         return get_server_settings(options)
@@ -804,24 +910,23 @@ class UserDataTestBase(TestAppBase):
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
-        options.debug = False
-        options.xsrf = True
-        options.policy = 'warning'
-        options.hostfile = ''
-        options.syshostfile = ''
-        options.tdstream = ''
-        options.origin = 'same'
-        options.user_hosts = self.user_hosts
-        options.userdatadir = self.data_dir
-        options.userheader = 'X-Authentik-Username'
-        self.addCleanup(self._restore_options)
+        self.override_options(
+            debug=False,
+            xsrf=True,
+            policy='warning',
+            hostfile='',
+            syshostfile='',
+            tdstream='',
+            origin='same',
+            # config is deliberately not overridden here: subclasses set it
+            # before get_app runs, and clobbering it would drop their
+            # admin allowlist.
+            user_hosts=self.user_hosts,
+            userdatadir=self.data_dir,
+            userheader='X-Authentik-Username',
+        )
         return make_app(make_handlers(self.io_loop, options),
                         get_app_settings(options))
-
-    def _restore_options(self):
-        options.user_hosts = False
-        options.userdatadir = ''
-        options.config = ''
 
 
 class TestUserDataApi(UserDataTestBase):
@@ -1082,7 +1187,7 @@ class ConnectHostsTestBase(UserDataTestBase):
             yaml.safe_dump({'hosts': [
                 {'name': 'other', 'hostname': self.admin_hostname,
                  'port': 22}]}, f)
-        options.config = self.config_path
+        self.override_options(config=self.config_path)
         super(ConnectHostsTestBase, self).setUp()
         from webssh.user_data import write_hosts
         write_hosts(self.data_dir, 'alice',
@@ -1146,28 +1251,23 @@ class TestUserHostKeyIsolation(TestAppBase):
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
-        options.debug = False
-        options.xsrf = True
-        options.policy = 'reject'
-        # A hostfile is required for the reject policy, and it deliberately
-        # does not contain self.hostname.
-        options.hostfile = make_tests_data_path('known_hosts_example')
-        options.syshostfile = make_tests_data_path('known_hosts_example')
-        options.tdstream = ''
-        options.origin = 'same'
-        options.config = ''
-        options.user_hosts = True
-        options.userdatadir = self.data_dir
-        options.userheader = 'X-Authentik-Username'
-        self.addCleanup(self._restore_options)
+        self.override_options(
+            debug=False,
+            xsrf=True,
+            policy='reject',
+            # A hostfile is required for the reject policy, and it
+            # deliberately does not contain self.hostname.
+            hostfile=make_tests_data_path('known_hosts_example'),
+            syshostfile=make_tests_data_path('known_hosts_example'),
+            tdstream='',
+            origin='same',
+            config='',
+            user_hosts=True,
+            userdatadir=self.data_dir,
+            userheader='X-Authentik-Username',
+        )
         return make_app(make_handlers(self.io_loop, options),
                         get_app_settings(options))
-
-    def _restore_options(self):
-        options.user_hosts = False
-        options.userdatadir = ''
-        options.hostfile = ''
-        options.syshostfile = ''
 
     def setUp(self):
         super(TestUserHostKeyIsolation, self).setUp()
