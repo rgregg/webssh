@@ -18,6 +18,7 @@ from webssh.utils import (
     is_valid_encoding
 )
 from webssh.worker import Worker, recycle_worker, clients
+from webssh import user_data
 from webssh import user_keys
 from webssh._version import __version__
 
@@ -343,6 +344,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
                    user_key_dir='', user_header='X-Authentik-Username',
+                   user_data_dir='', user_hosts_enabled=False,
                    live_config=None):
         super(IndexHandler, self).initialize(loop)
         self.live_config = live_config if live_config is not None else {}
@@ -353,6 +355,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             'allowed_hosts', allowed_hosts) or []
         self.user_key_dir = user_key_dir
         self.user_header = user_header
+        self.user_data_dir = user_data_dir
+        self.user_hosts_enabled = user_hosts_enabled
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
@@ -374,10 +378,33 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def get_ssh_client(self):
         ssh = SSHClient()
         ssh._system_host_keys = self.host_keys_settings['system_host_keys']
-        ssh._host_keys = self.host_keys_settings['host_keys']
+        host_keys = self.host_keys_settings['host_keys']
+        if self.user_hosts_enabled:
+            # User-supplied host entries can contribute host key pins, and
+            # paramiko's HostKeys.add() mutates the store in place (replacing
+            # the key of a matching entry). Sharing the process-wide store
+            # would let one user's pin leak into every other request, both
+            # widening the reject-policy allowlist and downgrading the
+            # administrator's pins. Give this request its own deep-enough
+            # copy: new HostKeys, new HostKeyEntry objects, new hostname
+            # lists. The PKey objects themselves are never mutated, only
+            # rebound, so they can be shared.
+            host_keys = self.copy_host_keys(host_keys)
+        ssh._host_keys = host_keys
         ssh._host_keys_filename = self.host_keys_settings['host_keys_filename']
         ssh.set_missing_host_key_policy(self.policy)
         return ssh
+
+    @staticmethod
+    def copy_host_keys(host_keys):
+        """Return a private copy of a paramiko HostKeys store."""
+        private = paramiko.hostkeys.HostKeys()
+        for entry in host_keys._entries:
+            private._entries.append(
+                paramiko.hostkeys.HostKeyEntry(
+                    list(entry.hostnames), entry.key)
+            )
+        return private
 
     def get_privatekey(self):
         name = 'privatekey'
@@ -420,10 +447,40 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                             hostname, port)
                     )
 
+    def get_user_hosts(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            return []
+        username = self.request.headers.get(self.user_header, '')
+        if not username:
+            return []
+        try:
+            return user_data.read_hosts(self.user_data_dir, username)
+        except ValueError:
+            return []
+
+    def get_effective_hosts(self):
+        admin = self.allowed_hosts
+        seen = set((h['hostname'], h['port']) for h in admin)
+        merged = list(admin)
+        for host in self.get_user_hosts():
+            if not isinstance(host, dict):
+                logging.warning(
+                    'Skipping malformed user host entry: {!r}'.format(host))
+                continue
+            hostname = host.get('hostname')
+            port = host.get('port')
+            if hostname is None or port is None:
+                logging.warning(
+                    'Skipping malformed user host entry: {!r}'.format(host))
+                continue
+            if (hostname, port) not in seen:
+                merged.append(host)
+        return merged
+
     def check_allowed_hosts(self, hostname, port):
         if not self.allowed_hosts:
             return
-        for host in self.allowed_hosts:
+        for host in self.get_effective_hosts():
             if host['hostname'] == hostname and host['port'] == port:
                 return
         raise tornado.web.HTTPError(
@@ -431,9 +488,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         )
 
     def load_configured_host_key(self, hostname, port):
-        if not self.allowed_hosts:
-            return
-        for host in self.allowed_hosts:
+        for host in self.get_effective_hosts():
             if host['hostname'] == hostname and host['port'] == port:
                 for key_str in host.get('host_keys', []):
                     self._add_host_key(hostname, port, key_str)
@@ -616,12 +671,24 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             except ValueError:
                 pass
 
+        user_hosts = self.get_user_hosts()
+        user_settings = {}
+        if self.user_hosts_enabled and auth_username:
+            try:
+                user_settings = user_data.read_settings(
+                    self.user_data_dir, auth_username)
+            except ValueError:
+                user_settings = {}
+
         self.render('index.html', debug=self.debug, font=self.font,
                     allowed_hosts=self.allowed_hosts,
                     user_key_enabled=user_key_enabled,
                     has_stored_key=has_key,
                     public_key=public_key,
                     auth_username=auth_username,
+                    user_hosts_enabled=self.user_hosts_enabled,
+                    user_hosts=user_hosts,
+                    user_settings=user_settings,
                     version=__version__)
 
     @tornado.gen.coroutine
@@ -708,6 +775,139 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
             'username': username,
             'public_key': public_key
         })
+
+
+class UserDataMixin(object):
+
+    def initialize(self, loop, user_data_dir, user_header,
+                   user_hosts_enabled, allowed_hosts=None, live_config=None):
+        super(UserDataMixin, self).initialize(loop)
+        self.user_data_dir = user_data_dir
+        self.user_header = user_header
+        self.user_hosts_enabled = user_hosts_enabled
+        self.live_config = live_config if live_config is not None else {}
+        self._allowed_hosts = allowed_hosts or []
+
+    @property
+    def allowed_hosts(self):
+        return self.live_config.get('allowed_hosts', self._allowed_hosts) or []
+
+    def check_feature_enabled(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            raise tornado.web.HTTPError(
+                403, 'User host management is not enabled.')
+
+    def get_auth_username(self):
+        username = self.request.headers.get(self.user_header, '')
+        if not username:
+            raise tornado.web.HTTPError(401, 'No authenticated user found.')
+        try:
+            user_keys.sanitize_username(username)
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid username.')
+        return username
+
+    def get_json_body(self, key):
+        try:
+            data = json.loads(self.request.body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            raise tornado.web.HTTPError(400, 'Malformed JSON body.')
+        if not isinstance(data, dict):
+            raise tornado.web.HTTPError(400, 'Body must be a JSON object.')
+        if key not in data:
+            raise tornado.web.HTTPError(
+                400, 'Missing "{}" key.'.format(key))
+        return data[key]
+
+    def write_error(self, status_code, **kwargs):
+        reason = self._reason
+        exc_info = kwargs.get('exc_info')
+        if exc_info:
+            log_message = getattr(exc_info[1], 'log_message', None)
+            if log_message:
+                reason = log_message
+        self.finish({'error': reason})
+
+
+class UserHostsHandler(UserDataMixin, MixinHandler,
+                       tornado.web.RequestHandler):
+
+    def get(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        self.write({
+            'admin_hosts': self.allowed_hosts,
+            'user_hosts': user_data.read_hosts(self.user_data_dir, username),
+        })
+
+    def put(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        hosts = self.get_json_body('hosts')
+        # Validate first: ValueErrors from validation describe the
+        # caller's own input (bad hostname, bad port, ...) and are safe
+        # to return to the client as-is.
+        try:
+            user_data.validate_hosts(hosts)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        # A failure here is about server state (disk permissions, a bad
+        # data directory, ...), never the client's input. That detail
+        # must never reach the client -- log it and return a generic 500.
+        try:
+            stored = user_data.write_hosts(self.user_data_dir, username, hosts)
+        except ValueError as exc:
+            logging.error(
+                'Failed to write hosts for user {!r}: {}'.format(
+                    username, exc))
+            raise tornado.web.HTTPError(500, 'Failed to save hosts.')
+        self.write({'user_hosts': stored})
+
+
+class UserSettingsHandler(UserDataMixin, MixinHandler,
+                          tornado.web.RequestHandler):
+
+    def get(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        self.write({
+            'settings': user_data.read_settings(self.user_data_dir, username),
+        })
+
+    def put(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        settings = self.get_json_body('settings')
+        # Validate first: ValueErrors from validation describe the
+        # caller's own input and are safe to return to the client as-is.
+        try:
+            user_data.validate_settings(settings)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, str(exc))
+        # A failure here is about server state, never the client's input.
+        # That detail must never reach the client -- log it and return a
+        # generic 500.
+        try:
+            stored = user_data.write_settings(
+                self.user_data_dir, username, settings)
+        except ValueError as exc:
+            logging.error(
+                'Failed to write settings for user {!r}: {}'.format(
+                    username, exc))
+            raise tornado.web.HTTPError(500, 'Failed to save settings.')
+        self.write({'settings': stored})
+
+
+class SettingsPaneHandler(UserDataMixin, MixinHandler,
+                          tornado.web.RequestHandler):
+
+    def get(self):
+        if not self.user_hosts_enabled or not self.user_data_dir:
+            raise tornado.web.HTTPError(404)
+        username = self.get_auth_username()
+        self.render('settings.html',
+                    auth_username=username,
+                    admin_hosts=self.allowed_hosts)
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):

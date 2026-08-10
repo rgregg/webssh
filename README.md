@@ -11,6 +11,7 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 * Password and public-key authentication (RSA, ECDSA, Ed25519)
 * Encrypted keys and TOTP two-factor authentication
 * Per-user server-side SSH key generation and storage
+* Per-user host lists and preferences that roam across browsers and machines
 * YAML configuration with host allowlisting and host key pinning
 * Hostname:port shortcut in the connect form
 * Username pre-filled from auth proxy header
@@ -92,6 +93,41 @@ When `userkeydir` is configured, authenticated users can generate Ed25519 key pa
 
 Requires an auth proxy (e.g. Authentik) that sets a username header.
 
+### User-managed hosts
+
+With `user_hosts: true`, each authenticated user gets a Settings tab where they
+can add their own hosts and set terminal preferences. Both are stored on the
+server under `userdatadir` (defaulting to `userkeydir`), so they follow the user
+between browsers and machines.
+
+**The `hosts:` allowlist above is a security boundary: it is the only thing
+stopping an authenticated user from connecting anywhere. Turning on
+`user_hosts` lets users add their own hosts outside that allowlist, so it stops
+being a hard restriction.** If you rely on `hosts:` to restrict where users can
+connect, leave `user_hosts` off.
+
+```yaml
+user_hosts: true
+userdatadir: /var/lib/webssh/user-data
+userheader: X-Authentik-Username
+trusted_proxies:
+  - 10.0.0.1
+```
+
+Administrator hosts from `hosts:` remain read-only and always take precedence: if
+a user saves a host with the same hostname and port as an administrator entry,
+the user's entry is dropped in its entirety and only the administrator's entry
+is used — its host key pins, its username, and its default command. The user's
+colliding entry still appears in their Settings tab, but it has no effect on
+connections.
+
+Requires an auth proxy that sets a username header; without one, `user_hosts`
+has no effect. Set `trusted_proxies` so the header can't be spoofed — without
+it, any client can claim any username and reach that user's stored hosts.
+
+Secrets (passwords, TOTP codes, key passphrases) are never stored server-side,
+whether for administrator or personal hosts.
+
 ### Docker Compose
 
 ```yaml
@@ -159,3 +195,14 @@ Run tests:
 pip install pytest
 python -m pytest tests
 ```
+
+Browser client tests require Node 20+ and install nothing:
+
+```bash
+node --test tests/js/*.test.js
+```
+
+They cover the pure decision logic in `webssh/static/js/user-hosts.js` — host
+payload construction, port validation, settings merging, preference precedence,
+and the legacy command migration. DOM behaviour in `main.js` (tab lifecycle, the
+hostname input/select upgrade, asynchronous save sequencing) is not covered.

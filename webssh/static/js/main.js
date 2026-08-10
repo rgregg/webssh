@@ -71,7 +71,8 @@ jQuery(function($){
     activeTabId: null,
     tabCounter: 0,
 
-    createTab: function() {
+    createTab: function(kind) {
+      kind = kind || 'terminal';
       var tabId = ++this.tabCounter;
       var container = document.createElement('div');
       container.className = 'terminal-pane';
@@ -90,7 +91,7 @@ jQuery(function($){
 
       var label = document.createElement('span');
       label.className = 'tab-label';
-      label.textContent = 'New Connection';
+      label.textContent = (kind === 'settings') ? 'Settings' : 'New Connection';
 
       var closeBtn = document.createElement('button');
       closeBtn.className = 'tab-close';
@@ -124,7 +125,8 @@ jQuery(function($){
 
       var tab = {
         id: tabId,
-        label: 'New Connection',
+        kind: kind,
+        label: (kind === 'settings') ? 'Settings' : 'New Connection',
         state: DISCONNECTED,
         term: null,
         fitAddon: null,
@@ -164,7 +166,9 @@ jQuery(function($){
       // Dismiss any lingering status from other tabs
       dismiss_status();
 
-      if (tab.state === CONNECTED && tab.term) {
+      if (tab.kind === 'settings') {
+        form_container.hide();
+      } else if (tab.state === CONNECTED && tab.term) {
         form_container.hide();
         // Fit after a brief delay so layout settles, then focus
         setTimeout(function() {
@@ -182,7 +186,9 @@ jQuery(function($){
 
 
       // Update page title
-      if (tab.state === CONNECTED && tab.title) {
+      if (tab.kind === 'settings') {
+        title_element.text = 'Settings';
+      } else if (tab.state === CONNECTED && tab.title) {
         title_element.text = tab.title;
       } else {
         title_element.text = default_title;
@@ -237,13 +243,35 @@ jQuery(function($){
           this.activateTab(ids[idx]);
         } else {
           // No tabs left, create new one
-          this.createTab();
+          this.createTab('terminal');
         }
       }
     },
 
     getActiveTab: function() {
       return this.tabs[this.activeTabId] || null;
+    },
+
+    openSettings: function() {
+      var ids = this.getTabIds();
+      for (var i = 0; i < ids.length; i++) {
+        if (this.tabs[ids[i]].kind === 'settings') {
+          this.activateTab(ids[i]);
+          return;
+        }
+      }
+      var tab = this.createTab('settings');
+      var pane = $(tab.containerEl);
+      pane.html('<div class="settings-loading">Loading settings...</div>');
+      $.get('/settings-pane')
+        .done(function(html) {
+          pane.html(html);
+          init_settings_pane(pane);
+        })
+        .fail(function() {
+          pane.html('<div class="settings-loading">Failed to load settings.</div>');
+        });
+      return tab;
     },
 
     updateTabLabel: function(tabId, label) {
@@ -359,8 +387,50 @@ jQuery(function($){
     }
   };
 
+  // Guard against user-hosts.js failing to load (404, blocked, etc).
+  // Placed here rather than at the very top of the closure because
+  // log_status() depends on status/waiter/form_container/validated_form_data
+  // (declared above) and on tabManager (defined immediately above this
+  // line) all being initialized. Without this guard, a missing
+  // webssh_hosts silently parses fine and the first ReferenceError does
+  // not fire until deep inside the connect .done() callback, after the
+  // WebSocket has already been opened.
+  if (typeof webssh_hosts === 'undefined') {
+    log_status('Client script failed to load; reload the page.', false);
+    return;
+  }
+
 
   // ===================== Utility Functions =====================
+
+  var prefs = {
+    timer: null,
+
+    schedule: function() {
+      var self = this;
+      if (this.timer) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(function() { self.flush(); }, 1000);
+    },
+
+    flush: function() {
+      if (!user_hosts_enabled) return;
+      this.timer = null;
+      $.ajax({
+        url: '/api/settings', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({settings: user_settings})
+      }).fail(function(xhr) {
+        // Silent failure here means preferences quietly revert on the next
+        // page load (the roamed value wins over localStorage), so make it
+        // visible.
+        var detail = xhr && xhr.status ? String(xhr.status) : 'network error';
+        var message = 'Could not save preferences (' + detail + ').';
+        console.warn(message);
+        show_status_text(message);
+      });
+    }
+  };
+
 
   function store_items(names, data) {
     var i, name, value;
@@ -368,10 +438,15 @@ jQuery(function($){
     for (i = 0; i < names.length; i++) {
       name = names[i];
       value = data.get(name);
-      if (value){
+      if (value) {
         window.localStorage.setItem(name, value);
+        var roamed = webssh_hosts.roaming_update(name, value);
+        if (roamed) {
+          user_settings[roamed.key] = roamed.value;
+        }
       }
     }
+    prefs.schedule();
   }
 
 
@@ -380,6 +455,21 @@ jQuery(function($){
     var port = data.get ? data.get('port') : data.port;
     if (!hostname) return null;
     return 'command:' + hostname + ':' + (port || '22');
+  }
+
+
+  function find_user_host(hostname, port) {
+    var match = null;
+    $('#hostname option').each(function() {
+      var option = $(this);
+      // Only user hosts carry data-command; admin hosts never do.
+      if (option.attr('data-command') === undefined) return;
+      if (option.attr('value') !== hostname) return;
+      if (String(option.attr('data-port')) !== String(port || 22)) return;
+      match = option;
+      return false;
+    });
+    return match;
   }
 
 
@@ -392,11 +482,23 @@ jQuery(function($){
     } else {
       window.localStorage.removeItem(key);
     }
+    // Server-side hosts own their own default_command, edited in Settings.
   }
 
 
   function restore_default_command(hostname, port) {
     if (!hostname) return;
+    var option = find_user_host(hostname, port);
+    if (option) {
+      var host_command = option.attr('data-command');
+      if (host_command) {
+        $('#default-command').val(host_command);
+        return;
+      }
+      // An empty default_command means "no host-specific override" -- fall
+      // through to the localStorage value below rather than blanking
+      // whatever the user has set locally for this host.
+    }
     var key = get_host_key({hostname: hostname, port: port});
     if (!key) return;
     var command = window.localStorage.getItem(key);
@@ -404,20 +506,93 @@ jQuery(function($){
   }
 
 
+  // The username carried by the currently selected host option, if any.
+  function selected_host_username() {
+    var el = $('#hostname');
+    if (!el.is('select')) return '';
+    return el.find('option:selected').attr('data-username') || '';
+  }
+
+
   function restore_items(names) {
     var i, name, value;
 
-    for (i=0; i < names.length; i++) {
+    for (i = 0; i < names.length; i++) {
       name = names[i];
-      value = window.localStorage.getItem(name);
+      // 'hostname' is restored before 'username' and its change handler
+      // fills #username from the selected host's data-username. That
+      // host-specific username must win over the roamed/stored one, which
+      // would otherwise clobber it here. A free-text hostname (or a host
+      // with no saved username) carries no data-username, so the roamed
+      // last_username still applies there.
+      if (name === 'username' && selected_host_username()) {
+        continue;
+      }
+      value = null;
+      if (user_hosts_enabled && webssh_hosts.ROAMING_FIELDS[name]) {
+        var roamed = user_settings[webssh_hosts.ROAMING_FIELDS[name]];
+        if (roamed !== undefined && roamed !== null && roamed !== '') {
+          value = String(roamed);
+        }
+      }
+      if (value === null) {
+        value = window.localStorage.getItem(name);
+      }
       if (value) {
-        var el = $('#'+name);
+        var el = $('#' + name);
         el.val(value);
         if (name === 'hostname' && el.is('select')) {
           el.trigger('change');
         }
       }
     }
+  }
+
+
+  function migrate_local_commands() {
+    if (!user_hosts_enabled) return;
+    if (window.localStorage.getItem('webssh_migrated_commands')) return;
+    if (migrate_local_commands.running) return;
+    migrate_local_commands.running = true;
+
+    var found = [];
+    for (var i = 0; i < window.localStorage.length; i++) {
+      var key = window.localStorage.key(i);
+      var parsed = webssh_hosts.parse_command_key(key);
+      if (parsed) {
+        found.push({
+          hostname: parsed.hostname,
+          port: parsed.port,
+          command: window.localStorage.getItem(key)
+        });
+      }
+    }
+    if (!found.length) {
+      window.localStorage.setItem('webssh_migrated_commands', '1');
+      migrate_local_commands.running = false;
+      return;
+    }
+    $.get('/api/hosts').done(function(data) {
+      var merged = webssh_hosts.merge_migrated_commands(data.user_hosts || [], found);
+      if (!merged.changed) {
+        window.localStorage.setItem('webssh_migrated_commands', '1');
+        return;
+      }
+      var payload = merged.payload;
+      $.ajax({
+        url: '/api/hosts', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({hosts: payload})
+      }).done(function() {
+        window.localStorage.setItem('webssh_migrated_commands', '1');
+        refresh_host_list();
+      });
+    }).always(function() {
+      migrate_local_commands.running = false;
+    });
+    // Note: on GET failure, neither the migrated-flag nor a host PUT ever
+    // happens here -- .fail() is intentionally not handled, so nothing is
+    // written and the migration is simply retried on a future page load.
   }
 
 
@@ -626,8 +801,9 @@ jQuery(function($){
 
   status.on('click', dismiss_status);
 
-  function log_status(text, to_populate) {
-    console.log(text);
+  // Set the status banner text without touching the waiter or the form
+  // container, so background failures can report themselves at any time.
+  function show_status_text(text) {
     if (text) {
       status.empty()
         .append($('<span>').text(text))
@@ -636,6 +812,11 @@ jQuery(function($){
     } else {
       status.empty().removeClass('visible');
     }
+  }
+
+  function log_status(text, to_populate) {
+    console.log(text);
+    show_status_text(text);
 
     if (to_populate && validated_form_data) {
       populate_form(validated_form_data);
@@ -646,13 +827,263 @@ jQuery(function($){
       waiter.hide();
     }
 
-    // Only show form if the active tab is disconnected
+    // Only show form if the active tab is disconnected (and not the settings tab)
     var activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.state !== CONNECTED) {
+    if (activeTab && activeTab.state !== CONNECTED && activeTab.kind !== 'settings') {
       if (form_container.css('display') === 'none') {
         form_container.show();
       }
     }
+  }
+
+
+  // ===================== Settings Pane =====================
+
+  function settings_status(pane, message, is_error) {
+    var el = pane.find('#settings-status');
+    el.text(message || '');
+    el.toggleClass('error', !!is_error);
+  }
+
+
+  function add_host_row(pane, host) {
+    host = host || {};
+    var tpl = pane.find('#host-row-template')[0];
+    var row = $(document.importNode(tpl.content, true));
+    row.find('.host-name').val(host.name || '');
+    row.find('.host-hostname').val(host.hostname || '');
+    row.find('.host-port').val(host.port || '');
+    row.find('.host-username').val(host.username || '');
+    row.find('.host-command').val(host.default_command || '');
+    row.find('.host-keys').val((host.host_keys || []).join('\n'));
+    pane.find('#user-host-rows').append(row);
+  }
+
+
+  function collect_host_rows(pane) {
+    var rows = [];
+    var row_els = [];
+    pane.find('#user-host-rows .host-port').removeClass('input-error');
+    pane.find('#user-host-rows tr.user-host').each(function() {
+      var row = $(this);
+      row_els.push(row);
+      rows.push({
+        name: row.find('.host-name').val(),
+        hostname: row.find('.host-hostname').val(),
+        port_text: row.find('.host-port').val(),
+        keys_text: row.find('.host-keys').val(),
+        username: row.find('.host-username').val(),
+        default_command: row.find('.host-command').val()
+      });
+    });
+
+    var built = webssh_hosts.build_host_payload(rows);
+    if (built.error && built.error_index >= 0) {
+      row_els[built.error_index].find('.host-port').addClass('input-error');
+    }
+    return {hosts: built.hosts, error: built.error};
+  }
+
+
+  function collect_settings(pane) {
+    return webssh_hosts.merge_settings(user_settings, {
+      font_size_text: pane.find('#set-font-size').val(),
+      background: pane.find('#set-background').val(),
+      foreground: pane.find('#set-foreground').val(),
+      cursor: pane.find('#set-cursor').val(),
+      encoding: pane.find('#set-encoding').val(),
+      term: pane.find('#set-term').val(),
+      cursor_blink: pane.find('#set-cursor-blink').is(':checked'),
+      key_source: pane.find('#set-key-source').val()
+    });
+  }
+
+
+  function init_settings_pane(pane) {
+    pane.find('.settings-tab').on('click', function() {
+      var section = $(this).data('section');
+      pane.find('.settings-tab').removeClass('active');
+      $(this).addClass('active');
+      pane.find('.settings-section').removeClass('active');
+      pane.find('#settings-' + section).addClass('active');
+    });
+
+    pane.find('#add-host-btn').on('click', function() {
+      add_host_row(pane, {});
+    });
+
+    pane.on('click', '.host-delete', function() {
+      $(this).closest('tr').remove();
+    });
+
+    pane.find('#set-font-size').val(user_settings.font_size || '');
+    pane.find('#set-background').val(user_settings.background || '');
+    pane.find('#set-foreground').val(user_settings.foreground || '');
+    pane.find('#set-cursor').val(user_settings.cursor || '');
+    pane.find('#set-encoding').val(user_settings.encoding || '');
+    pane.find('#set-term').val(user_settings.term || '');
+    pane.find('#set-cursor-blink').prop('checked',
+                                        user_settings.cursor_blink !== false);
+    if (user_settings.key_source) {
+      pane.find('#set-key-source').val(user_settings.key_source);
+    }
+
+    // The host list PUT honors an empty "hosts" array as "clear my list".
+    // Never let a save proceed from a list this pane failed to load, so
+    // keep Save disabled until the GET resolves (and leave it disabled,
+    // with an explicit error, if it fails).
+    pane.find('#settings-save').prop('disabled', true);
+    $.get('/api/hosts').done(function(data) {
+      var hosts = data.user_hosts || [];
+      for (var i = 0; i < hosts.length; i++) {
+        add_host_row(pane, hosts[i]);
+      }
+      pane.find('#settings-save').prop('disabled', false);
+    }).fail(function() {
+      settings_status(
+        pane,
+        'Failed to load your existing hosts. Save is disabled to avoid ' +
+        'overwriting them; reload the tab and try again.',
+        true
+      );
+    });
+
+    pane.find('#settings-save').on('click', function() {
+      var collected = collect_host_rows(pane);
+      if (collected.error) {
+        settings_status(pane, collected.error, true);
+        return;
+      }
+      // Cancel any pending debounced flush from prefs.schedule() (armed by
+      // a recent connect via store_items). That flush closes over the
+      // outer user_settings binding and would otherwise race this save's
+      // own PUT: if it fires while this save is still in flight, it can
+      // land at the server with the pre-save object and silently revert
+      // whatever this pane just saved.
+      if (prefs.timer) {
+        window.clearTimeout(prefs.timer);
+        prefs.timer = null;
+      }
+      settings_status(pane, 'Saving...');
+      var hosts = collected.hosts;
+      var settings = collect_settings(pane);
+      $.ajax({
+        url: '/api/hosts', type: 'PUT', contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: JSON.stringify({hosts: hosts})
+      }).done(function() {
+        // Hosts are now persisted regardless of what happens to settings
+        // below, so refresh the dropdown now rather than only on full
+        // success -- otherwise a settings failure leaves the dropdown
+        // looking stale even though the hosts did save.
+        refresh_host_list();
+        return $.ajax({
+          url: '/api/settings', type: 'PUT', contentType: 'application/json',
+          headers: {'X-Xsrftoken': get_xsrf_token()},
+          data: JSON.stringify({settings: settings})
+        }).done(function(data) {
+          user_settings = data.settings || {};
+          settings_status(pane, 'Saved');
+        }).fail(function(xhr) {
+          settings_status(
+            pane,
+            'Hosts saved, but settings failed to save: ' + save_error_text(xhr),
+            true
+          );
+        });
+      }).fail(function(xhr) {
+        settings_status(pane, 'Hosts failed to save: ' + save_error_text(xhr), true);
+      });
+    });
+  }
+
+
+  function save_error_text(xhr) {
+    return webssh_hosts.save_error_text(
+      xhr ? xhr.status : 0, xhr ? xhr.responseJSON : null);
+  }
+
+
+  function get_xsrf_token() {
+    var match = document.cookie.match(/\b_xsrf=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+
+  function build_hostname_select() {
+    return $('<select>')
+      .attr('id', 'hostname')
+      .attr('name', 'hostname')
+      .addClass('field-input')
+      .attr('required', 'required');
+  }
+
+
+  function build_hostname_input() {
+    return $('<input>')
+      .attr('type', 'text')
+      .attr('id', 'hostname')
+      .attr('name', 'hostname')
+      .addClass('field-input')
+      .attr('placeholder', 'host or host:port')
+      .attr('required', 'required')
+      .val('');
+  }
+
+
+  function refresh_host_list() {
+    if (!user_hosts_enabled) return;
+    $.get('/api/hosts').done(function(data) {
+      var admin_hosts = data.admin_hosts || [];
+      var user_hosts = data.user_hosts || [];
+      var total = admin_hosts.length + user_hosts.length;
+      var el = $('#hostname');
+      var is_select = el.is('select');
+      var current = el.val();
+
+      if (total > 0 && !is_select) {
+        // Upgrade the plain text input into a dropdown now that there is
+        // something to choose from. Built via jQuery DOM construction
+        // (not string-concatenated HTML) to keep this XSS-safe like the
+        // option-building code below.
+        var new_select = build_hostname_select();
+        el.replaceWith(new_select);
+        el = new_select;
+        is_select = true;
+        // Keep this in lockstep with index.html's identical
+        // allowed_hosts-or-user_hosts condition on #port's readonly attr.
+        $('#port').attr('readonly', 'readonly');
+      } else if (total === 0 && is_select) {
+        // Downgrade back to free text; nothing left to choose from and an
+        // empty <select> would leave the user with no way to type a host.
+        var new_input = build_hostname_input();
+        el.replaceWith(new_input);
+        el = new_input;
+        is_select = false;
+        $('#port').removeAttr('readonly');
+      }
+
+      if (!is_select) return;
+
+      el.empty();
+      var groups = [admin_hosts, user_hosts];
+      for (var g = 0; g < groups.length; g++) {
+        for (var i = 0; i < groups[g].length; i++) {
+          var host = groups[g][i];
+          var option = $('<option>')
+            .attr('value', host.hostname)
+            .attr('data-port', host.port)
+            .text(host.name);
+          if (g === 1) {
+            option.attr('data-username', host.username || '');
+            option.attr('data-command', host.default_command || '');
+          }
+          el.append(option);
+        }
+      }
+      if (current) el.val(current);
+      el.trigger('change');
+    });
   }
 
 
@@ -700,21 +1131,8 @@ jQuery(function($){
           sock = new window.WebSocket(url),
           encoding = 'utf-8',
           decoder = window.TextDecoder ? new window.TextDecoder(encoding) : encoding,
-          termOptions = {
-            cursorBlink: true,
-            theme: {
-              background: url_opts_data.bgcolor || 'black',
-              foreground: url_opts_data.fontcolor || 'white',
-              cursor: url_opts_data.cursor || url_opts_data.fontcolor || 'white'
-            }
-          };
-
-      if (url_opts_data.fontsize) {
-        var fontsize = window.parseInt(url_opts_data.fontsize);
-        if (fontsize && fontsize > 0) {
-          termOptions.fontSize = fontsize;
-        }
-      }
+          termOptions = webssh_hosts.resolve_terminal_options(
+            url_opts_data, user_settings);
 
       var term = new window.Terminal(termOptions);
       var fitAddon = new window.FitAddon.FitAddon();
@@ -1196,6 +1614,12 @@ jQuery(function($){
     var result, opts;
     var tab = tabManager.getActiveTab();
 
+    // A settings tab is never a valid connect target; open a new terminal
+    // tab and connect there instead.
+    if (tab && tab.kind === 'settings') {
+      tab = tabManager.createTab('terminal');
+    }
+
     if (!tab || tab.state !== DISCONNECTED) {
       if (tab) {
         console.log(messages[tab.state]);
@@ -1290,8 +1714,12 @@ jQuery(function($){
     update_advanced_summary();
   });
 
-  // Auto-populate port and restore default command when hostname changes
-  $('#hostname').on('change', function() {
+  // Auto-populate port and restore default command when hostname changes.
+  // Delegated on the form (rather than bound directly to #hostname) because
+  // refresh_host_list() may replace the #hostname element outright when it
+  // upgrades between a plain text input and a <select>; a direct binding
+  // would be lost when that happens.
+  $(form_id).on('change', '#hostname', function() {
     var port;
     if ($(this).is('select')) {
       port = $(this).find(':selected').data('port');
@@ -1301,6 +1729,15 @@ jQuery(function($){
     }
     restore_default_command($(this).val(), port || $('#port').val());
     update_advanced_summary();
+
+    var option = $('#hostname option:selected');
+    var host_username = option.attr('data-username');
+    var host_command = option.attr('data-command');
+    if (host_username) $('#username').val(host_username);
+    // An empty default_command means "no host-specific override" -- leave
+    // whatever restore_default_command already populated from localStorage
+    // alone rather than blanking it.
+    if (host_command) $('#default-command').val(host_command);
   });
 
   // Restore default command when port changes
@@ -1389,9 +1826,11 @@ jQuery(function($){
       args = [args];
     }
 
-    // Create a new tab for cross-origin connections if current tab is connected
+    // Create a new tab for cross-origin connections if the current tab is
+    // already connected, or if it is the settings tab (never a valid
+    // connect target).
     var activeTab = tabManager.getActiveTab();
-    if (activeTab && activeTab.state === CONNECTED) {
+    if (activeTab && (activeTab.state === CONNECTED || activeTab.kind === 'settings')) {
       tabManager.createTab();
     }
 
@@ -1430,6 +1869,10 @@ jQuery(function($){
 
   $('#new-tab-btn').on('click', function() {
     tabManager.createTab();
+  });
+
+  $('#settings-btn').on('click', function() {
+    tabManager.openSettings();
   });
 
 
@@ -1524,7 +1967,20 @@ jQuery(function($){
 
   if (url_opts_data.term) {
     term_type.val(url_opts_data.term);
+  } else if (user_settings.term) {
+    term_type.val(user_settings.term);
   }
+
+  if (user_settings.key_source === 'stored' && user_key_enabled) {
+    $('#key_source_stored').prop('checked', true).trigger('change');
+  }
+
+  // One-time upgrade of any locally-stored per-host default commands onto
+  // the user's server-side host records. Safe to call before or after
+  // restore_default_command below; it only ever reads localStorage and the
+  // freshly-fetched /api/hosts list, and never PUTs a list it did not
+  // itself successfully fetch.
+  migrate_local_commands();
 
   // Create the first tab
   tabManager.createTab();

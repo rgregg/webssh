@@ -1,3 +1,4 @@
+import base64
 import io
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from tornado.httputil import HTTPServerRequest
 from tornado.options import options
 from tests.utils import read_file, make_tests_data_path
 from webssh import handler
+from webssh import user_data
 from webssh import user_keys
 from webssh.handler import (
     IndexHandler, MixinHandler, WsockHandler, PrivateKey, InvalidValueError,
@@ -15,9 +17,9 @@ from webssh.handler import (
 )
 
 try:
-    from unittest.mock import Mock
+    from unittest.mock import Mock, patch
 except ImportError:
-    from mock import Mock
+    from mock import Mock, patch
 
 
 class TestMixinHandler(unittest.TestCase):
@@ -327,6 +329,9 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
     def _make_handler(self, allowed_hosts=None):
         handler_obj = Mock(spec=IndexHandler)
         handler_obj.allowed_hosts = allowed_hosts or []
+        handler_obj.get_user_hosts = lambda: []
+        handler_obj.get_effective_hosts = lambda: \
+            IndexHandler.get_effective_hosts(handler_obj)
         handler_obj.check_allowed_hosts = lambda h, p: \
             IndexHandler.check_allowed_hosts(handler_obj, h, p)
         return handler_obj
@@ -361,6 +366,100 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
         with self.assertRaises(tornado.web.HTTPError) as ctx:
             h.check_allowed_hosts('10.0.1.5', 2222)
         self.assertEqual(ctx.exception.status_code, 403)
+
+
+class FakeHostKeys(object):
+    """Records what load_configured_host_key/_add_host_key actually store,
+    so tests can assert against the paramiko host key store itself rather
+    than just the merged host list."""
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, hostname, key_type, key):
+        self.added.append((hostname, key_type, key))
+
+
+class TestLoadConfiguredHostKey(unittest.TestCase):
+
+    # Two distinct, valid ed25519 public keys (different key material).
+    admin_key = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvD'
+                 'ZzdKnd2MlrZ2sAs5qF7XMRF')
+    user_key = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEF7nSZPAVEiuuEjgBzsnv'
+                'kt5yRbRIRTS8tYY7eyhEVV')
+
+    def _key_object(self, key_str):
+        b64 = key_str.strip().split()[1]
+        return paramiko.Ed25519Key(data=base64.b64decode(b64))
+
+    def _make_handler(self, allowed_hosts):
+        handler_obj = Mock(spec=IndexHandler)
+        handler_obj.allowed_hosts = allowed_hosts
+        handler_obj.get_effective_hosts = lambda: \
+            IndexHandler.get_effective_hosts(handler_obj)
+        handler_obj.load_configured_host_key = lambda h, p: \
+            IndexHandler.load_configured_host_key(handler_obj, h, p)
+        handler_obj._add_host_key = lambda h, p, k: \
+            IndexHandler._add_host_key(handler_obj, h, p, k)
+        handler_obj.ssh_client = Mock()
+        handler_obj.ssh_client._host_keys = FakeHostKeys()
+        return handler_obj
+
+    def test_admin_key_wins_collision(self):
+        # Admin and user both pin a DIFFERENT key for the same hostname:port.
+        # The admin key must be what reaches the paramiko host key store,
+        # and the user's key must never appear there.
+        admin = [{'name': 'prod', 'hostname': '10.0.1.5', 'port': 22,
+                  'host_keys': [self.admin_key]}]
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 22,
+                 'host_keys': [self.user_key]}]
+        h = self._make_handler(admin)
+        h.get_user_hosts = lambda: user
+
+        h.load_configured_host_key('10.0.1.5', 22)
+
+        added = h.ssh_client._host_keys.added
+        self.assertEqual(len(added), 1)
+        hostname, key_type, key = added[0]
+        self.assertEqual(hostname, '10.0.1.5')
+        self.assertEqual(key_type, 'ssh-ed25519')
+        self.assertEqual(key, self._key_object(self.admin_key))
+        self.assertNotEqual(key, self._key_object(self.user_key))
+
+    def test_no_admin_allowlist_still_loads_user_key(self):
+        # This is the dropped-guard branch: no administrator allowlist is
+        # configured at all, but a personal host's pinned key must still
+        # load into the paramiko store.
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 22,
+                 'host_keys': [self.user_key]}]
+        h = self._make_handler([])
+        h.get_user_hosts = lambda: user
+
+        h.load_configured_host_key('10.0.1.5', 22)
+
+        added = h.ssh_client._host_keys.added
+        self.assertEqual(len(added), 1)
+        hostname, key_type, key = added[0]
+        self.assertEqual(hostname, '10.0.1.5')
+        self.assertEqual(key, self._key_object(self.user_key))
+
+    def test_feature_disabled_user_key_not_loaded(self):
+        # Drive the real get_user_hosts gating (not a stub) so this proves
+        # the disabled-feature path, not just an empty-list stand-in.
+        h = self._make_handler([])
+        h.user_hosts_enabled = False
+        h.user_data_dir = '/nonexistent-should-never-be-read'
+        h.user_header = 'X-Authentik-Username'
+        h.request = Mock(headers={'X-Authentik-Username': 'alice'})
+        h.get_user_hosts = lambda: IndexHandler.get_user_hosts(h)
+
+        with patch.object(user_data, 'read_hosts', return_value=[
+                {'name': 'mine', 'hostname': '10.0.1.5', 'port': 22,
+                 'host_keys': [self.user_key]}]) as mock_read:
+            h.load_configured_host_key('10.0.1.5', 22)
+            mock_read.assert_not_called()
+
+        self.assertEqual(h.ssh_client._host_keys.added, [])
 
 
 class TestIndexHandler(unittest.TestCase):

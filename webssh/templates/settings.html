@@ -1,0 +1,105 @@
+<div class="settings-pane">
+  <div class="settings-header">
+    <span class="settings-title">Settings</span>
+    <span class="settings-user">{{ auth_username }}</span>
+  </div>
+
+  <div class="settings-tabs" role="tablist">
+    <button type="button" class="settings-tab active" data-section="hosts" role="tab">Hosts</button>
+    <button type="button" class="settings-tab" data-section="terminal" role="tab">Terminal</button>
+    <button type="button" class="settings-tab" data-section="connection" role="tab">Connection</button>
+  </div>
+
+  <div class="settings-body">
+    <section id="settings-hosts" class="settings-section active">
+      {% if admin_hosts %}
+      <div class="settings-subhead">Administrator hosts (read-only)</div>
+      <table class="settings-table">
+        <tbody>
+          {% for host in admin_hosts %}
+          <tr class="admin-host">
+            <td>{{ host['name'] }}</td>
+            <td>{{ host['hostname'] }}</td>
+            <td>{{ host['port'] }}</td>
+            <td><span class="host-badge">admin</span></td>
+          </tr>
+          {% end %}
+        </tbody>
+      </table>
+      {% end %}
+
+      <div class="settings-subhead">Your hosts</div>
+      <table class="settings-table">
+        <tbody id="user-host-rows"></tbody>
+      </table>
+      <button type="button" class="btn-generate" id="add-host-btn">+ Add host</button>
+    </section>
+
+    <section id="settings-terminal" class="settings-section">
+      <div class="field-row">
+        <div class="field-group">
+          <span class="field-label">Font Size</span>
+          <input class="field-input" type="number" id="set-font-size" min="6" max="40" placeholder="14">
+        </div>
+        <div class="field-group">
+          <span class="field-label">Background</span>
+          <input class="field-input" type="text" id="set-background" placeholder="black">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-group">
+          <span class="field-label">Foreground</span>
+          <input class="field-input" type="text" id="set-foreground" placeholder="white">
+        </div>
+        <div class="field-group">
+          <span class="field-label">Cursor</span>
+          <input class="field-input" type="text" id="set-cursor" placeholder="white">
+        </div>
+      </div>
+      <div class="field-row single">
+        <label class="settings-checkbox">
+          <input type="checkbox" id="set-cursor-blink"> Cursor blink
+        </label>
+      </div>
+    </section>
+
+    <section id="settings-connection" class="settings-section">
+      <div class="field-row">
+        <div class="field-group">
+          <span class="field-label">Encoding</span>
+          <input class="field-input" type="text" id="set-encoding" placeholder="utf-8">
+        </div>
+        <div class="field-group">
+          <span class="field-label">Terminal Type</span>
+          <input class="field-input" type="text" id="set-term" placeholder="xterm-256color">
+        </div>
+      </div>
+      <div class="field-row single">
+        <div class="field-group">
+          <span class="field-label">Preferred Key Source</span>
+          <select class="field-input" id="set-key-source">
+            <option value="upload">Upload Key</option>
+            <option value="stored">Stored Key</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="settings-footer">
+    <span class="settings-status" id="settings-status"></span>
+    <button type="button" class="btn-connect btn-primary" id="settings-save">Save</button>
+  </div>
+</div>
+
+<template id="host-row-template">
+  <tr class="user-host">
+    <td><input class="field-input host-name" type="text" placeholder="Name"></td>
+    <td><input class="field-input host-hostname" type="text" placeholder="hostname" required></td>
+    <td><input class="field-input host-port" type="number" min="1" max="65535" placeholder="22"></td>
+    <td><input class="field-input host-username" type="text" placeholder="login user"></td>
+    <td><input class="field-input host-command" type="text" placeholder="default command"></td>
+    <td><textarea class="field-input host-keys" rows="2" placeholder="ssh-ed25519 AAAA... (one per line)"></textarea></td>
+    <td><button type="button" class="btn-reset btn-danger host-delete" title="Delete host">&times;</button></td>
+  </tr>
+</template>

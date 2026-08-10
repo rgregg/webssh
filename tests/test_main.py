@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 import unittest
@@ -6,7 +7,9 @@ import yaml
 from tornado.options import options
 from tornado.web import Application
 from webssh import handler
-from webssh.main import app_listen, reload_config
+from webssh.main import (
+    app_listen, reload_config, check_user_hosts_configuration
+)
 
 
 class TestMain(unittest.TestCase):
@@ -24,6 +27,45 @@ class TestMain(unittest.TestCase):
         server_settings = dict(ssl_options='enabled')
         app_listen(app, 80, '127.0.0.1', server_settings)
         self.assertTrue(handler.redirecting)
+
+
+class TestCheckUserHostsConfiguration(unittest.TestCase):
+
+    def test_disabled_does_nothing(self):
+        with self.assertLogs(level='WARNING') as cm:
+            logging.warning('sentinel')
+            check_user_hosts_configuration(False, '')
+        self.assertEqual(len(cm.output), 1)
+
+    def test_enabled_without_data_dir_warns(self):
+        with self.assertLogs(level='WARNING') as cm:
+            check_user_hosts_configuration(True, '')
+        self.assertTrue(any(
+            'user_hosts is enabled but no userdatadir or userkeydir' in msg
+            for msg in cm.output
+        ))
+
+    def test_enabled_with_data_dir_checks_directory(self):
+        parent = tempfile.mkdtemp()
+        data_dir = os.path.join(parent, 'does-not-exist-yet')
+        try:
+            # Should not log the "not configured" warning when a data dir
+            # is present (a separate security warning about missing
+            # trusted_proxies is expected instead), and should actually
+            # reach check_user_data_dir -- proven by the directory getting
+            # created, since it does not exist beforehand.
+            self.assertFalse(os.path.isdir(data_dir))
+            with self.assertLogs(level='WARNING') as cm:
+                check_user_hosts_configuration(True, data_dir)
+            self.assertFalse(any(
+                'user_hosts is enabled but no userdatadir' in msg
+                for msg in cm.output
+            ))
+            self.assertTrue(os.path.isdir(data_dir))
+        finally:
+            if os.path.isdir(data_dir):
+                os.rmdir(data_dir)
+            os.rmdir(parent)
 
 
 class TestReloadConfig(unittest.TestCase):

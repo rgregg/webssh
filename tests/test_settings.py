@@ -242,6 +242,8 @@ class TestSettings(unittest.TestCase):
             'userkeydir': '',
             'userheader': 'X-Authentik-Username',
             'policy': 'warning',
+            'userdatadir': '',
+            'user_hosts': False,
         }
         defaults.update(overrides)
         return type('Options', (), defaults)()
@@ -460,3 +462,135 @@ class TestSettings(unittest.TestCase):
                 self.assertIn('permission denied', str(ctx.exception))
             finally:
                 os.chmod(parent, 0o700)
+
+
+class TestParseHostEntry(unittest.TestCase):
+
+    def test_minimal_entry(self):
+        from webssh.settings import parse_host_entry
+        host = parse_host_entry({'hostname': 'example.com'})
+        self.assertEqual(host, {
+            'name': 'example.com',
+            'hostname': 'example.com',
+            'port': 22,
+            'host_keys': [],
+        })
+
+    def test_full_entry_with_string_host_key(self):
+        from webssh.settings import parse_host_entry
+        key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzdKnd2MlrZ2sAs5qF7XMRF'
+        host = parse_host_entry({
+            'name': 'Prod', 'hostname': '10.0.1.5', 'port': 2222,
+            'host_key': key,
+        })
+        self.assertEqual(host['name'], 'Prod')
+        self.assertEqual(host['port'], 2222)
+        self.assertEqual(host['host_keys'], [key])
+
+    def test_missing_hostname(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({'name': 'nope'})
+
+    def test_not_a_mapping(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry('example.com')
+
+    def test_invalid_port(self):
+        from webssh.settings import parse_host_entry
+        for port in [0, 70000, -1]:
+            with self.assertRaises(ValueError):
+                parse_host_entry({'hostname': 'a.com', 'port': port})
+
+    def test_invalid_host_key_type(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({
+                'hostname': 'a.com', 'host_key': 'ssh-dss AAAAB3Nz'})
+
+    def test_invalid_host_key_base64(self):
+        from webssh.settings import parse_host_entry
+        with self.assertRaises(ValueError):
+            parse_host_entry({
+                'hostname': 'a.com', 'host_key': 'ssh-ed25519 not!base64!'})
+
+
+class TestUserDataSettings(unittest.TestCase):
+
+    def test_userdatadir_falls_back_to_userkeydir(self):
+        from webssh.settings import get_user_data_dir_setting
+
+        class Opts(object):
+            userdatadir = ''
+            userkeydir = '/var/lib/webssh/keys'
+
+        self.assertEqual(get_user_data_dir_setting(Opts()),
+                         '/var/lib/webssh/keys')
+
+    def test_userdatadir_wins_when_set(self):
+        from webssh.settings import get_user_data_dir_setting
+
+        class Opts(object):
+            userdatadir = '/var/lib/webssh/data'
+            userkeydir = '/var/lib/webssh/keys'
+
+        self.assertEqual(get_user_data_dir_setting(Opts()),
+                         '/var/lib/webssh/data')
+
+    def test_userdatadir_empty_when_neither_set(self):
+        from webssh.settings import get_user_data_dir_setting
+
+        class Opts(object):
+            userdatadir = ''
+            userkeydir = ''
+
+        self.assertEqual(get_user_data_dir_setting(Opts()), '')
+
+    def test_check_user_data_dir_creates_directory(self):
+        import tempfile
+        from webssh.settings import check_user_data_dir
+        base = tempfile.mkdtemp()
+        target = os.path.join(base, 'data')
+        check_user_data_dir(target, tdstream='10.0.0.1')
+        self.assertTrue(os.path.isdir(target))
+
+    def test_check_user_data_dir_noop_when_empty(self):
+        from webssh.settings import check_user_data_dir
+        self.assertIsNone(check_user_data_dir(''))
+
+    def test_check_user_data_dir_rejects_file(self):
+        import tempfile
+        from webssh.settings import check_user_data_dir
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        with self.assertRaises(ValueError):
+            check_user_data_dir(path, tdstream='10.0.0.1')
+
+
+class TestApplyUserHostsConfig(unittest.TestCase):
+
+    def test_user_hosts_and_userdatadir_from_config(self):
+        import tempfile
+        import yaml
+        from tornado.options import options as opts
+        from webssh.settings import apply_config_settings
+
+        fd, path = tempfile.mkstemp(suffix='.yaml')
+        with os.fdopen(fd, 'w') as f:
+            yaml.safe_dump({
+                'user_hosts': True, 'userdatadir': '/tmp/webssh-data'}, f)
+
+        old_config = opts.config
+        old_flag = opts.user_hosts
+        old_dir = opts.userdatadir
+        try:
+            opts.config = path
+            apply_config_settings(opts)
+            self.assertTrue(opts.user_hosts)
+            self.assertEqual(opts.userdatadir, '/tmp/webssh-data')
+        finally:
+            opts.config = old_config
+            opts.user_hosts = old_flag
+            opts.userdatadir = old_dir
+            os.unlink(path)

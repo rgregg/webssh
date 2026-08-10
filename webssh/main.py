@@ -9,14 +9,16 @@ from tornado.ioloop import PeriodicCallback
 from tornado.options import options
 from webssh import handler
 from webssh.handler import (
-    IndexHandler, WsockHandler, NotFoundHandler, UserKeyHandler
+    IndexHandler, WsockHandler, NotFoundHandler, UserKeyHandler,
+    UserHostsHandler, UserSettingsHandler, SettingsPaneHandler
 )
 from webssh.policy import get_policy_class
 from webssh.settings import (
     get_app_settings,  get_host_keys_settings, get_policy_setting,
     get_ssl_context, get_server_settings, check_encoding_setting,
     get_allowed_hosts_setting, check_user_key_dir, apply_config_settings,
-    load_config_file, parse_allowed_hosts
+    load_config_file, parse_allowed_hosts, get_user_data_dir_setting,
+    check_user_data_dir
 )
 
 
@@ -34,18 +36,35 @@ def make_handlers(loop, options, live_config=None):
     user_key_dir = options.userkeydir
     user_header = options.userheader
 
+    user_data_dir = get_user_data_dir_setting(options)
+    user_hosts_enabled = bool(options.user_hosts and user_data_dir)
+
+    user_data_kwargs = dict(
+        loop=loop,
+        user_data_dir=user_data_dir,
+        user_header=user_header,
+        user_hosts_enabled=user_hosts_enabled,
+        allowed_hosts=allowed_hosts,
+        live_config=live_config
+    )
+
     index_kwargs = dict(
         loop=loop, policy=policy,
         host_keys_settings=host_keys_settings,
         allowed_hosts=allowed_hosts,
         user_key_dir=user_key_dir,
         user_header=user_header,
+        user_data_dir=user_data_dir,
+        user_hosts_enabled=user_hosts_enabled,
         live_config=live_config
     )
 
     handlers = [
         (r'/', IndexHandler, index_kwargs),
-        (r'/ws', WsockHandler, dict(loop=loop))
+        (r'/ws', WsockHandler, dict(loop=loop)),
+        (r'/api/hosts', UserHostsHandler, user_data_kwargs),
+        (r'/api/settings', UserSettingsHandler, user_data_kwargs),
+        (r'/settings-pane', SettingsPaneHandler, user_data_kwargs),
     ]
 
     if user_key_dir:
@@ -168,6 +187,23 @@ def start_config_watcher(config_path, live_config, host_keys_settings,
     return watcher
 
 
+def check_user_hosts_configuration(user_hosts, user_data_dir, tdstream=''):
+    """Warn (and validate the directory) when user_hosts is enabled.
+
+    Split out of main() so the "enabled but unconfigured" warning can be
+    exercised directly in tests without going through the full startup path.
+    """
+    if not user_hosts:
+        return
+    if not user_data_dir:
+        logging.warning(
+            'user_hosts is enabled but no userdatadir or userkeydir '
+            'is configured, so user host management is disabled.'
+        )
+        return
+    check_user_data_dir(user_data_dir, tdstream)
+
+
 def main():
     options.parse_command_line()
     if not options.config and os.path.isfile(DEFAULT_CONFIG_PATH):
@@ -176,6 +212,9 @@ def main():
     apply_config_settings(options)
     check_encoding_setting(options.encoding)
     check_user_key_dir(options.userkeydir, options.tdstream)
+    user_data_dir = get_user_data_dir_setting(options)
+    check_user_hosts_configuration(
+        options.user_hosts, user_data_dir, options.tdstream)
     loop = tornado.ioloop.IOLoop.current()
     live_config = {}
     app = make_app(make_handlers(loop, options, live_config),

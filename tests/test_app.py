@@ -1,6 +1,10 @@
 import json
+import os
 import random
+import tempfile
 import threading
+import unittest
+from unittest import mock
 import tornado.websocket
 import tornado.gen
 
@@ -27,7 +31,113 @@ swallow_http_errors = handler.swallow_http_errors
 server_encodings = {e.strip() for e in Server.encodings}
 
 
-class TestAppBase(AsyncHTTPTestCase):
+class OptionsRestoreMixin(object):
+    """Restore tornado's global options after a test mutates them.
+
+    ``options`` is process-global, so a test class that sets an option
+    and does not put it back leaks that value into whichever test runs
+    next. Snapshot the previous value of every option a test overrides
+    and restore exactly that, rather than a hardcoded guess at what it
+    used to be.
+    """
+
+    def override_options(self, **overrides):
+        saved = {}
+        for name in overrides:
+            saved[name] = getattr(options, name)
+        # Registered before anything is mutated, so a failure partway
+        # through still restores whatever was already changed.
+        self.addCleanup(self._restore_options_snapshot, saved)
+        for name, value in overrides.items():
+            setattr(options, name, value)
+
+    def _restore_options_snapshot(self, saved):
+        for name, value in saved.items():
+            setattr(options, name, value)
+
+
+class TestOptionsRestoreMixin(unittest.TestCase):
+
+    class Case(OptionsRestoreMixin, unittest.TestCase):
+        overrides = {}
+        raises = False
+
+        def runTest(self):
+            self.override_options(**self.overrides)
+            if self.raises:
+                raise RuntimeError('boom')
+
+    def run_case(self, overrides, raises=False):
+        case = self.Case()
+        case.overrides = overrides
+        case.raises = raises
+        case.run(unittest.TestResult())
+
+    def test_restores_previous_values(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        self.addCleanup(setattr, options, 'user_hosts', options.user_hosts)
+        options.policy = 'warning'
+        options.user_hosts = False
+
+        self.run_case({'policy': 'reject', 'user_hosts': True})
+
+        self.assertEqual(options.policy, 'warning')
+        self.assertIs(options.user_hosts, False)
+
+    def test_restores_when_the_test_fails(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        options.policy = 'warning'
+
+        self.run_case({'policy': 'reject'}, raises=True)
+
+        self.assertEqual(options.policy, 'warning')
+
+    def test_leaves_untouched_options_alone(self):
+        self.addCleanup(setattr, options, 'policy', options.policy)
+        self.addCleanup(setattr, options, 'origin', options.origin)
+        options.policy = 'warning'
+        options.origin = 'same'
+
+        self.run_case({'policy': 'reject'})
+
+        self.assertEqual(options.origin, 'same')
+
+
+class TestSuiteLeavesOptionsClean(unittest.TestCase):
+    """The suite is the only automated guard on the security invariants,
+    so it must not depend on which test happened to run first.
+
+    Run the classes that mutate the most options and assert every one of
+    them is handed back as it was found.
+    """
+
+    watched = ('debug', 'xsrf', 'policy', 'hostfile', 'syshostfile',
+               'tdstream', 'origin', 'user_hosts', 'userdatadir',
+               'userheader', 'config', 'maxconn')
+
+    def assert_no_leak(self, cls):
+        before = {}
+        for name in self.watched:
+            before[name] = getattr(options, name)
+
+        suite = unittest.TestLoader().loadTestsFromTestCase(cls)
+        suite.run(unittest.TestResult())
+
+        leaked = {}
+        for name in self.watched:
+            after = getattr(options, name)
+            if after != before[name]:
+                leaked[name] = (before[name], after)
+        self.assertEqual(leaked, {})
+
+    def test_user_host_key_isolation_leaves_options_clean(self):
+        self.assert_no_leak(TestUserHostKeyIsolation)
+
+    def test_user_data_api_leaves_options_clean(self):
+        self.assert_no_leak(TestUserDataApi)
+
+
+class TestAppBase(OptionsRestoreMixin, AsyncHTTPTestCase):
 
     def get_httpserver_options(self):
         return get_server_settings(options)
@@ -790,3 +900,398 @@ class TestAppWithUnknownEncoding(OtherTestBase):
         dic = json.loads(to_str(response.body))
         self.assert_status_none(dic)
         self.assertEqual(dic['encoding'], 'utf-8')
+
+
+class UserDataTestBase(TestAppBase):
+
+    headers = {'Cookie': '_xsrf=yummy',
+               'X-Authentik-Username': 'alice'}
+    user_hosts = True
+
+    def get_app(self):
+        self.data_dir = tempfile.mkdtemp()
+        self.override_options(
+            debug=False,
+            xsrf=True,
+            policy='warning',
+            hostfile='',
+            syshostfile='',
+            tdstream='',
+            origin='same',
+            # config is deliberately not overridden here: subclasses set it
+            # before get_app runs, and clobbering it would drop their
+            # admin allowlist.
+            user_hosts=self.user_hosts,
+            userdatadir=self.data_dir,
+            userheader='X-Authentik-Username',
+        )
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+
+class TestUserDataApi(UserDataTestBase):
+
+    def put(self, path, payload, headers=None):
+        body = json.dumps(payload)
+        hdrs = dict(headers if headers is not None else self.headers)
+        hdrs['Content-Type'] = 'application/json'
+        hdrs['X-Xsrftoken'] = 'yummy'
+        return self.fetch(path, method='PUT', body=body, headers=hdrs)
+
+    def test_get_hosts_empty(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+        self.assertIn('admin_hosts', data)
+
+    def test_put_then_get_hosts(self):
+        response = self.put('/api/hosts', {'hosts': [{'hostname': 'nas.lan',
+                                                      'port': 2222}]})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['user_hosts']), 1)
+        self.assertEqual(data['user_hosts'][0]['port'], 2222)
+
+    def test_put_invalid_host_returns_400_and_preserves_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts',
+                            {'hosts': [{'hostname': 'bad', 'port': 0}]})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'][0]['hostname'], 'good.lan')
+
+    def test_put_malformed_json_returns_400(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body='{not json',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 400)
+
+    def test_missing_auth_header_returns_401(self):
+        response = self.fetch('/api/hosts', headers={'Cookie': '_xsrf=yummy'})
+        self.assertEqual(response.code, 401)
+
+    def test_invalid_username_returns_400(self):
+        response = self.fetch('/api/hosts', headers={
+            'Cookie': '_xsrf=yummy', 'X-Authentik-Username': '../etc'})
+        self.assertEqual(response.code, 400)
+
+    def test_put_without_xsrf_returns_403(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body=json.dumps({'hosts': []}),
+            headers=self.headers)
+        self.assertEqual(response.code, 403)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
+
+    def test_settings_round_trip(self):
+        response = self.put('/api/settings', {'settings': {'font_size': 15}})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings']['font_size'], 15)
+
+    def test_settings_drops_secrets(self):
+        self.put('/api/settings',
+                 {'settings': {'font_size': 15, 'password': 'hunter2'}})
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertNotIn('password', data['settings'])
+
+    def test_users_are_isolated(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'alice.lan'}]})
+        response = self.fetch('/api/hosts', headers={
+            'Cookie': '_xsrf=yummy', 'X-Authentik-Username': 'bob'})
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+
+    def test_put_hosts_missing_key_returns_400_and_preserves_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts', {})
+        self.assertEqual(response.code, 400)
+        response = self.put('/api/hosts', {'hosts_typo': []})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['user_hosts']), 1)
+        self.assertEqual(data['user_hosts'][0]['hostname'], 'good.lan')
+
+    def test_put_hosts_explicit_empty_clears_data(self):
+        self.put('/api/hosts', {'hosts': [{'hostname': 'good.lan'}]})
+        response = self.put('/api/hosts', {'hosts': []})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/hosts', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['user_hosts'], [])
+
+    def test_put_settings_missing_key_returns_400_and_preserves_data(self):
+        self.put('/api/settings', {'settings': {'font_size': 15}})
+        response = self.put('/api/settings', {})
+        self.assertEqual(response.code, 400)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings']['font_size'], 15)
+
+    def test_put_settings_explicit_empty_clears_data(self):
+        self.put('/api/settings', {'settings': {'font_size': 15}})
+        response = self.put('/api/settings', {'settings': {}})
+        self.assertEqual(response.code, 200)
+        response = self.fetch('/api/settings', headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['settings'], {})
+
+    def test_put_invalid_host_returns_json_error_with_message(self):
+        response = self.put(
+            '/api/hosts', {'hosts': [{'hostname': 'bad', 'port': 0}]})
+        self.assertEqual(response.code, 400)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
+        self.assertTrue(data['error'])
+        self.assertNotIn('<html', data['error'].lower())
+        # The message describes the caller's own input, not server state.
+        self.assertIn('port', data['error'].lower())
+
+    def test_put_hosts_write_failure_returns_500_without_leaking_path(self):
+        secret_path = '/very/secret/user/data/dir'
+        message = (
+            'Cannot create data directory for user {!r}: permission '
+            'denied. Check ownership of {!r}'.format('alice', secret_path)
+        )
+
+        def boom(base_dir, username, hosts):
+            raise ValueError(message)
+
+        with mock.patch('webssh.user_data.write_hosts', side_effect=boom):
+            with self.assertLogs(level='ERROR') as cm:
+                response = self.put(
+                    '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
+
+        self.assertEqual(response.code, 500)
+        body = to_str(response.body)
+        self.assertNotIn(secret_path, body)
+        self.assertNotIn(self.data_dir, body)
+        data = json.loads(body)
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Failed to save hosts.')
+        self.assertNotIn('/', data['error'])
+        # The real detail, including the path, must still be logged
+        # server-side for operators to diagnose.
+        self.assertTrue(any(secret_path in msg for msg in cm.output))
+
+    def test_put_settings_write_failure_returns_500_without_leaking_path(self):
+        secret_path = '/very/secret/user/data/dir'
+        message = (
+            'Cannot create data directory for user {!r}: permission '
+            'denied. Check ownership of {!r}'.format('alice', secret_path)
+        )
+
+        def boom(base_dir, username, settings):
+            raise ValueError(message)
+
+        with mock.patch('webssh.user_data.write_settings', side_effect=boom):
+            with self.assertLogs(level='ERROR') as cm:
+                response = self.put(
+                    '/api/settings', {'settings': {'font_size': 15}})
+
+        self.assertEqual(response.code, 500)
+        body = to_str(response.body)
+        self.assertNotIn(secret_path, body)
+        self.assertNotIn(self.data_dir, body)
+        data = json.loads(body)
+        self.assertIn('error', data)
+        self.assertEqual(data['error'], 'Failed to save settings.')
+        self.assertNotIn('/', data['error'])
+        self.assertTrue(any(secret_path in msg for msg in cm.output))
+
+    def test_settings_pane_returns_fragment(self):
+        response = self.fetch('/settings-pane', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertIn(b'settings-pane', response.body)
+        self.assertNotIn(b'<html', response.body)
+
+
+class TestUserDataApiDisabled(UserDataTestBase):
+
+    user_hosts = False
+
+    def test_get_hosts_returns_403(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_get_settings_returns_403(self):
+        response = self.fetch('/api/settings', headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_settings_pane_returns_404(self):
+        response = self.fetch('/settings-pane', headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+
+class TestEffectiveHosts(unittest.TestCase):
+    """Unit-level checks of the admin/user host merge."""
+
+    def _handler(self, admin_hosts, user_hosts):
+        from webssh.handler import IndexHandler
+        h = IndexHandler.__new__(IndexHandler)
+        h.allowed_hosts = admin_hosts
+        h._user_hosts = user_hosts
+        h.get_user_hosts = lambda: h._user_hosts
+        return h
+
+    def test_admin_host_wins_collision(self):
+        from webssh.handler import IndexHandler
+        admin = [{'name': 'prod', 'hostname': '10.0.1.5', 'port': 22,
+                  'host_keys': ['ssh-ed25519 AAAAadmin']}]
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 22,
+                 'host_keys': ['ssh-ed25519 AAAAuser']}]
+        h = self._handler(admin, user)
+        effective = IndexHandler.get_effective_hosts(h)
+        self.assertEqual(len(effective), 1)
+        self.assertEqual(effective[0]['host_keys'], ['ssh-ed25519 AAAAadmin'])
+
+    def test_different_port_is_not_a_collision(self):
+        from webssh.handler import IndexHandler
+        admin = [{'name': 'prod', 'hostname': '10.0.1.5', 'port': 22,
+                  'host_keys': []}]
+        user = [{'name': 'mine', 'hostname': '10.0.1.5', 'port': 2222,
+                 'host_keys': []}]
+        h = self._handler(admin, user)
+        self.assertEqual(len(IndexHandler.get_effective_hosts(h)), 2)
+
+    def test_user_hosts_appended(self):
+        from webssh.handler import IndexHandler
+        h = self._handler([{'name': 'a', 'hostname': 'a.com', 'port': 22,
+                            'host_keys': []}],
+                          [{'name': 'b', 'hostname': 'b.com', 'port': 22,
+                            'host_keys': []}])
+        names = [x['name'] for x in IndexHandler.get_effective_hosts(h)]
+        self.assertEqual(names, ['a', 'b'])
+
+
+class ConnectHostsTestBase(UserDataTestBase):
+    """Admin allowlist that deliberately excludes the user's saved host."""
+
+    admin_hostname = '10.9.9.9'
+
+    def setUp(self):
+        import yaml
+        fd, self.config_path = tempfile.mkstemp(suffix='.yaml')
+        with os.fdopen(fd, 'w') as f:
+            yaml.safe_dump({'hosts': [
+                {'name': 'other', 'hostname': self.admin_hostname,
+                 'port': 22}]}, f)
+        self.override_options(config=self.config_path)
+        super(ConnectHostsTestBase, self).setUp()
+        from webssh.user_data import write_hosts
+        write_hosts(self.data_dir, 'alice',
+                    [{'hostname': '127.0.0.1', 'port': 7000}])
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        super(ConnectHostsTestBase, self).tearDown()
+
+    def post_hostname(self, hostname):
+        body = ('hostname={}&port=7000&username=robey&password=foo'
+                '&_xsrf=yummy').format(hostname)
+        return self.fetch('/', method='POST', body=body,
+                          headers=self.headers)
+
+
+class TestConnectWithUserHostsEnabled(ConnectHostsTestBase):
+
+    user_hosts = True
+
+    def test_user_host_passes_the_allowlist(self):
+        # The allowlist must not reject it. The SSH connection itself will
+        # fail (no server on that port), which is fine and not what we assert.
+        self.assertNotIn(b'is not allowed',
+                         self.post_hostname('127.0.0.1').body)
+
+    def test_host_in_neither_list_is_rejected(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
+
+
+class TestConnectWithUserHostsDisabled(ConnectHostsTestBase):
+
+    user_hosts = False
+
+    def test_user_host_is_rejected_when_feature_disabled(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.1').body)
+
+    def test_host_in_neither_list_is_rejected(self):
+        self.assertIn(b'is not allowed',
+                      self.post_hostname('127.0.0.2').body)
+
+
+class TestUserHostKeyIsolation(TestAppBase):
+    """A user's personal host key pin must not leak into other requests.
+
+    Under `policy: reject` with no administrator `hosts:` allowlist,
+    check_allowed_hosts returns early and lookup_hostname is the only gate.
+    If a user's pin lands in the process-wide HostKeys store, that user's
+    private bookmark silently becomes a global allowlist entry.
+    """
+
+    # Any syntactically valid key; it never has to match a real server.
+    user_key = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINwZGQmNFADnAAlm5uFLQ'
+                'TrdxqpNxHdgg4JPbB3sR2kr')
+    # Loopback with nothing listening: the allowlist gate runs, then the
+    # connection fails fast instead of hanging on an unroutable address.
+    hostname = '127.0.0.9'
+    port = 7009
+
+    def get_app(self):
+        self.data_dir = tempfile.mkdtemp()
+        self.override_options(
+            debug=False,
+            xsrf=True,
+            policy='reject',
+            # A hostfile is required for the reject policy, and it
+            # deliberately does not contain self.hostname.
+            hostfile=make_tests_data_path('known_hosts_example'),
+            syshostfile=make_tests_data_path('known_hosts_example'),
+            tdstream='',
+            origin='same',
+            config='',
+            user_hosts=True,
+            userdatadir=self.data_dir,
+            userheader='X-Authentik-Username',
+        )
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+    def setUp(self):
+        super(TestUserHostKeyIsolation, self).setUp()
+        from webssh.user_data import write_hosts
+        write_hosts(self.data_dir, 'alice',
+                    [{'hostname': self.hostname, 'port': self.port,
+                      'host_key': [self.user_key]}])
+
+    def post_as(self, username):
+        headers = {'Cookie': '_xsrf=yummy'}
+        if username:
+            headers['X-Authentik-Username'] = username
+        body = ('hostname={}&port={}&username=robey&password=foo'
+                '&_xsrf=yummy').format(self.hostname, self.port)
+        return self.fetch('/', method='POST', body=body, headers=headers)
+
+    def test_alice_reaches_her_own_host(self):
+        # Her own pin satisfies the reject gate for her own request.
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+
+    def test_alice_pin_does_not_leak_to_another_user(self):
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+        self.assertIn(b'is not allowed', self.post_as('bob').body)
+
+    def test_alice_pin_does_not_leak_to_anonymous_request(self):
+        self.assertNotIn(b'is not allowed', self.post_as('alice').body)
+        self.assertIn(b'is not allowed', self.post_as(None).body)

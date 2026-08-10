@@ -31,6 +31,25 @@
 # Used with userkeydir to identify users behind an auth proxy (e.g. Authentik).
 # userheader: X-Authentik-Username
 
+# User-managed hosts and settings (optional)
+# When true, authenticated users can add their own hosts and manage terminal
+# preferences from the in-app Settings tab. Their hosts and settings are stored
+# server-side so they roam across browsers and machines.
+#
+# SECURITY: enabling this lets users connect to hosts outside the `hosts`
+# allowlist above. Leave it false if the allowlist is meant to be a hard
+# restriction. Personal hosts can pin their own host_key, which is required
+# when policy is `reject`.
+#
+# Requires an authenticated username via userheader. Set trusted_proxies so the
+# header cannot be spoofed.
+# user_hosts: true
+
+# Directory for per-user hosts and settings (optional)
+# Defaults to userkeydir when unset, placing hosts.json and settings.json
+# alongside each user's SSH key.
+# userdatadir: /var/lib/webssh/user-data
+
 # Idle timeout in seconds (optional)
 # Disconnect websocket sessions that have been idle (no keystrokes) for this
 # many seconds. Set to 0 to disable. Default: 1800 (30 minutes).
