@@ -78,7 +78,7 @@ var webssh_transfer_ui = (function () {
   function send_upload(tab_id, worker_id, file, path, overwrite, row) {
     var controller = new AbortController();
     track(tab_id, controller);
-    row.find('.transfer-cancel').on('click', function () {
+    row.find('.transfer-cancel').off('click').on('click', function () {
       controller.abort();
     });
 
@@ -174,14 +174,22 @@ var webssh_transfer_ui = (function () {
 
   function bind_drop(el, tab_id, worker_id) {
     var overlay = $('#transfer-drop-overlay');
-    el.on('dragover', function (e) {
+    // bind_drop is called on every (re)connect for a tab, and the tab's
+    // containerEl is reused across reconnects rather than recreated. Without
+    // .off() first, each reconnect would stack another set of handlers on
+    // the same element, so a single drop would fire start_upload once per
+    // past connection. Rebinding fresh also means a drop always uses the
+    // worker_id captured in *this* call, i.e. the current connection, not a
+    // stale one from an earlier connect.
+    el.off('dragover.transfer dragleave.transfer drop.transfer');
+    el.on('dragover.transfer', function (e) {
       e.preventDefault();
       overlay.addClass('visible');
     });
-    el.on('dragleave drop', function () {
+    el.on('dragleave.transfer drop.transfer', function () {
       overlay.removeClass('visible');
     });
-    el.on('drop', function (e) {
+    el.on('drop.transfer', function (e) {
       e.preventDefault();
       var files = e.originalEvent.dataTransfer.files;
       for (var i = 0; i < files.length; i++) {
