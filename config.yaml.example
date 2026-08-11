@@ -69,3 +69,8 @@
 # trusted_proxies:
 #   - 10.0.0.1
 #   - 172.16.0.5
+
+# Ask the remote shell to report its working directory (OSC 7) so files
+# dropped on the terminal land in the directory you are in. When off, or on
+# a shell that does not cooperate, WebSSH asks for the destination instead.
+# shell_integration: true

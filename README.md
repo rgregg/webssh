@@ -128,6 +128,22 @@ it, any client can claim any username and reach that user's stored hosts.
 Secrets (passwords, TOTP codes, key passphrases) are never stored server-side,
 whether for administrator or personal hosts.
 
+### File transfer
+
+Drag a file onto a connected terminal to upload it; use the download button
+in the tab bar to fetch a file back. Transfers run over SFTP on the SSH
+connection the terminal already authenticated, so they need no extra
+credentials and carry exactly the permissions of the SSH user you connected
+as.
+
+Uploads land in the directory the shell is currently in, which WebSSH learns
+from an OSC 7 sequence. Set `shell_integration: false` to disable that; the
+destination is then requested with a prompt. Uploads never overwrite an
+existing file without asking.
+
+Transfers are capped at three at a time per session, and are cancelled if the
+terminal tab is closed.
+
 ### Docker Compose
 
 ```yaml

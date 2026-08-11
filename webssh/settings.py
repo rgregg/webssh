@@ -65,6 +65,9 @@ define('userdatadir', default='',
             '(defaults to userkeydir)')
 define('user_hosts', type=bool, default=False,
        help='Allow authenticated users to manage their own host list')
+define('shell_integration', type=bool, default=True,
+       help='Ask the remote shell to report its working directory via OSC 7, '
+            'so dropped files land in the directory you are in')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -379,6 +382,8 @@ def apply_config_settings(options):
         options.userdatadir = config['userdatadir']
     if not options.user_hosts and 'user_hosts' in config:
         options.user_hosts = bool(config['user_hosts'])
+    if options.shell_integration and 'shell_integration' in config:
+        options.shell_integration = bool(config['shell_integration'])
     if 'idle_timeout' in config:
         raw = config['idle_timeout']
         try:

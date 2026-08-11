@@ -46,6 +46,18 @@ DEFAULT_PORT = 22
 swallow_http_errors = True
 redirecting = None
 
+# Asks the shell to report its working directory on every prompt. Written
+# once when the shell starts, then scrubbed from the screen and from bash
+# history. Kept to a single line: a partially delivered multi-line snippet
+# would strand the shell at a continuation prompt.
+SHELL_INTEGRATION_SNIPPET = (
+    ' if [ -n "$ZSH_VERSION" ]; then '
+    'precmd() { printf "\\033]7;file://%s%s\\033\\\\" "$HOST" "$PWD"; }; '
+    'elif [ -n "$BASH_VERSION" ]; then '
+    'PROMPT_COMMAND=\'printf "\\033]7;file://%s%s\\033\\\\" "$HOSTNAME" "$PWD"\'; '
+    'fi; clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
+)
+
 
 class InvalidValueError(Exception):
     pass
@@ -640,6 +652,19 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         worker = Worker(self.loop, ssh, chan, dst_addr)
         worker.encoding = options.encoding if options.encoding else \
             self.get_default_encoding(ssh)
+
+        if options.shell_integration:
+            try:
+                chan.send(SHELL_INTEGRATION_SNIPPET)
+            except (OSError, IOError, EOFError) as exc:
+                # Never let this cost the user their session: the path box
+                # is always available as a fallback. paramiko raises EOFError
+                # (not an OSError) when the transport is already gone, e.g.
+                # the remote end closed the connection right after the shell
+                # was invoked.
+                logging.warning(
+                    'Shell integration not sent: {}'.format(exc))
+
         return worker
 
     def check_origin(self):

@@ -212,6 +212,10 @@ class TestAppBasic(TestAppBase):
         options.syshostfile = ''
         options.tdstream = ''
         options.delay = 0.1
+        # The fake SSH server below echoes raw bytes rather than behaving
+        # like a real shell, so the injected snippet would show up as
+        # regular channel data and desync these protocol-level assertions.
+        options.shell_integration = False
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -649,6 +653,10 @@ class OtherTestBase(TestAppBase):
         options.tdstream = self.tdstream
         options.maxconn = self.maxconn
         options.origin = self.origin
+        # The fake SSH server echoes raw bytes rather than behaving like a
+        # real shell, so the injected snippet would show up as regular
+        # channel data and desync these protocol-level assertions.
+        options.shell_integration = False
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -1775,3 +1783,26 @@ class TestIdleTimeoutDuringTransfer(unittest.TestCase):
         ws._reset_idle_timeout = lambda: None
         ws._idle_disconnect()
         self.assertIsNone(w.closed_reason)
+
+
+class TestShellIntegrationSnippet(unittest.TestCase):
+
+    def test_snippet_handles_both_bash_and_zsh(self):
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('ZSH_VERSION', snippet)
+        self.assertIn('PROMPT_COMMAND', snippet)
+        self.assertIn('precmd', snippet)
+
+    def test_snippet_emits_an_osc7_sequence(self):
+        self.assertIn('\\033]7;file://', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_is_a_single_line_so_it_cannot_half_execute(self):
+        # A partially delivered multi-line snippet would leave the shell in
+        # a continuation prompt, wedging the session.
+        body = handler.SHELL_INTEGRATION_SNIPPET.rstrip('\n')
+        self.assertNotIn('\n', body)
+
+    def test_snippet_ends_with_exactly_one_newline(self):
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertTrue(snippet.endswith('\n'))
+        self.assertFalse(snippet.endswith('\n\n'))
