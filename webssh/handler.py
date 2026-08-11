@@ -1083,6 +1083,11 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
 @tornado.web.stream_request_body
 class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
 
+    # Set once a mid-stream SFTP write fails, so post() can report the
+    # error and any further chunks are drained without being written.
+    _write_error = None
+
+    @tornado.gen.coroutine
     def prepare(self):
         # The app-wide max_body_size is sized for form posts. Without this,
         # any upload over 1 MB is refused before the handler ever runs.
@@ -1096,11 +1101,18 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         filename = self.get_argument('filename', '') or posixpath.basename(path)
         overwrite = self.get_argument('overwrite', '') == 'true'
 
-        self.sftp = transfer.open_sftp(self.worker.ssh)
+        # Blocking paramiko calls (SFTP channel open, then stat/open of the
+        # destination) must run on the executor, never the IOLoop. prepare()
+        # runs to completion before Tornado starts reading the request body
+        # (stream_request_body awaits it), so making it a coroutine here is
+        # safe and keeps those calls off the IOLoop like every other
+        # blocking paramiko call in this handler.
+        self.sftp = yield self.executor.submit(
+            transfer.open_sftp, self.worker.ssh)
         self.upload = transfer.Upload(self.sftp, path, filename,
                                       overwrite=overwrite)
         try:
-            self.upload.open()
+            yield self.executor.submit(self.upload.open)
         except transfer.TransferError as exc:
             self._cleanup(abort=False)
             self.transfer_error(exc)
@@ -1114,10 +1126,38 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         # throttles the browser instead of growing server memory. The
         # executor hands back a concurrent.futures.Future, which the IOLoop
         # cannot await directly, so it is wrapped for asyncio.
-        return asyncio.wrap_future(self.executor.submit(self.upload.write, chunk))
+        if self._write_error is not None:
+            # A previous chunk already failed. Keep draining the body
+            # cheaply (no SFTP write, no backpressure future) so the
+            # connection completes normally and post() can report the
+            # error, instead of leaving the client hanging.
+            return None
+        return asyncio.wrap_future(
+            self.executor.submit(self._write, chunk))
+
+    def _write(self, chunk):
+        # Runs on the executor. A TransferError here (e.g. ENOSPC) must not
+        # escape as an exception on the wrapped future: Tornado's body-
+        # reading loop only catches HTTPInputError, so anything else would
+        # propagate uncaught, request._body_future would never resolve,
+        # post() would never run, and the client would just see the
+        # connection drop instead of the verbatim remote error. Recording
+        # it here and letting the future resolve normally lets post()
+        # surface it properly.
+        try:
+            self.upload.write(chunk)
+        except transfer.TransferError as exc:
+            self._write_error = exc
 
     @tornado.gen.coroutine
     def post(self):
+        if self._write_error is not None:
+            # Abort so a truncated file isn't left under the real name,
+            # then report the remote error verbatim, same as every other
+            # transfer failure.
+            self._cleanup(abort=True)
+            self.transfer_error(self._write_error)
+            return
         yield self.executor.submit(self.upload.close)
         result = {'path': self.upload.final_path,
                   'bytes': self.upload.bytes_written}

@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import random
@@ -12,7 +13,7 @@ from tornado.testing import AsyncHTTPTestCase
 from tornado.httpclient import HTTPError
 from tornado.options import options
 from tests.sshserver import run_ssh_server, banner, Server
-from tests.test_transfer import FakeSFTP, FakeAttr
+from tests.test_transfer import FakeSFTP, FakeAttr, FakeFile
 from tests.utils import encode_multipart_formdata, read_file, make_tests_data_path  # noqa
 from webssh import handler
 from webssh.main import make_app, make_handlers
@@ -1605,3 +1606,49 @@ class TestTransferUpload(TransferTestBase):
         response = self.upload(
             'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
         self.assertEqual(response.code, 429)
+
+    def test_prepare_is_a_coroutine(self):
+        # Pins the fix for the Critical review finding: a plain (non-
+        # coroutine) prepare() calling paramiko directly stalls the whole
+        # IOLoop for the SFTP channel-open + stat/open round-trip.
+        self.assertTrue(tornado.gen.is_coroutine_function(
+            handler.TransferUploadHandler.prepare))
+
+    def test_sftp_setup_in_prepare_runs_on_the_executor_not_the_ioloop(self):
+        # Pins the fix for the Critical review finding by observing where
+        # the blocking paramiko work actually executes: on a worker thread,
+        # never on the IOLoop's own (main, test) thread.
+        main_thread_id = threading.current_thread().ident
+        seen_thread_ids = []
+        real_open_sftp = handler.transfer.open_sftp
+
+        def spy(ssh):
+            seen_thread_ids.append(threading.current_thread().ident)
+            return real_open_sftp(ssh)
+
+        with mock.patch.object(handler.transfer, 'open_sftp', side_effect=spy):
+            response = self.upload(
+                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+
+        self.assertEqual(response.code, 200)
+        self.assertEqual(len(seen_thread_ids), 1)
+        self.assertNotEqual(seen_thread_ids[0], main_thread_id)
+
+    def test_mid_stream_write_error_is_reported_verbatim_not_a_dropped_connection(self):
+        # Pins the fix for the Important review finding: a TransferError
+        # raised out of upload.write() during data_received() must surface
+        # to the client as a proper error response, not an uncaught
+        # exception that leaves request._body_future unresolved and the
+        # connection simply dropped.
+        def raising_write(fake_file, data):
+            raise OSError(errno.ENOSPC, 'No space left on device')
+
+        with mock.patch.object(FakeFile, 'write', raising_write):
+            response = self.upload(
+                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+
+        self.assertEqual(response.code, 507)
+        data = json.loads(to_str(response.body))
+        self.assertIn('No space left on device', data['status'])
+        # The partial file must not be left behind under the real name.
+        self.assertIn('/home/ryan/new.txt', self.sftp.removed)
