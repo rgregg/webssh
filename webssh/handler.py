@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import posixpath
 import socket
 import struct
 import traceback
@@ -13,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tornado.ioloop import IOLoop
 from tornado.options import options
 from tornado.process import cpu_count
+from urllib.parse import quote
 from webssh.utils import (
     is_valid_ip_address, is_valid_port, is_valid_hostname, to_bytes, to_str,
     to_int, to_ip_address, UnicodeType, is_ip_hostname, is_same_primary_domain,
@@ -914,6 +916,23 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
                     admin_hosts=self.allowed_hosts)
 
 
+def content_disposition(filename):
+    """Build an attachment header that survives a non-ASCII filename.
+
+    Remote filenames are attacker-controlled if a user can be induced to
+    download from a hostile host, so CR and LF are rejected outright rather
+    than encoded.
+    """
+    if '\r' in filename or '\n' in filename:
+        raise ValueError('Invalid filename')
+
+    fallback = filename.encode('ascii', 'replace').decode('ascii')
+    fallback = fallback.replace('\\', '_').replace('"', '_')
+    quoted = quote(filename.encode('utf-8'), safe='')
+    return "attachment; filename=\"{}\"; filename*=UTF-8''{}".format(
+        fallback, quoted)
+
+
 class TransferMixin(MixinHandler):
     """Shared resolution for the file-transfer endpoints.
 
@@ -994,8 +1013,55 @@ class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
 
 class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
 
+    _download = None
+
+    @tornado.gen.coroutine
     def get(self):
-        raise tornado.web.HTTPError(501)
+        worker = self.get_live_worker()
+        path = self.get_path()
+
+        if worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
+            raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
+
+        try:
+            disposition = content_disposition(posixpath.basename(path))
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid filename')
+
+        sftp = None
+        worker.transfers += 1
+        try:
+            sftp = yield self.executor.submit(transfer.open_sftp, worker.ssh)
+            self._download = transfer.Download(sftp, path)
+            size = yield self.executor.submit(self._download.open)
+
+            self.set_header('Content-Type', 'application/octet-stream')
+            self.set_header('Content-Length', str(size))
+            self.set_header('Content-Disposition', disposition)
+
+            while True:
+                chunk = yield self.executor.submit(self._download.read)
+                if not chunk:
+                    break
+                self.write(chunk)
+                # The flush is the backpressure point against a slow browser.
+                yield self.flush()
+        except transfer.TransferError as exc:
+            self.transfer_error(exc)
+        finally:
+            worker.transfers -= 1
+            if self._download is not None:
+                yield self.executor.submit(self._download.close)
+                self._download = None
+            if sftp is not None:
+                yield self.executor.submit(sftp.close)
+
+    def on_connection_close(self):
+        # Cancellation is connection teardown, not a message. Download.read
+        # returns b'' once cancelled, which ends the chunk loop.
+        if self._download is not None:
+            self._download.cancel()
+        super(TransferDownloadHandler, self).on_connection_close()
 
 
 class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):

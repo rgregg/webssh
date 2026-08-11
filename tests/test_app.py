@@ -1433,3 +1433,65 @@ class TestTransferList(TransferTestBase):
         response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
                               headers=self.headers)
         self.assertEqual(response.code, 410)
+
+
+class TestContentDisposition(unittest.TestCase):
+
+    def test_ascii_filename_uses_the_plain_form(self):
+        value = handler.content_disposition('report.pdf')
+        self.assertIn('filename="report.pdf"', value)
+
+    def test_non_ascii_filename_gets_rfc5987_encoding(self):
+        value = handler.content_disposition('отчёт.pdf')
+        self.assertIn("filename*=UTF-8''", value)
+        # An ASCII fallback must still be present for older clients.
+        self.assertIn('filename="', value)
+
+    def test_quotes_are_escaped_not_passed_through(self):
+        value = handler.content_disposition('we"ird.txt')
+        self.assertNotIn('we"ird', value)
+
+    def test_newline_in_filename_is_rejected(self):
+        # Header injection vector: a remote filename is attacker-controlled
+        # if the user can be induced to download from a hostile host.
+        with self.assertRaises(ValueError):
+            handler.content_disposition('evil\r\nSet-Cookie: x=1')
+
+
+class TestTransferDownload(TransferTestBase):
+
+    def test_streams_the_file_with_an_attachment_header(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(response.body, b'hello')
+        disposition = response.headers['Content-Disposition']
+        self.assertIn('attachment', disposition)
+        self.assertIn('a.txt', disposition)
+
+    def test_missing_file_is_404(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/no.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_directory_is_400(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 400)
+
+    def test_wrong_client_ip_is_404(self):
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_transfer_counter_is_released_after_the_download(self):
+        self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                   headers=self.headers)
+        self.assertEqual(self.worker.transfers, 0)
+
+    def test_concurrency_cap_returns_429(self):
+        self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 429)
