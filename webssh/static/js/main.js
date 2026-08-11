@@ -133,6 +133,7 @@ jQuery(function($){
         sock: null,
         encoding: 'utf-8',
         decoder: null,
+        worker_id: null,
         containerEl: container,
         tabItemEl: tabItem,
         title: ''
@@ -203,6 +204,10 @@ jQuery(function($){
       if (!tab) return;
 
       tab.closed = true;
+
+      // Abort any uploads/downloads in flight against this tab's worker
+      // before the worker session and DOM go away underneath them.
+      webssh_transfer_ui.cancel_for_tab(tabId);
 
       // Clear keepalive timer
       if (tab.keepaliveInterval) {
@@ -1161,12 +1166,29 @@ jQuery(function($){
         undefined, new TmuxAwareClipboardProvider()
       ));
 
+      // Track the shell's working directory (reported via OSC 7) so
+      // uploads/drops default to "wherever the user currently is" instead
+      // of requiring them to type a path every time.
+      term.parser.registerOscHandler(7, function (payload) {
+        var dir = webssh_transfer.parse_osc7(payload);
+        if (dir) {
+          webssh_transfer_ui.set_cwd(tab.id, dir);
+        }
+        // Returning false lets any other handler see the sequence too.
+        return false;
+      });
+
       // Store on tab
       tab.term = term;
       tab.fitAddon = fitAddon;
       tab.sock = sock;
       tab.encoding = encoding;
       tab.decoder = decoder;
+      tab.worker_id = msg.id;
+
+      // Wire up drag-and-drop upload against this tab's terminal pane, now
+      // that we know which live worker session uploads should target.
+      webssh_transfer_ui.bind_drop($(tab.containerEl), tab.id, tab.worker_id);
 
       console.log(url);
       if (!msg.encoding) {
@@ -1873,6 +1895,13 @@ jQuery(function($){
 
   $('#settings-btn').on('click', function() {
     tabManager.openSettings();
+  });
+
+  $('#download-btn').on('click', function() {
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED && tab.worker_id) {
+      webssh_transfer_ui.open_picker(tab.id, tab.worker_id);
+    }
   });
 
 
