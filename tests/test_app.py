@@ -1652,3 +1652,94 @@ class TestTransferUpload(TransferTestBase):
         self.assertIn('No space left on device', data['status'])
         # The partial file must not be left behind under the real name.
         self.assertIn('/home/ryan/new.txt', self.sftp.removed)
+
+
+class TestTransferUploadCancellation(unittest.TestCase):
+    """Pins the fix for a disconnect that arrives while prepare() is still
+    suspended on a yield point (open_sftp(), then Upload.open()), before
+    self.sftp/self.upload/self.counted exist for on_connection_close() to
+    clean up itself. Without hardening, that disconnect callback finds
+    nothing to clean up, then prepare() resumes and unconditionally opens
+    the upload and increments worker.transfers, leaking an SFTP handle and
+    permanently occupying a transfer slot (spurious future 429s).
+
+    Mirrors TestTransferDownloadCancellation's approach for the download
+    handler's equivalent _aborted/_bind_download hardening.
+    """
+
+    class FakeWorker(object):
+        def __init__(self):
+            self.transfers = 0
+
+    class FakeSFTP(object):
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def make_handler(self):
+        instance = handler.TransferUploadHandler.__new__(
+            handler.TransferUploadHandler)
+        instance._aborted = False
+        instance.worker = self.FakeWorker()
+        # _has_stream_request_body(TransferUploadHandler) is True, so the
+        # base on_connection_close() touches self.request._body_future;
+        # give it a Future-shaped stand-in that reports itself done so
+        # that code path is a no-op here.
+        instance.request = mock.Mock()
+        instance.request._body_future.done.return_value = True
+        return instance
+
+    def test_disconnect_before_sftp_exists_is_recorded(self):
+        instance = self.make_handler()
+        instance.on_connection_close()
+        self.assertTrue(instance._aborted)
+        self.assertEqual(instance.worker.transfers, 0)
+
+    def test_sftp_bound_after_early_disconnect_is_closed_and_not_counted(self):
+        instance = self.make_handler()
+        # The disconnect races ahead of open_sftp() finishing.
+        instance.on_connection_close()
+
+        sftp = self.FakeSFTP()
+        bound = instance._bind_sftp(sftp)
+
+        self.assertFalse(bound)
+        self.assertTrue(sftp.closed)
+        self.assertIsNone(instance.sftp)
+        self.assertEqual(instance.worker.transfers, 0)
+
+    def test_disconnect_after_sftp_bound_but_before_upload_opens_cleans_up(self):
+        instance = self.make_handler()
+        sftp = self.FakeSFTP()
+        self.assertTrue(instance._bind_sftp(sftp))
+
+        upload = mock.Mock()
+        instance.upload = upload
+
+        # The disconnect races ahead of upload.open() finishing.
+        instance.on_connection_close()
+
+        self.assertTrue(instance._aborted)
+        self.assertTrue(sftp.closed)
+        upload.abort.assert_called_once()
+        self.assertIsNone(instance.upload)
+        self.assertIsNone(instance.sftp)
+        self.assertEqual(instance.worker.transfers, 0)
+        self.assertFalse(getattr(instance, 'counted', False))
+
+    def test_late_disconnect_after_prepare_completed_decrements_once(self):
+        # Ordinary ordering: prepare() has already finished (counted=True)
+        # when the client disconnects. Must keep working after the
+        # hardening and must not double-decrement.
+        instance = self.make_handler()
+        instance.worker.transfers = 1
+        instance.sftp = self.FakeSFTP()
+        instance.upload = mock.Mock()
+        instance.counted = True
+
+        instance.on_connection_close()
+
+        self.assertEqual(instance.worker.transfers, 0)
+        self.assertFalse(instance.counted)

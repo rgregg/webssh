@@ -1087,6 +1087,23 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
     # error and any further chunks are drained without being written.
     _write_error = None
 
+    # Set by on_connection_close() if the client disconnects while
+    # prepare() is still suspended on a yield (SFTP channel open, then
+    # Upload.open()), before self.sftp/self.upload/self.counted exist for
+    # on_connection_close() to clean up itself. prepare() checks this flag
+    # right after each such yield and finishes the cleanup there instead,
+    # since on_connection_close() will not fire again for an
+    # already-closed connection. Mirrors TransferDownloadHandler's
+    # _aborted/_bind_download pattern.
+    _aborted = False
+
+    def _bind_sftp(self, sftp):
+        self.sftp = sftp
+        if self._aborted:
+            self._cleanup(abort=True)
+            return False
+        return True
+
     @tornado.gen.coroutine
     def prepare(self):
         # The app-wide max_body_size is sized for form posts. Without this,
@@ -1107,15 +1124,31 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         # (stream_request_body awaits it), so making it a coroutine here is
         # safe and keeps those calls off the IOLoop like every other
         # blocking paramiko call in this handler.
-        self.sftp = yield self.executor.submit(
-            transfer.open_sftp, self.worker.ssh)
+        sftp = yield self.executor.submit(transfer.open_sftp, self.worker.ssh)
+        if not self._bind_sftp(sftp):
+            # on_connection_close() already fired while this yield was
+            # pending, before self.sftp existed for it to close. It has
+            # been cleaned up above; there is nothing left to do.
+            return
+
         self.upload = transfer.Upload(self.sftp, path, filename,
                                       overwrite=overwrite)
         try:
             yield self.executor.submit(self.upload.open)
         except transfer.TransferError as exc:
             self._cleanup(abort=False)
+            if self._aborted:
+                return
             self.transfer_error(exc)
+
+        if self._aborted:
+            # Same race as above, but the disconnect landed while
+            # Upload.open() was pending instead. self.sftp/self.upload
+            # already exist here, so on_connection_close() closed them
+            # itself; nothing left to do but stop before counting this as
+            # an in-progress transfer.
+            self._cleanup(abort=True)
+            return
 
         self.worker.transfers += 1
         self.counted = True
@@ -1166,7 +1199,13 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
 
     def on_connection_close(self):
         # A cancelled upload leaves a truncated file under the real name
-        # unless it is removed.
+        # unless it is removed. This may fire while prepare() is still
+        # suspended on a yield, before self.sftp/self.upload exist yet for
+        # _cleanup() to find (it is a no-op then); record the abort
+        # unconditionally too so prepare() can finish the cleanup itself
+        # once the resource it was waiting on exists, since this callback
+        # will not fire again for the same connection.
+        self._aborted = True
         self._cleanup(abort=True)
         super(TransferUploadHandler, self).on_connection_close()
 
