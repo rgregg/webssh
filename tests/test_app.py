@@ -12,6 +12,7 @@ from tornado.testing import AsyncHTTPTestCase
 from tornado.httpclient import HTTPError
 from tornado.options import options
 from tests.sshserver import run_ssh_server, banner, Server
+from tests.test_transfer import FakeSFTP, FakeAttr
 from tests.utils import encode_multipart_formdata, read_file, make_tests_data_path  # noqa
 from webssh import handler
 from webssh.main import make_app, make_handlers
@@ -1345,3 +1346,90 @@ class TestLiveWorkerRegistry(unittest.TestCase):
         worker.register_live_worker(w)
         w.close(reason='test')
         self.assertIsNone(worker.live_workers.get('wid'))
+
+
+class TransferTestBase(TestAppBase):
+    """Handler-level transfer tests with SFTP mocked at the open_sftp seam.
+
+    tests/sshserver.py implements no SFTP subsystem, and writing one just to
+    test our code would mean trusting a fake server. Patching open_sftp tests
+    the code we actually control.
+    """
+
+    headers = {'Cookie': '_xsrf=yummy'}
+
+    def get_app(self):
+        self.override_options(
+            debug=False, xsrf=True, policy='warning', hostfile='',
+            syshostfile='', tdstream='', origin='same', maxconn=20,
+        )
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+    def setUp(self):
+        super(TransferTestBase, self).setUp()
+        worker.live_workers.clear()
+        self.addCleanup(worker.live_workers.clear)
+        self.sftp = FakeSFTP(files={'/home/ryan/a.txt': b'hello'},
+                             dirs={'/home/ryan': [FakeAttr('a.txt', size=5)]})
+        self.worker = self.make_live_worker()
+
+    def make_live_worker(self, worker_id='tid', client_ip='127.0.0.1'):
+        test_sftp = self.sftp
+
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def open_sftp(self):
+                return test_sftp
+
+            def close(self):
+                pass
+
+        w = worker.Worker(self.io_loop, FakeSSH(), FakeChan(),
+                          ('10.0.0.1', 22))
+        w.id = worker_id
+        w.src_addr = (client_ip, 1234)
+        worker.live_workers[worker_id] = w
+        return w
+
+
+class TestTransferList(TransferTestBase):
+
+    def test_lists_the_requested_directory(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan')
+        self.assertEqual(data['entries'][0]['name'], 'a.txt')
+        self.assertFalse(data['truncated'])
+
+    def test_unknown_worker_id_is_404(self):
+        response = self.fetch('/transfer/list?id=nope&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_valid_id_from_a_different_client_ip_is_404(self):
+        # The security property the transfer endpoints rest on: a leaked
+        # worker id is useless from anywhere but the session's own address.
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_missing_directory_is_404_with_the_remote_message(self):
+        response = self.fetch('/transfer/list?id=tid&path=/nope',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_closed_worker_is_410(self):
+        self.worker.closed = True
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 410)

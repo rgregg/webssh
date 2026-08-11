@@ -6,6 +6,7 @@ import struct
 import traceback
 import weakref
 import paramiko
+import tornado.gen
 import tornado.web
 
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,7 @@ from webssh.utils import (
 from webssh.worker import (
     Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
 )
+from webssh import transfer
 from webssh import user_data
 from webssh import user_keys
 from webssh._version import __version__
@@ -910,6 +912,96 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
         self.render('settings.html',
                     auth_username=username,
                     admin_hosts=self.allowed_hosts)
+
+
+class TransferMixin(MixinHandler):
+    """Shared resolution for the file-transfer endpoints.
+
+    A transfer is reachable exactly where its terminal is: the same 32-byte
+    worker token, and the same client-IP check the websocket applies.
+    """
+
+    executor = ThreadPoolExecutor(max_workers=cpu_count() * 2)
+
+    MAX_CONCURRENT_TRANSFERS = 3
+
+    def initialize(self, loop):
+        super(TransferMixin, self).initialize()
+        self.loop = loop
+
+    def get_live_worker(self):
+        worker_id = self.get_argument('id', '')
+        if not worker_id:
+            raise tornado.web.HTTPError(404)
+
+        worker = live_workers.get(worker_id)
+        if worker is None:
+            raise tornado.web.HTTPError(404)
+
+        ip = self.get_client_addr()[0]
+        if worker.src_addr[0] != ip:
+            logging.warning(
+                'Transfer request for worker {} from {}, which does not own '
+                'it'.format(worker_id, ip))
+            raise tornado.web.HTTPError(404)
+
+        if worker.closed:
+            raise tornado.web.HTTPError(410, 'The terminal session ended.')
+
+        return worker
+
+    def get_path(self):
+        path = self.get_argument('path', '')
+        if not path:
+            raise tornado.web.HTTPError(400, 'Missing path')
+        return path
+
+    def transfer_error(self, exc):
+        """Remote filesystem errors describe the user's own machine and are
+        reported verbatim. Contrast handler.py's rule for server state."""
+        raise tornado.web.HTTPError(exc.status, exc.message)
+
+    def write_error(self, status_code, **kwargs):
+        reason = self._reason
+        exc_info = kwargs.get('exc_info')
+        if exc_info and isinstance(exc_info[1], tornado.web.HTTPError):
+            reason = exc_info[1].log_message or reason
+        self.set_header('Content-Type', 'application/json')
+        self.finish({'status': reason})
+
+
+class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
+
+    @tornado.gen.coroutine
+    def get(self):
+        worker = self.get_live_worker()
+        path = self.get_path()
+
+        try:
+            result = yield self.executor.submit(self._list, worker, path)
+        except transfer.TransferError as exc:
+            self.transfer_error(exc)
+
+        self.write(result)
+
+    def _list(self, worker, path):
+        sftp = transfer.open_sftp(worker.ssh)
+        try:
+            return transfer.list_directory(sftp, path)
+        finally:
+            sftp.close()
+
+
+class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
+
+    def get(self):
+        raise tornado.web.HTTPError(501)
+
+
+class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
+
+    def post(self):
+        raise tornado.web.HTTPError(501)
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
