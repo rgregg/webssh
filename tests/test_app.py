@@ -19,6 +19,7 @@ from webssh.settings import (
     get_app_settings, get_server_settings, max_body_size
 )
 from webssh.utils import to_str
+from webssh import worker
 from webssh.worker import clients
 
 try:
@@ -1295,3 +1296,52 @@ class TestUserHostKeyIsolation(TestAppBase):
     def test_alice_pin_does_not_leak_to_anonymous_request(self):
         self.assertNotIn(b'is not allowed', self.post_as('alice').body)
         self.assertIn(b'is not allowed', self.post_as(None).body)
+
+
+class TestLiveWorkerRegistry(unittest.TestCase):
+
+    def make_worker(self, worker_id='wid'):
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def close(self):
+                pass
+
+        w = worker.Worker(None, FakeSSH(), FakeChan(), ('1.2.3.4', 22))
+        w.id = worker_id
+        w.src_addr = ('9.9.9.9', 1234)
+        return w
+
+    def tearDown(self):
+        worker.live_workers.clear()
+        worker.clients.clear()
+
+    def test_registering_makes_a_worker_reachable_by_id(self):
+        w = self.make_worker()
+        worker.register_live_worker(w)
+        self.assertIs(worker.live_workers.get('wid'), w)
+
+    def test_unregistering_removes_it(self):
+        w = self.make_worker()
+        worker.register_live_worker(w)
+        worker.unregister_live_worker(w)
+        self.assertIsNone(worker.live_workers.get('wid'))
+
+    def test_unregistering_an_absent_worker_is_harmless(self):
+        # close() may run without the websocket ever having attached.
+        worker.unregister_live_worker(self.make_worker())
+
+    def test_a_new_worker_starts_with_no_transfers(self):
+        self.assertEqual(self.make_worker().transfers, 0)
+
+    def test_close_unregisters_so_a_dead_id_cannot_be_reached(self):
+        w = self.make_worker()
+        worker.clients['9.9.9.9'] = {'wid': None}
+        worker.register_live_worker(w)
+        w.close(reason='test')
+        self.assertIsNone(worker.live_workers.get('wid'))

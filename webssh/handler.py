@@ -17,7 +17,9 @@ from webssh.utils import (
     to_int, to_ip_address, UnicodeType, is_ip_hostname, is_same_primary_domain,
     is_valid_encoding
 )
-from webssh.worker import Worker, recycle_worker, clients
+from webssh.worker import (
+    Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
+)
 from webssh import user_data
 from webssh import user_keys
 from webssh._version import __version__
@@ -934,6 +936,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             worker = workers.get(worker_id)
             if worker:
                 workers[worker_id] = None
+                register_live_worker(worker)
                 self.set_nodelay(True)
                 worker.set_handler(self)
                 self.worker_ref = weakref.ref(worker)
