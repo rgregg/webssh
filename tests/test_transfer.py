@@ -37,6 +37,8 @@ class FakeFile(object):
 
     def close(self):
         self.closed = True
+        if self.parent is not None and self.path is not None:
+            self.parent.files[self.path] = self.data
 
 
 class FakeSFTP(object):
@@ -147,3 +149,63 @@ class TestDownload(unittest.TestCase):
         self.assertTrue(dl.read())
         dl.cancel()
         self.assertEqual(dl.read(), b'')
+
+
+class TestUpload(unittest.TestCase):
+
+    def test_writes_the_payload_to_the_named_path(self):
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, '/home/ryan/out.txt', 'out.txt')
+        self.assertEqual(up.open(), '/home/ryan/out.txt')
+        up.write(b'hello ')
+        up.write(b'world')
+        up.close()
+        self.assertEqual(sftp.files['/home/ryan/out.txt'], b'hello world')
+
+    def test_directory_destination_gets_the_source_filename_appended(self):
+        sftp = FakeSFTP(dirs={'/home/ryan': []})
+        up = transfer.Upload(sftp, '/home/ryan', 'report.pdf')
+        self.assertEqual(up.open(), '/home/ryan/report.pdf')
+
+    def test_existing_destination_raises_409_before_any_write(self):
+        # The whole point is to refuse before truncating the remote file.
+        sftp = FakeSFTP(files={'/home/ryan/out.txt': b'original'})
+        up = transfer.Upload(sftp, '/home/ryan/out.txt', 'out.txt')
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.open()
+        self.assertEqual(caught.exception.status, 409)
+        self.assertEqual(sftp.files['/home/ryan/out.txt'], b'original')
+
+    def test_overwrite_true_replaces_the_file(self):
+        sftp = FakeSFTP(files={'/home/ryan/out.txt': b'original'})
+        up = transfer.Upload(sftp, '/home/ryan/out.txt', 'out.txt',
+                             overwrite=True)
+        up.open()
+        up.write(b'new')
+        up.close()
+        self.assertEqual(sftp.files['/home/ryan/out.txt'], b'new')
+
+    def test_abort_removes_the_partial_file(self):
+        # A truncated file under the real name is worse than no file.
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, '/home/ryan/big.iso', 'big.iso')
+        up.open()
+        up.write(b'partial')
+        up.abort()
+        self.assertIn('/home/ryan/big.iso', sftp.removed)
+
+    def test_abort_before_open_removes_nothing(self):
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, '/home/ryan/big.iso', 'big.iso')
+        up.abort()
+        self.assertEqual(sftp.removed, [])
+
+    def test_permission_denied_on_open_maps_to_403(self):
+        class Denying(FakeSFTP):
+            def open(self, path, mode='r', bufsize=-1):
+                raise IOError(errno.EACCES, 'Permission denied')
+
+        up = transfer.Upload(Denying(), '/root/x', 'x')
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.open()
+        self.assertEqual(caught.exception.status, 403)

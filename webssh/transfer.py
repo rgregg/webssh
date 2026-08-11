@@ -1,5 +1,6 @@
 import errno
 import logging
+import posixpath
 import stat
 
 
@@ -106,3 +107,85 @@ class Download(object):
             except Exception:
                 pass
             self.handle = None
+
+
+class Upload(object):
+    """Sequential writer for one remote file.
+
+    ``open`` resolves the destination and refuses an existing file unless
+    ``overwrite`` was set, so the caller can turn that into a 409 and ask
+    the user before anything is truncated.
+    """
+
+    def __init__(self, sftp, path, filename, overwrite=False):
+        self.sftp = sftp
+        self.path = path
+        self.filename = filename
+        self.overwrite = overwrite
+        self.handle = None
+        self.final_path = None
+        self.bytes_written = 0
+
+    def _resolve(self):
+        try:
+            attr = self.sftp.stat(self.path)
+        except (OSError, IOError) as exc:
+            if getattr(exc, 'errno', None) == errno.ENOENT:
+                return self.path, False
+            raise error_from_oserror(exc, self.path)
+
+        if is_dir(attr):
+            return posixpath.join(self.path, self.filename), None
+        return self.path, True
+
+    def open(self):
+        target, exists = self._resolve()
+
+        if exists is None:
+            # Destination was a directory; re-stat the joined path.
+            try:
+                self.sftp.stat(target)
+                exists = True
+            except (OSError, IOError) as exc:
+                if getattr(exc, 'errno', None) != errno.ENOENT:
+                    raise error_from_oserror(exc, target)
+                exists = False
+
+        if exists and not self.overwrite:
+            raise TransferError(409, 'File exists: {}'.format(target))
+
+        try:
+            self.handle = self.sftp.open(target, 'wb')
+        except (OSError, IOError) as exc:
+            raise error_from_oserror(exc, target)
+
+        self.final_path = target
+        return target
+
+    def write(self, data):
+        if self.handle is None:
+            raise TransferError(400, 'Upload was not opened')
+        try:
+            self.handle.write(data)
+        except (OSError, IOError) as exc:
+            raise error_from_oserror(exc, self.final_path)
+        self.bytes_written += len(data)
+
+    def close(self):
+        if self.handle is not None:
+            try:
+                self.handle.close()
+            except Exception:
+                pass
+            self.handle = None
+
+    def abort(self):
+        """Close and delete the partial file. Never raises."""
+        self.close()
+        if self.final_path is None:
+            return
+        try:
+            self.sftp.remove(self.final_path)
+        except Exception as exc:
+            logging.warning('Could not remove partial upload {}: {}'.format(
+                self.final_path, exc))
