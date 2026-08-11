@@ -89,8 +89,11 @@ A shared mixin resolves worker ID plus client IP to a live worker, or raises
 check, same 32-byte worker token. A transfer is never more reachable than the
 session it belongs to.
 
-Paramiko's SFTP calls block, so every one of them runs on the existing
-`ThreadPoolExecutor`, never on the IOLoop.
+Paramiko's SFTP calls block, so every one of them runs on a
+`ThreadPoolExecutor`, never on the IOLoop. `TransferMixin` gives transfers
+their own executor (`cpu_count() * 2` workers) rather than sharing the one
+SSH connects already use, so a burst of bulk file transfers cannot starve
+new terminal connections of worker threads.
 
 ### Client
 

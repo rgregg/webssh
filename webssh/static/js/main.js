@@ -1013,6 +1013,13 @@ jQuery(function($){
     var match = document.cookie.match(/\b_xsrf=([^;]+)/);
     return match ? decodeURIComponent(match[1]) : '';
   }
+  // Exposed on the shared wssh object so transfer-ui.js can reuse it
+  // instead of keeping its own copy. index.html loads transfer-ui.js
+  // before main.js, but that is fine here: this only needs to be set by
+  // the time transfer-ui.js's xsrf() is actually called (a user action,
+  // well after every script on the page has finished loading), not by
+  // the time transfer-ui.js is parsed.
+  wssh.get_xsrf_token = get_xsrf_token;
 
 
   function build_hostname_select() {

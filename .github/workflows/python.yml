@@ -58,6 +58,13 @@ jobs:
       # tests/js/<subdir>/*.test.js would not be picked up here and would
       # need this pattern updated (e.g. to also glob tests/js/**/*.test.js).
       - run: ls tests/js/*.test.js && node --test tests/js/*.test.js
+      # The project's own client JS targets ES5 (no build step, no
+      # transpiler); this catches const/let/arrow-functions/template
+      # literals slipping into webssh/static/js/ before they ever reach a
+      # browser that has to support them. The vendored third-party files
+      # already in that directory (jquery, bootstrap, popper, xterm and
+      # its addons) are excluded -- see scripts/check_es5.js.
+      - run: node scripts/check_es5.js
 
   docker:
     needs: [lint, test, js]

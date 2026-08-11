@@ -13,7 +13,13 @@ var webssh_transfer_ui = (function () {
   var seq = 0;
 
   function xsrf() {
-    return $('input[name="_xsrf"]').val() || '';
+    // Reuses main.js's helper (exposed on the shared wssh object) rather
+    // than duplicating the cookie-parsing logic here. By the time this is
+    // actually called -- a user action, after every script tag on the
+    // page has run -- wssh.get_xsrf_token exists regardless of load
+    // order; see the comment next to its definition in main.js.
+    return window.wssh && window.wssh.get_xsrf_token ?
+      window.wssh.get_xsrf_token() : '';
   }
 
   function set_cwd(tab_id, path) {

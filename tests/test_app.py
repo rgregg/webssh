@@ -5,6 +5,7 @@ import random
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
 from unittest import mock
 import tornado.websocket
 import tornado.gen
@@ -1661,12 +1662,94 @@ class TestTransferUpload(TransferTestBase):
         # The partial file must not be left behind under the real name.
         self.assertIn('/home/ryan/new.txt', self.sftp.removed)
 
+    def test_path_containing_percent_does_not_crash_logging(self):
+        # Pins the fix for the Minor review finding: transfer_error() used
+        # to pass the remote message straight through as log_message, which
+        # Tornado formats as "%d %s: " + log_message with two %-args. A '%'
+        # in the path made that crash inside logging instead of just
+        # reporting the error.
+        self.sftp.files['/home/ryan/100%.txt'] = b'existing'
+        response = self.upload(
+            'id=tid&path=/home/ryan/100%25.txt&filename=100%25.txt', b'y')
+        self.assertEqual(response.code, 409)
+        data = json.loads(to_str(response.body))
+        self.assertIn('/home/ryan/100%.txt', data['status'])
+
+
+class TestTransferUploadConcurrencyCap(TransferTestBase):
+    """Pins the fix for the Important review finding: the cap check and the
+    increment used to be separated by two yields (open_sftp, Upload.open),
+    so several prepare() calls racing that window could all observe
+    worker.transfers == 0, all pass the check, and all open an SFTP channel
+    before any of them incremented. Moving the increment to immediately
+    after the cap check (before the first yield) closes that window,
+    because each prepare() call's synchronous prefix -- including the
+    increment -- now runs to completion before it yields and lets another
+    queued request's prepare() run.
+    """
+
+    @tornado.testing.gen_test
+    def test_several_uploads_racing_prepare_cannot_all_pass_the_cap(self):
+        cap = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        n = cap + 4
+
+        pending = []
+        real_submit = handler.TransferMixin.executor.submit
+
+        def fake_submit(fn, *args, **kwargs):
+            if fn is handler.transfer.open_sftp:
+                fut = Future()
+                pending.append(fut)
+                return fut
+            return real_submit(fn, *args, **kwargs)
+
+        with mock.patch.object(handler.TransferMixin.executor, 'submit',
+                               side_effect=fake_submit):
+            headers = dict(self.headers)
+            headers['X-Xsrftoken'] = 'yummy'
+            headers['Content-Type'] = 'application/octet-stream'
+            response_futures = [
+                self.http_client.fetch(
+                    self.get_url(
+                        '/transfer/upload?id=tid&path=/home/ryan/f{}.txt'
+                        '&filename=f{}.txt'.format(i, i)),
+                    method='POST', body=b'x', headers=headers,
+                    raise_error=False)
+                for i in range(n)
+            ]
+
+            # Pump the IOLoop until every prepare() that is going to run
+            # has run its synchronous prefix and is now waiting on the
+            # (stubbed, never-resolving-yet) open_sftp future.
+            last = -1
+            for _ in range(50):
+                if len(pending) == last:
+                    break
+                last = len(pending)
+                yield tornado.gen.sleep(0.01)
+
+            # The heart of the fix: no more than `cap` requests should have
+            # made it past the cap check before any of them incremented
+            # worker.transfers.
+            self.assertLessEqual(len(pending), cap)
+            self.assertEqual(self.worker.transfers, len(pending))
+
+            for fut in pending:
+                fut.set_result(handler.transfer.open_sftp(self.worker.ssh))
+
+            responses = yield response_futures
+
+        codes = sorted(r.code for r in responses)
+        self.assertEqual(codes.count(429), n - cap)
+        self.assertEqual(codes.count(200), cap)
+        self.assertEqual(self.worker.transfers, 0)
+
 
 class TestTransferUploadCancellation(unittest.TestCase):
     """Pins the fix for a disconnect that arrives while prepare() is still
     suspended on a yield point (open_sftp(), then Upload.open()), before
-    self.sftp/self.upload/self.counted exist for on_connection_close() to
-    clean up itself. Without hardening, that disconnect callback finds
+    self.sftp/self.upload exist for on_connection_close() to clean up
+    itself. Without hardening, that disconnect callback finds
     nothing to clean up, then prepare() resumes and unconditionally opens
     the upload and increments worker.transfers, leaking an SFTP handle and
     permanently occupying a transfer slot (spurious future 429s).
@@ -1751,6 +1834,60 @@ class TestTransferUploadCancellation(unittest.TestCase):
 
         self.assertEqual(instance.worker.transfers, 0)
         self.assertFalse(instance.counted)
+
+
+class TestTransferUploadWriteDuringDisconnect(unittest.TestCase):
+    """Pins the fix for the Important review finding: _write() used to
+    read self.upload at call time, but it runs on the executor while
+    on_connection_close() -> _cleanup(abort=True) can run concurrently on
+    the IOLoop and set self.upload = None. _write() caught only
+    TransferError, so a disconnect landing mid-chunk turned into an
+    uncaught AttributeError instead of just being ignored.
+    """
+
+    def make_handler(self):
+        instance = handler.TransferUploadHandler.__new__(
+            handler.TransferUploadHandler)
+        instance._write_error = None
+        return instance
+
+    def test_write_after_upload_is_cleared_is_a_noop(self):
+        instance = self.make_handler()
+        instance.upload = None
+
+        # Must not raise AttributeError.
+        instance._write(b'chunk')
+
+        self.assertIsNone(instance._write_error)
+
+    def test_write_while_upload_still_bound_still_writes(self):
+        instance = self.make_handler()
+        upload = mock.Mock()
+        instance.upload = upload
+
+        instance._write(b'chunk')
+
+        upload.write.assert_called_once_with(b'chunk')
+        self.assertIsNone(instance._write_error)
+
+    def test_disconnect_racing_a_write_does_not_raise(self):
+        # The exact race the finding describes: self.upload is read once
+        # at the top of _write(), so a concurrent on_connection_close()
+        # clearing self.upload after that read cannot turn a write already
+        # in progress into an AttributeError.
+        instance = self.make_handler()
+        upload = mock.Mock()
+
+        def racing_write(data):
+            instance.upload = None  # simulates _cleanup(abort=True)
+
+        upload.write.side_effect = racing_write
+        instance.upload = upload
+
+        instance._write(b'chunk')
+
+        self.assertIsNone(instance._write_error)
+        self.assertIsNone(instance.upload)
 
 
 class TestIdleTimeoutDuringTransfer(unittest.TestCase):
