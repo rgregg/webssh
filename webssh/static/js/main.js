@@ -319,10 +319,14 @@ jQuery(function($){
     },
 
     bindWssh: function(tab) {
-      // Reset wssh except connect
+      // Reset wssh, but keep properties that must survive across tab
+      // activations/reconnects: connect (the entry point) and
+      // get_xsrf_token (needed by transfer-ui.js for uploads, which can
+      // happen at any point while a tab is connected).
+      var preserved = ['connect', 'get_xsrf_token'];
       var name;
       for (name in wssh) {
-        if (wssh.hasOwnProperty(name) && name !== 'connect') {
+        if (wssh.hasOwnProperty(name) && preserved.indexOf(name) === -1) {
           delete wssh[name];
         }
       }
