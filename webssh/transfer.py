@@ -189,3 +189,28 @@ class Upload(object):
         except Exception as exc:
             logging.warning('Could not remove partial upload {}: {}'.format(
                 self.final_path, exc))
+
+
+def list_directory(sftp, path):
+    try:
+        attrs = sftp.listdir_attr(path)
+    except (OSError, IOError) as exc:
+        raise error_from_oserror(exc, path)
+
+    entries = []
+    for attr in attrs:
+        entries.append({
+            'name': attr.filename,
+            'size': getattr(attr, 'st_size', 0) or 0,
+            'is_dir': is_dir(attr),
+            'mtime': getattr(attr, 'st_mtime', 0) or 0,
+        })
+
+    entries.sort(key=lambda e: (not e['is_dir'], e['name']))
+
+    truncated = len(entries) > MAX_LIST_ENTRIES
+    return {
+        'path': path,
+        'entries': entries[:MAX_LIST_ENTRIES],
+        'truncated': truncated,
+    }

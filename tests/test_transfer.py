@@ -209,3 +209,43 @@ class TestUpload(unittest.TestCase):
         with self.assertRaises(transfer.TransferError) as caught:
             up.open()
         self.assertEqual(caught.exception.status, 403)
+
+
+class TestListDirectory(unittest.TestCase):
+
+    def test_lists_files_and_directories_with_metadata(self):
+        sftp = FakeSFTP(dirs={'/var/log': [
+            FakeAttr('syslog', size=2100, mtime=111),
+            FakeAttr('nginx', isdir=True, mtime=222),
+        ]})
+        result = transfer.list_directory(sftp, '/var/log')
+
+        self.assertEqual(result['path'], '/var/log')
+        self.assertFalse(result['truncated'])
+        by_name = dict((e['name'], e) for e in result['entries'])
+        self.assertEqual(by_name['syslog']['size'], 2100)
+        self.assertFalse(by_name['syslog']['is_dir'])
+        self.assertTrue(by_name['nginx']['is_dir'])
+        self.assertEqual(by_name['nginx']['mtime'], 222)
+
+    def test_sorts_directories_first_then_by_name(self):
+        sftp = FakeSFTP(dirs={'/d': [
+            FakeAttr('b.txt'),
+            FakeAttr('a.txt'),
+            FakeAttr('zdir', isdir=True),
+        ]})
+        names = [e['name'] for e in transfer.list_directory(sftp, '/d')['entries']]
+        self.assertEqual(names, ['zdir', 'a.txt', 'b.txt'])
+
+    def test_caps_long_listings_and_reports_truncation(self):
+        # /usr/bin must not produce a multi-megabyte JSON response.
+        entries = [FakeAttr('f{}'.format(i)) for i in range(transfer.MAX_LIST_ENTRIES + 50)]
+        sftp = FakeSFTP(dirs={'/usr/bin': entries})
+        result = transfer.list_directory(sftp, '/usr/bin')
+        self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES)
+        self.assertTrue(result['truncated'])
+
+    def test_missing_directory_raises_404(self):
+        with self.assertRaises(transfer.TransferError) as caught:
+            transfer.list_directory(FakeSFTP(), '/nope')
+        self.assertEqual(caught.exception.status, 404)
