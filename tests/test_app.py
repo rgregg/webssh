@@ -1495,3 +1495,52 @@ class TestTransferDownload(TransferTestBase):
         response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
                               headers=self.headers)
         self.assertEqual(response.code, 429)
+
+
+class TestTransferDownloadCancellation(unittest.TestCase):
+    """Pins the fix for a disconnect that arrives before ``_download``
+    exists (while ``open_sftp``/``Download.open`` are still running on the
+    executor). Without hardening, that disconnect callback finds
+    ``_download is None`` and does nothing, so once ``_download`` is
+    assigned afterward there is no further callback to cancel it.
+    """
+
+    class FakeDownload(object):
+        def __init__(self):
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    def make_handler(self):
+        instance = handler.TransferDownloadHandler.__new__(
+            handler.TransferDownloadHandler)
+        instance._download = None
+        instance._aborted = False
+        return instance
+
+    def test_disconnect_before_download_exists_is_recorded(self):
+        instance = self.make_handler()
+        instance.on_connection_close()
+        self.assertTrue(instance._aborted)
+
+    def test_download_bound_after_early_disconnect_is_cancelled(self):
+        instance = self.make_handler()
+        # The disconnect races ahead of open_sftp/Download.open finishing.
+        instance.on_connection_close()
+
+        download = self.FakeDownload()
+        instance._bind_download(download)
+
+        self.assertTrue(download.cancelled)
+
+    def test_late_disconnect_still_cancels_the_bound_download(self):
+        # Ordinary ordering: _download already exists when the client
+        # disconnects. Must keep working after the hardening.
+        instance = self.make_handler()
+        download = self.FakeDownload()
+        instance._bind_download(download)
+
+        instance.on_connection_close()
+
+        self.assertTrue(download.cancelled)

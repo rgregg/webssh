@@ -1014,6 +1014,16 @@ class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
 class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
 
     _download = None
+    # Set by on_connection_close() if the client disconnects before
+    # _download exists (still on the executor in open_sftp/Download.open).
+    # _bind_download() checks this immediately once _download is assigned,
+    # so the cancellation is not missed.
+    _aborted = False
+
+    def _bind_download(self, download):
+        self._download = download
+        if self._aborted:
+            download.cancel()
 
     @tornado.gen.coroutine
     def get(self):
@@ -1032,7 +1042,7 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
         worker.transfers += 1
         try:
             sftp = yield self.executor.submit(transfer.open_sftp, worker.ssh)
-            self._download = transfer.Download(sftp, path)
+            self._bind_download(transfer.Download(sftp, path))
             size = yield self.executor.submit(self._download.open)
 
             self.set_header('Content-Type', 'application/octet-stream')
@@ -1058,7 +1068,11 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
 
     def on_connection_close(self):
         # Cancellation is connection teardown, not a message. Download.read
-        # returns b'' once cancelled, which ends the chunk loop.
+        # returns b'' once cancelled, which ends the chunk loop. _download
+        # may not exist yet (open_sftp/Download.open still running on the
+        # executor), so record the abort unconditionally too; _bind_download
+        # checks it once _download is assigned.
+        self._aborted = True
         if self._download is not None:
             self._download.cancel()
         super(TransferDownloadHandler, self).on_connection_close()
