@@ -655,7 +655,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
         if options.shell_integration:
             try:
-                chan.send(SHELL_INTEGRATION_SNIPPET)
+                chan.sendall(SHELL_INTEGRATION_SNIPPET)
             except (OSError, IOError, EOFError) as exc:
                 # Never let this cost the user their session: the path box
                 # is always available as a fallback. paramiko raises EOFError

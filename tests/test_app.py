@@ -20,7 +20,7 @@ from webssh.main import make_app, make_handlers
 from webssh.settings import (
     get_app_settings, get_server_settings, max_body_size
 )
-from webssh.utils import to_str
+from webssh.utils import to_bytes, to_str
 from webssh import worker
 from webssh.worker import clients
 
@@ -1806,3 +1806,132 @@ class TestShellIntegrationSnippet(unittest.TestCase):
         snippet = handler.SHELL_INTEGRATION_SNIPPET
         self.assertTrue(snippet.endswith('\n'))
         self.assertFalse(snippet.endswith('\n\n'))
+
+
+class FakeShellChannel(object):
+    """A minimal stand-in for a paramiko Channel, used to exercise the
+    ``ssh_connect`` call site directly without a real (or fake) SSH
+    server.
+    """
+
+    def __init__(self, sendall=None):
+        self.setblocking_calls = []
+        self.sendall = mock.Mock(side_effect=sendall)
+
+    def setblocking(self, blocking):
+        self.setblocking_calls.append(blocking)
+
+    def fileno(self):
+        return 99
+
+
+class PartialWriteChannel(object):
+    """Mimics paramiko's real ``Channel.sendall``: it loops over ``send``,
+    which here only ever accepts a few bytes at a time, to prove that a
+    partial underlying write still results in the whole snippet being
+    delivered.
+    """
+
+    def __init__(self, chunk_size=6):
+        self.chunk_size = chunk_size
+        self.sent = b''
+
+    def setblocking(self, blocking):
+        pass
+
+    def fileno(self):
+        return 99
+
+    def send(self, data):
+        chunk = data[:self.chunk_size]
+        self.sent += to_bytes(chunk)
+        return len(chunk)
+
+    def sendall(self, data):
+        while data:
+            sent = self.send(data)
+            data = data[sent:]
+
+
+class TestShellIntegrationSendSite(OptionsRestoreMixin, unittest.TestCase):
+    """Covers the ``chan.sendall(SHELL_INTEGRATION_SNIPPET)`` call site in
+    ``IndexHandler.ssh_connect``, which the fake-SSH-server-based test
+    fixtures cannot exercise (they disable ``shell_integration`` because
+    the fake server echoes raw bytes back).
+    """
+
+    def make_fake_handler(self, chan):
+        ssh_client = mock.Mock()
+        ssh_client.get_transport.return_value = None
+        ssh_client.invoke_shell.return_value = chan
+
+        fake_self = mock.Mock()
+        fake_self.ssh_client = ssh_client
+        fake_self.loop = mock.Mock()
+        fake_self.get_argument.return_value = u''
+        return fake_self
+
+    def test_sends_snippet_when_shell_integration_is_enabled(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel()
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        chan.sendall.assert_called_once_with(
+            handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_does_not_send_snippet_when_shell_integration_is_disabled(self):
+        self.override_options(shell_integration=False, encoding='utf-8')
+        chan = FakeShellChannel()
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        chan.sendall.assert_not_called()
+
+    def test_eoferror_from_sendall_does_not_break_the_session(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel(sendall=EOFError('transport is closed'))
+        fake_self = self.make_fake_handler(chan)
+
+        with self.assertLogs(level='WARNING') as log:
+            worker = handler.IndexHandler.ssh_connect(
+                fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertTrue(
+            any('Shell integration not sent' in msg
+                for msg in log.output))
+
+    def test_oserror_from_sendall_does_not_break_the_session(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel(sendall=OSError('connection reset'))
+        fake_self = self.make_fake_handler(chan)
+
+        with self.assertLogs(level='WARNING') as log:
+            worker = handler.IndexHandler.ssh_connect(
+                fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertTrue(
+            any('Shell integration not sent' in msg
+                for msg in log.output))
+
+    def test_partial_write_still_delivers_the_whole_snippet(self):
+        # sendall() must not stop after writing only part of the snippet:
+        # a partial send could strand the shell mid single-quoted string.
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = PartialWriteChannel(chunk_size=6)
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertEqual(
+            chan.sent, to_bytes(handler.SHELL_INTEGRATION_SNIPPET))
