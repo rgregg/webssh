@@ -1743,3 +1743,35 @@ class TestTransferUploadCancellation(unittest.TestCase):
 
         self.assertEqual(instance.worker.transfers, 0)
         self.assertFalse(instance.counted)
+
+
+class TestIdleTimeoutDuringTransfer(unittest.TestCase):
+
+    class FakeWorker(object):
+        def __init__(self, transfers):
+            self.transfers = transfers
+            self.closed_reason = None
+
+        def close(self, reason=None):
+            self.closed_reason = reason
+
+    def make_handler(self, worker_obj):
+        ws = handler.WsockHandler.__new__(handler.WsockHandler)
+        ws.src_addr = ('127.0.0.1', 1234)
+        ws.worker_ref = lambda: worker_obj
+        ws._idle_timeout = None
+        ws.loop = None
+        return ws
+
+    def test_idle_disconnect_closes_when_no_transfer_is_running(self):
+        w = self.FakeWorker(transfers=0)
+        self.make_handler(w)._idle_disconnect()
+        self.assertEqual(w.closed_reason, 'Idle timeout.')
+
+    def test_idle_disconnect_is_deferred_while_a_transfer_runs(self):
+        # Closing here would kill the SSH connection the transfer rides on.
+        w = self.FakeWorker(transfers=1)
+        ws = self.make_handler(w)
+        ws._reset_idle_timeout = lambda: None
+        ws._idle_disconnect()
+        self.assertIsNone(w.closed_reason)

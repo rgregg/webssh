@@ -1273,8 +1273,15 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             )
 
     def _idle_disconnect(self):
-        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
         worker = self.worker_ref() if self.worker_ref else None
+        if worker and worker.transfers:
+            # A transfer is in flight on this connection. Closing now would
+            # kill the SSH session it rides on, so re-arm instead.
+            logging.debug('Idle timeout deferred: transfer in progress')
+            self._reset_idle_timeout()
+            return
+
+        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
         if worker:
             worker.close(reason='Idle timeout.')
 
