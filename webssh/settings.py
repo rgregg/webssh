@@ -73,6 +73,12 @@ base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 font_dirs = ['webssh', 'static', 'css', 'fonts']
 max_body_size = 1 * 1024 * 1024
 
+# Uploads stream to SFTP and never sit in memory, so this is a policy
+# ceiling rather than a memory constraint. It is applied per-connection in
+# the upload handler; the global max_body_size stays small for the ordinary
+# form posts it was sized for.
+max_upload_size = 512 * 1024 * 1024
+
 
 class Font(object):
 

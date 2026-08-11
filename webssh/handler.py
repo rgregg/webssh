@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -23,6 +24,7 @@ from webssh.utils import (
 from webssh.worker import (
     Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
 )
+from webssh.settings import max_upload_size
 from webssh import transfer
 from webssh import user_data
 from webssh import user_keys
@@ -1078,10 +1080,74 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
         super(TransferDownloadHandler, self).on_connection_close()
 
 
+@tornado.web.stream_request_body
 class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
 
+    def prepare(self):
+        # The app-wide max_body_size is sized for form posts. Without this,
+        # any upload over 1 MB is refused before the handler ever runs.
+        self.request.connection.set_max_body_size(max_upload_size)
+
+        self.worker = self.get_live_worker()
+        if self.worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
+            raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
+
+        path = self.get_path()
+        filename = self.get_argument('filename', '') or posixpath.basename(path)
+        overwrite = self.get_argument('overwrite', '') == 'true'
+
+        self.sftp = transfer.open_sftp(self.worker.ssh)
+        self.upload = transfer.Upload(self.sftp, path, filename,
+                                      overwrite=overwrite)
+        try:
+            self.upload.open()
+        except transfer.TransferError as exc:
+            self._cleanup(abort=False)
+            self.transfer_error(exc)
+
+        self.worker.transfers += 1
+        self.counted = True
+
+    def data_received(self, chunk):
+        # Returning the Future is what makes backpressure real: Tornado stops
+        # reading the socket until the SFTP write lands, so a slow host
+        # throttles the browser instead of growing server memory. The
+        # executor hands back a concurrent.futures.Future, which the IOLoop
+        # cannot await directly, so it is wrapped for asyncio.
+        return asyncio.wrap_future(self.executor.submit(self.upload.write, chunk))
+
+    @tornado.gen.coroutine
     def post(self):
-        raise tornado.web.HTTPError(501)
+        yield self.executor.submit(self.upload.close)
+        result = {'path': self.upload.final_path,
+                  'bytes': self.upload.bytes_written}
+        self._cleanup(abort=False)
+        self.write(result)
+
+    def on_connection_close(self):
+        # A cancelled upload leaves a truncated file under the real name
+        # unless it is removed.
+        self._cleanup(abort=True)
+        super(TransferUploadHandler, self).on_connection_close()
+
+    def _cleanup(self, abort):
+        if getattr(self, 'counted', False):
+            self.worker.transfers -= 1
+            self.counted = False
+        upload = getattr(self, 'upload', None)
+        if upload is not None:
+            if abort:
+                upload.abort()
+            else:
+                upload.close()
+            self.upload = None
+        sftp = getattr(self, 'sftp', None)
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+            self.sftp = None
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):

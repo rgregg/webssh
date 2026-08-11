@@ -1544,3 +1544,64 @@ class TestTransferDownloadCancellation(unittest.TestCase):
         instance.on_connection_close()
 
         self.assertTrue(download.cancelled)
+
+
+class TestTransferUpload(TransferTestBase):
+
+    def upload(self, query, body, headers=None):
+        hdrs = dict(headers if headers is not None else self.headers)
+        hdrs['X-Xsrftoken'] = 'yummy'
+        hdrs['Content-Type'] = 'application/octet-stream'
+        return self.fetch('/transfer/upload?' + query, method='POST',
+                          body=body, headers=hdrs)
+
+    def test_writes_the_body_to_the_destination(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/new.txt')
+        self.assertEqual(data['bytes'], 7)
+        self.assertEqual(self.sftp.files['/home/ryan/new.txt'], b'payload')
+
+    def test_existing_destination_is_409_and_leaves_the_file_alone(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/a.txt&filename=a.txt', b'clobber')
+        self.assertEqual(response.code, 409)
+        self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'hello')
+
+    def test_reissuing_with_overwrite_succeeds(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/a.txt&filename=a.txt&overwrite=true',
+            b'clobber')
+        self.assertEqual(response.code, 200)
+        self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'clobber')
+
+    def test_directory_destination_appends_the_filename(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan&filename=fresh.txt', b'x')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/fresh.txt')
+
+    def test_wrong_client_ip_is_404(self):
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(response.code, 404)
+
+    def test_missing_xsrf_header_is_rejected(self):
+        response = self.fetch(
+            '/transfer/upload?id=tid&path=/home/ryan/new.txt&filename=new.txt',
+            method='POST', body=b'x', headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_transfer_counter_is_released_after_the_upload(self):
+        self.upload('id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(self.worker.transfers, 0)
+
+    def test_concurrency_cap_returns_429(self):
+        self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(response.code, 429)
