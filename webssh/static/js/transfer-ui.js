@@ -133,37 +133,102 @@ var webssh_transfer_ui = (function () {
   }
 
   function open_picker(tab_id, worker_id) {
-    var dir = get_cwd(tab_id) || '.';
     var dialog = $('#transfer-picker');
     var list = dialog.find('.picker-list').empty();
-    var input = dialog.find('.picker-path').val(dir);
+    var input = dialog.find('.picker-path');
 
-    $.getJSON('/transfer/list', {id: worker_id, path: dir})
-      .done(function (data) {
-        input.val(data.path);
-        $.each(data.entries, function (i, entry) {
-          var item = $('<div class="picker-item"></div>');
-          item.toggleClass('is-dir', entry.is_dir);
-          item.text(entry.name + (entry.is_dir ? '/' : ' \u2014 ' +
-            webssh_transfer.format_bytes(entry.size)));
-          if (!entry.is_dir) {
-            // Directories are shown for orientation but are not selectable:
-            // navigation is what would turn this into a file browser.
-            item.on('click', function () {
-              input.val(webssh_transfer.resolve_path(data.path, entry.name));
-            });
-          }
-          list.append(item);
-        });
-        if (data.truncated) {
-          list.append($('<div class="picker-note"></div>')
-            .text('Listing truncated.'));
+    // Everything the picker needs to remember for one open session.
+    var state = {
+      dir: null,          // directory currently listed
+      entries: [],        // entries as returned by the server
+      truncated: false,   // whether the server capped the listing
+      seq: 0,             // request counter, for discarding stale responses
+      timer: null         // pending re-list debounce
+    };
+
+    function note(text) {
+      return $('<div class="picker-note"></div>').text(text);
+    }
+
+    function render(filter) {
+      list.empty();
+      var shown = 0;
+      $.each(state.entries, function (i, entry) {
+        if (!webssh_transfer.match_entry(entry.name, filter)) {
+          return;
         }
-      })
-      .fail(function (xhr) {
-        list.append($('<div class="picker-note"></div>')
-          .text('Could not list directory (' + xhr.status + ')'));
+        shown = shown + 1;
+        var item = $('<div class="picker-item"></div>');
+        item.toggleClass('is-dir', entry.is_dir);
+        item.text(entry.name + (entry.is_dir ? '/' : ' \u2014 ' +
+          webssh_transfer.format_bytes(entry.size)));
+        item.on('click', function () {
+          var path = webssh_transfer.resolve_path(state.dir, entry.name);
+          // Clicking behaves exactly as typing the same text would, for
+          // both kinds of row, so the list always reflects the box.
+          input.val(entry.is_dir ? path + '/' : path);
+          on_input();
+        });
+        list.append(item);
       });
+
+      if (!shown) {
+        list.append(note('No matching files'));
+      }
+      if (state.truncated) {
+        // Filtering only searched what was fetched, so a missing file may
+        // exist past the cap. Saying nothing would read as proof of absence.
+        list.append(note(
+          'Listing truncated at 1000 entries; the filter searched only those.'));
+      }
+    }
+
+    function fetch_dir(dir) {
+      state.seq = state.seq + 1;
+      var mine = state.seq;
+      $.getJSON('/transfer/list', {id: worker_id, path: dir})
+        .done(function (data) {
+          if (mine !== state.seq) {
+            return;   // a newer request has been issued; this one is stale
+          }
+          state.dir = data.path;
+          state.entries = data.entries;
+          state.truncated = !!data.truncated;
+          // The filter may have moved on while this was in flight.
+          render(webssh_transfer.split_path(input.val()).filter);
+        })
+        .fail(function (xhr) {
+          if (mine !== state.seq) {
+            return;
+          }
+          // Keep the previous entries on screen: one mistyped character
+          // should not cost the user their place.
+          list.append(note('Could not list directory (' + xhr.status + ')'));
+        });
+    }
+
+    function on_input() {
+      var parts = webssh_transfer.split_path(input.val());
+      if (parts.dir === null || parts.dir === state.dir) {
+        render(parts.filter);   // local, instant, no request
+        return;
+      }
+      if (state.timer) {
+        clearTimeout(state.timer);
+      }
+      state.timer = setTimeout(function () {
+        state.timer = null;
+        fetch_dir(parts.dir);
+      }, 250);
+    }
+
+    var start = get_cwd(tab_id) || '.';
+    input.val(start);
+    fetch_dir(start);
+
+    // open_picker runs on every button press; without the off() the input
+    // handlers stack, as the drop handlers once did.
+    input.off('input.picker').on('input.picker', on_input);
 
     dialog.addClass('visible');
     dialog.find('.picker-download').off('click').on('click', function () {
@@ -174,6 +239,9 @@ var webssh_transfer_ui = (function () {
       dialog.removeClass('visible');
     });
     dialog.find('.picker-cancel').off('click').on('click', function () {
+      if (state.timer) {
+        clearTimeout(state.timer);
+      }
       dialog.removeClass('visible');
     });
   }

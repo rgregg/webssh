@@ -1014,9 +1014,9 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 
 .picker-item:hover { background: var(--accent-dim); color: var(--accent); }
 
-.picker-item.is-dir { color: var(--text-muted); cursor: default; }
-
-.picker-item.is-dir:hover { background: none; color: var(--text-muted); }
+/* Directories are navigable now that typing a path is, so they keep the
+   shared hover affordance and only stay dimmer than files. */
+.picker-item.is-dir { color: var(--text-muted); }
 
 .picker-note { padding: 6px; color: var(--text-muted); font-size: 11px; }
 
