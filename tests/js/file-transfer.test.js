@@ -67,3 +67,51 @@ test('download_url encodes the path', function () {
   assert.ok(url.indexOf('/transfer/download?') === 0);
   assert.ok(url.indexOf('path=%2Ftmp%2Fa%20b') !== -1);
 });
+
+test('split_path splits at the last slash', function () {
+  assert.deepStrictEqual(ft.split_path('/var/log/sys'),
+    {dir: '/var/log', filter: 'sys'});
+  assert.deepStrictEqual(ft.split_path('/var/log/'),
+    {dir: '/var/log', filter: ''});
+  assert.deepStrictEqual(ft.split_path('/a/b/c/file.txt'),
+    {dir: '/a/b/c', filter: 'file.txt'});
+});
+
+test('split_path preserves root rather than yielding an empty directory', function () {
+  // '/passwd' must list '/', not '' -- an empty path would be sent to the
+  // server as a relative listing of the home directory.
+  assert.deepStrictEqual(ft.split_path('/passwd'), {dir: '/', filter: 'passwd'});
+  assert.deepStrictEqual(ft.split_path('/'), {dir: '/', filter: ''});
+});
+
+test('split_path reports no directory when the input has no slash', function () {
+  // null means "keep the current listing" -- the caller owns that state.
+  assert.deepStrictEqual(ft.split_path('syslog'), {dir: null, filter: 'syslog'});
+  assert.deepStrictEqual(ft.split_path(''), {dir: null, filter: ''});
+});
+
+test('split_path tolerates null and undefined', function () {
+  assert.deepStrictEqual(ft.split_path(null), {dir: null, filter: ''});
+  assert.deepStrictEqual(ft.split_path(undefined), {dir: null, filter: ''});
+});
+
+test('match_entry matches a substring, not only a prefix', function () {
+  assert.strictEqual(ft.match_entry('syslog', 'log'), true);
+  assert.strictEqual(ft.match_entry('auth.log', 'log'), true);
+  assert.strictEqual(ft.match_entry('logrotate.conf', 'log'), true);
+});
+
+test('match_entry ignores case in both directions', function () {
+  assert.strictEqual(ft.match_entry('Logrotate.conf', 'log'), true);
+  assert.strictEqual(ft.match_entry('syslog', 'LOG'), true);
+});
+
+test('match_entry with an empty filter matches everything', function () {
+  assert.strictEqual(ft.match_entry('anything', ''), true);
+  assert.strictEqual(ft.match_entry('anything', '   '), true);
+  assert.strictEqual(ft.match_entry('anything', null), true);
+});
+
+test('match_entry rejects a non-match', function () {
+  assert.strictEqual(ft.match_entry('syslog', 'zzz'), false);
+});

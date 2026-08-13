@@ -82,9 +82,37 @@ var webssh_transfer = (function () {
       '&path=' + encodeURIComponent(path);
   }
 
+  // Splits what the user typed into the directory to list and the fragment
+  // to filter by. dir === null means "no directory was typed, keep whatever
+  // is currently listed" -- the caller owns that state, so this stays free
+  // of UI knowledge.
+  function split_path(input) {
+    var text = (input === undefined || input === null) ? '' : String(input);
+    var cut = text.lastIndexOf('/');
+    if (cut === -1) {
+      return {dir: null, filter: text};
+    }
+    // Everything up to the last slash is the directory. For a path directly
+    // under root that slice is empty, which would reach the server as a
+    // relative listing of the home directory, so keep the slash.
+    var dir = text.slice(0, cut);
+    return {dir: dir === '' ? '/' : dir, filter: text.slice(cut + 1)};
+  }
+
+  function match_entry(name, filter) {
+    var needle = (filter === undefined || filter === null)
+      ? '' : String(filter).trim();
+    if (!needle) {
+      return true;
+    }
+    return String(name).toLowerCase().indexOf(needle.toLowerCase()) !== -1;
+  }
+
   return {
     parse_osc7: parse_osc7,
     resolve_path: resolve_path,
+    split_path: split_path,
+    match_entry: match_entry,
     format_bytes: format_bytes,
     upload_url: upload_url,
     download_url: download_url
