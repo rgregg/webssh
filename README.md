@@ -141,6 +141,11 @@ from an OSC 7 sequence. Set `shell_integration: false` to disable that; the
 destination is then requested with a prompt. Uploads never overwrite an
 existing file without asking.
 
+The download picker lists one directory at a time. Typing in its path box
+filters the listing to names containing what you typed, and typing or
+clicking a directory moves to it. Long listings are capped at 1000 entries,
+and the picker says so when the cap applies.
+
 Transfers are capped at three at a time per session, and are cancelled if the
 terminal tab is closed.
 

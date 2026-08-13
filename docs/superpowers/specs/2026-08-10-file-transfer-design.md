@@ -157,9 +157,10 @@ which is what justifies the extra round trip in the rare colliding case.
 
 1. The picker calls `/transfer/list`, which returns one directory's entries
    (name, size, is_dir, mtime) with the path box prefilled from OSC 7.
-   Directories appear in the listing but are not selectable and cannot be
-   clicked into — changing directory means editing the path box. Navigation is
-   what separates this from the file browser that is out of scope.
+   Typing in the path box filters the listing, and changing the directory part
+   re-lists it; directories are clickable. This supersedes the original
+   no-navigation boundary — see `2026-08-12-picker-filter-design.md`. The
+   picker still offers no tree, no rename, and no delete.
 2. `/transfer/download` sets `Content-Disposition: attachment` and streams
    fixed-size chunks, each `self.write()` followed by `await self.flush()`.
    The flush is the backpressure point against a slow browser.
