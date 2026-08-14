@@ -249,3 +249,65 @@ class TestListDirectory(unittest.TestCase):
         with self.assertRaises(transfer.TransferError) as caught:
             transfer.list_directory(FakeSFTP(), '/nope')
         self.assertEqual(caught.exception.status, 404)
+
+
+class TestListDirectoryFilter(unittest.TestCase):
+
+    def entries_for(self, names_and_dirs):
+        return [FakeAttr(n, isdir=d) for n, d in names_and_dirs]
+
+    def test_filter_matches_a_substring_case_insensitively(self):
+        sftp = FakeSFTP(dirs={'/d': self.entries_for([
+            ('syslog', False), ('auth.log', False),
+            ('Logrotate.conf', False), ('kernel', False),
+        ])})
+        names = [e['name'] for e in
+                 transfer.list_directory(sftp, '/d', 'LOG')['entries']]
+        self.assertEqual(sorted(names),
+                         ['Logrotate.conf', 'auth.log', 'syslog'])
+
+    def test_filter_applies_to_directories_too(self):
+        sftp = FakeSFTP(dirs={'/d': self.entries_for([
+            ('logs', True), ('config', True), ('syslog', False),
+        ])})
+        names = [e['name'] for e in
+                 transfer.list_directory(sftp, '/d', 'log')['entries']]
+        self.assertEqual(names, ['logs', 'syslog'])
+
+    def test_filter_is_applied_before_the_cap_not_after(self):
+        # The regression that motivated server-side filtering: slicing the
+        # first MAX_LIST_ENTRIES alphabetically and then filtering means a
+        # match sorting past the cap can never be found.
+        entries = [FakeAttr('a{:05d}'.format(i))
+                   for i in range(transfer.MAX_LIST_ENTRIES + 500)]
+        entries.append(FakeAttr('zzz-needle.txt'))
+        sftp = FakeSFTP(dirs={'/big': entries})
+
+        result = transfer.list_directory(sftp, '/big', 'needle')
+
+        names = [e['name'] for e in result['entries']]
+        self.assertEqual(names, ['zzz-needle.txt'])
+        self.assertFalse(result['truncated'])
+
+    def test_truncation_reports_when_matches_exceed_the_cap(self):
+        entries = [FakeAttr('match{:05d}'.format(i))
+                   for i in range(transfer.MAX_LIST_ENTRIES + 10)]
+        sftp = FakeSFTP(dirs={'/big': entries})
+        result = transfer.list_directory(sftp, '/big', 'match')
+        self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES)
+        self.assertTrue(result['truncated'])
+
+    def test_no_matches_yields_an_empty_list_not_an_error(self):
+        sftp = FakeSFTP(dirs={'/d': self.entries_for([('syslog', False)])})
+        result = transfer.list_directory(sftp, '/d', 'nothing-matches')
+        self.assertEqual(result['entries'], [])
+        self.assertFalse(result['truncated'])
+
+    def test_empty_filter_behaves_exactly_as_before(self):
+        sftp = FakeSFTP(dirs={'/d': self.entries_for([
+            ('b.txt', False), ('a.txt', False), ('zdir', True),
+        ])})
+        for value in ('', None, '   '):
+            names = [e['name'] for e in
+                     transfer.list_directory(sftp, '/d', value)['entries']]
+            self.assertEqual(names, ['zdir', 'a.txt', 'b.txt'])

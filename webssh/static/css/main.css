@@ -1020,4 +1020,52 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 
 .picker-note { padding: 6px; color: var(--text-muted); font-size: 11px; }
 
-.picker-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* These had no rules at all and were falling back to browser-default
+   buttons, which read as light-theme chrome on a dark dialog. Follow the
+   established vocabulary: accent fill for the primary action, outlined for
+   the secondary one, as .btn-connect and .btn-reset do on the connect card. */
+.picker-download,
+.picker-cancel {
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.picker-download {
+  background: var(--accent);
+  color: var(--bg-deep);
+  border: none;
+  font-weight: 600;
+}
+
+.picker-download:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 0 20px rgba(45, 212, 168, 0.15);
+}
+
+.picker-download:active { transform: translateY(1px); }
+
+.picker-cancel {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  font-weight: 500;
+}
+
+.picker-cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.picker-cancel:active { transform: translateY(1px); }

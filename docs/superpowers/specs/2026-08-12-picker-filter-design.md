@@ -20,10 +20,16 @@ The path box holds a full path. Its text is split at the **last** `/`:
 | `/etc/pass` | `/etc` | `pass` |
 | `syslog` | (unchanged) | `syslog` |
 
-- **Filtering is local and instant.** It runs against the entries already
-  fetched, with no network call and no debounce, so typing never lags.
-- **A re-list happens only when the directory part changes**, debounced by
-  250 ms so typing `/etc/` does not fire requests for `/e`, `/et`, and `/etc`.
+- **Filtering happens on the server**, so it matches across the whole
+  directory rather than only the entries that fit under the cap. The filter
+  travels with the listing request, debounced by 250 ms.
+- **The picker re-renders locally first** while that request is in flight,
+  narrowing the entries it already holds, so typing still reacts
+  immediately. The response then replaces them and is authoritative.
+  The local pass narrows only when the user has *extended* the filter the
+  held entries were fetched under; after a deletion the held set is missing
+  entries, so it shows everything it has rather than hiding rows the server
+  is about to restore.
 - **Matching is case-insensitive substring.** `log` matches `syslog`,
   `auth.log`, and `Logrotate.conf`. An empty filter matches everything.
 - **Directories are clickable**, appending `name/` to the box and re-listing.
@@ -81,11 +87,15 @@ the debounce timer, the stale-response guard, and rendering.
   they typed one wrong character.
 - **No matches.** An explicit "No matching files" note, not an empty box, so
   it is distinguishable from a request that failed.
-- **A truncated listing that is then filtered is actively misleading.** The
-  server caps listings at 1000 entries. Filtering searches only what was
-  fetched, so an absent file may exist beyond the cap. The truncation note
-  must stay visible while filtered and say the filter searched only the first
-  1000 entries. Silence here reads as proof of absence.
+- **Truncation now means "more matches than we will show".** Because the
+  server filters before capping, a match that sorts past entry 1000 is still
+  found — the original problem, where filtering only searched the first 1000
+  names, is gone. The note appears only when the *filtered* result exceeds
+  the cap, and says so.
+- **The cap bounds the response, not the work.** `listdir_attr` still reads
+  the whole directory over SFTP, so an enormous directory is still slow to
+  list. Filtering makes files findable, not listing fast. Avoiding that would
+  need server-side globbing, which SFTP does not offer.
 - **Download uses the box verbatim.** The filter is a view over the listing,
   never a transformation of the path. Pressing Download sends exactly what is
   typed, so a filter fragment left in the box downloads that literal path and

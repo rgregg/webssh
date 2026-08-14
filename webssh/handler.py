@@ -1036,18 +1036,20 @@ class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
     def get(self):
         worker = self.get_live_worker()
         path = self.get_path()
+        name_filter = self.get_argument('filter', '')
 
         try:
-            result = yield self.executor.submit(self._list, worker, path)
+            result = yield self.executor.submit(
+                self._list, worker, path, name_filter)
         except transfer.TransferError as exc:
             self.transfer_error(exc)
 
         self.write(result)
 
-    def _list(self, worker, path):
+    def _list(self, worker, path, name_filter):
         sftp = transfer.open_sftp(worker.ssh)
         try:
-            return transfer.list_directory(sftp, path)
+            return transfer.list_directory(sftp, path, name_filter)
         finally:
             sftp.close()
 

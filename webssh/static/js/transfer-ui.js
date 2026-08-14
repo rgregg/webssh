@@ -141,7 +141,8 @@ var webssh_transfer_ui = (function () {
     var state = {
       dir: null,          // directory currently listed
       entries: [],        // entries as returned by the server
-      truncated: false,   // whether the server capped the listing
+      truncated: false,   // whether the server capped the matches
+      filtered_by: '',    // the filter those entries were fetched under
       seq: 0,             // request counter, for discarding stale responses
       timer: null         // pending re-list debounce
     };
@@ -176,17 +177,22 @@ var webssh_transfer_ui = (function () {
         list.append(note('No matching files'));
       }
       if (state.truncated) {
-        // Filtering only searched what was fetched, so a missing file may
-        // exist past the cap. Saying nothing would read as proof of absence.
+        // The server matched across the whole directory and still had more
+        // than it will return, so there are matches we are not showing.
         list.append(note(
-          'Listing truncated at 1000 entries; the filter searched only those.'));
+          'More than 1000 matches; showing the first 1000.'));
       }
     }
 
-    function fetch_dir(dir) {
+    // The server filters across the whole directory, so a match that sorts
+    // past the entry cap is still findable. Rendering what we already hold
+    // first keeps typing responsive while that request is in flight; the
+    // response then replaces it and is authoritative.
+    function fetch_dir(dir, filter) {
       state.seq = state.seq + 1;
       var mine = state.seq;
-      $.getJSON('/transfer/list', {id: worker_id, path: dir})
+      $.getJSON('/transfer/list',
+                {id: worker_id, path: dir, filter: filter || ''})
         .done(function (data) {
           if (mine !== state.seq) {
             return;   // a newer request has been issued; this one is stale
@@ -194,8 +200,10 @@ var webssh_transfer_ui = (function () {
           state.dir = data.path;
           state.entries = data.entries;
           state.truncated = !!data.truncated;
-          // The filter may have moved on while this was in flight.
-          render(webssh_transfer.split_path(input.val()).filter);
+          state.filtered_by = data.filter || '';
+          // The server already applied the filter, so render everything it
+          // returned rather than filtering the filtered set again.
+          render('');
         })
         .fail(function (xhr) {
           if (mine !== state.seq) {
@@ -209,22 +217,33 @@ var webssh_transfer_ui = (function () {
 
     function on_input() {
       var parts = webssh_transfer.split_path(input.val());
-      if (parts.dir === null || parts.dir === state.dir) {
-        render(parts.filter);   // local, instant, no request
-        return;
+      var dir = parts.dir === null ? state.dir : parts.dir;
+
+      // Immediate, local, approximate: reacts to the keystroke while the
+      // request is in flight, then the response supersedes it.
+      //
+      // The entries we hold were fetched under state.filtered_by. Narrowing
+      // them further is only valid when the user has extended that filter;
+      // if they deleted characters the local set is missing entries, so
+      // show what we have rather than hiding rows the server will restore.
+      if (dir === state.dir) {
+        var typed = parts.filter.toLowerCase();
+        var held = (state.filtered_by || '').toLowerCase();
+        render(typed.indexOf(held) === 0 ? parts.filter : '');
       }
+
       if (state.timer) {
         clearTimeout(state.timer);
       }
       state.timer = setTimeout(function () {
         state.timer = null;
-        fetch_dir(parts.dir);
+        fetch_dir(dir, parts.filter);
       }, 250);
     }
 
     var start = get_cwd(tab_id) || '.';
     input.val(start);
-    fetch_dir(start);
+    fetch_dir(start, '');
 
     // open_picker runs on every button press; without the off() the input
     // handlers stack, as the drop handlers once did.

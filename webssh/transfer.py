@@ -191,14 +191,35 @@ class Upload(object):
                 self.final_path, exc))
 
 
-def list_directory(sftp, path):
+def matches_filter(name, needle):
+    """Case-insensitive substring match. An empty needle matches everything."""
+    if not needle:
+        return True
+    return needle.lower() in name.lower()
+
+
+def list_directory(sftp, path, name_filter=''):
+    """List one directory, optionally keeping only matching names.
+
+    The filter is applied *before* the cap, which is the whole reason it
+    lives on the server: capping first would slice the first
+    MAX_LIST_ENTRIES names alphabetically, so a match sorting past that
+    point could never be found no matter what the user typed.
+
+    Note that the cap bounds the response, not the work: listdir_attr still
+    reads the entire directory over SFTP.
+    """
     try:
         attrs = sftp.listdir_attr(path)
     except (OSError, IOError) as exc:
         raise error_from_oserror(exc, path)
 
+    needle = (name_filter or '').strip()
+
     entries = []
     for attr in attrs:
+        if not matches_filter(attr.filename, needle):
+            continue
         entries.append({
             'name': attr.filename,
             'size': getattr(attr, 'st_size', 0) or 0,
@@ -213,4 +234,5 @@ def list_directory(sftp, path):
         'path': path,
         'entries': entries[:MAX_LIST_ENTRIES],
         'truncated': truncated,
+        'filter': needle,
     }

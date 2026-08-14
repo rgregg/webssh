@@ -2072,3 +2072,38 @@ class TestShellIntegrationSendSite(OptionsRestoreMixin, unittest.TestCase):
         self.assertIsNotNone(worker)
         self.assertEqual(
             chan.sent, to_bytes(handler.SHELL_INTEGRATION_SNIPPET))
+
+
+class TestTransferListFilter(TransferTestBase):
+    """The filter parameter must reach through the handler to the listing."""
+
+    def setUp(self):
+        super(TestTransferListFilter, self).setUp()
+        self.sftp.dirs['/home/ryan'] = [
+            FakeAttr('syslog', size=10),
+            FakeAttr('auth.log', size=20),
+            FakeAttr('kernel', size=30),
+        ]
+
+    def test_filter_narrows_the_listing(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan&filter=log',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        names = sorted(e['name'] for e in data['entries'])
+        self.assertEqual(names, ['auth.log', 'syslog'])
+        self.assertEqual(data['filter'], 'log')
+
+    def test_absent_filter_returns_everything(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['entries']), 3)
+        self.assertEqual(data['filter'], '')
+
+    def test_filter_matching_nothing_is_an_empty_list_not_a_404(self):
+        response = self.fetch(
+            '/transfer/list?id=tid&path=/home/ryan&filter=zzz',
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(json.loads(to_str(response.body))['entries'], [])
