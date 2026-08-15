@@ -17,6 +17,7 @@ from tests.sshserver import run_ssh_server, banner, Server
 from tests.test_transfer import FakeSFTP, FakeAttr, FakeFile
 from tests.utils import encode_multipart_formdata, read_file, make_tests_data_path  # noqa
 from webssh import handler
+from webssh import transfer
 from webssh.main import make_app, make_handlers
 from webssh.settings import (
     get_app_settings, get_server_settings, max_body_size
@@ -1437,6 +1438,12 @@ class TestTransferList(TransferTestBase):
         response = self.fetch('/transfer/list?id=tid&path=/nope',
                               headers=self.headers)
         self.assertEqual(response.code, 404)
+        # The status alone would pass against a handler that returned an
+        # empty body. Surfacing the remote message verbatim is a deliberate
+        # decision for SFTP errors, so assert it actually reaches the client.
+        body = json.loads(to_str(response.body))
+        self.assertIn('No such file', body['status'])
+        self.assertIn('/nope', body['status'])
 
     def test_closed_worker_is_410(self):
         self.worker.closed = True
@@ -1533,6 +1540,16 @@ class TestTransferDownloadCancellation(unittest.TestCase):
         instance = self.make_handler()
         instance.on_connection_close()
         self.assertTrue(instance._aborted)
+
+    def test_binding_without_a_disconnect_leaves_the_download_running(self):
+        # The other tests in this class all disconnect first, so an
+        # implementation that cancelled unconditionally in _bind_download
+        # would satisfy every one of them while breaking every download.
+        instance = self.make_handler()
+        download = self.FakeDownload()
+        instance._bind_download(download)
+        self.assertFalse(download.cancelled)
+        self.assertIs(instance._download, download)
 
     def test_download_bound_after_early_disconnect_is_cancelled(self):
         instance = self.make_handler()
@@ -1917,9 +1934,27 @@ class TestIdleTimeoutDuringTransfer(unittest.TestCase):
         # Closing here would kill the SSH connection the transfer rides on.
         w = self.FakeWorker(transfers=1)
         ws = self.make_handler(w)
-        ws._reset_idle_timeout = lambda: None
+        ws._reset_idle_timeout = mock.Mock()
         ws._idle_disconnect()
         self.assertIsNone(w.closed_reason)
+        # Deferring is not enough: the timer must be re-armed. An
+        # implementation that simply returned would pass the assertion
+        # above while making the session immortal -- never idling out again
+        # for the rest of its life, long after the transfer finished.
+        ws._reset_idle_timeout.assert_called_once_with()
+
+    def test_the_session_can_still_time_out_once_transfers_finish(self):
+        w = self.FakeWorker(transfers=1)
+        ws = self.make_handler(w)
+        ws._reset_idle_timeout = mock.Mock()
+        ws._idle_disconnect()
+        self.assertIsNone(w.closed_reason)
+
+        # The re-armed timer fires again later, by which point the transfer
+        # has completed and the session should close normally.
+        w.transfers = 0
+        ws._idle_disconnect()
+        self.assertEqual(w.closed_reason, 'Idle timeout.')
 
 
 class TestShellIntegrationSnippet(unittest.TestCase):
@@ -2119,3 +2154,33 @@ class TestTransferListFilter(TransferTestBase):
         data = json.loads(to_str(response.body))
         self.assertEqual(data['filter'], 'z' * 256)
         self.assertEqual(data['entries'], [])
+
+
+class TestTransferDownloadMultiChunk(TransferTestBase):
+    """The shared fixture is 5 bytes, so every other download test completes
+    in a single read and never exercises the chunk loop or its flushes."""
+
+    def setUp(self):
+        super(TestTransferDownloadMultiChunk, self).setUp()
+        self.payload = bytes(bytearray(
+            (i % 251) for i in range(transfer.CHUNK_SIZE * 2 + 7)))
+        self.sftp.files['/home/ryan/big.bin'] = self.payload
+
+    def test_a_file_larger_than_one_chunk_arrives_intact(self):
+        response = self.fetch(
+            '/transfer/download?id=tid&path=/home/ryan/big.bin',
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        # Download.read returns at most CHUNK_SIZE, so a body this size
+        # proves the loop ran more than once and reassembled in order.
+        self.assertEqual(len(response.body), len(self.payload))
+        self.assertEqual(response.body, self.payload)
+
+    def test_content_length_matches_the_streamed_body(self):
+        # A mismatch here would leave the browser waiting for bytes that
+        # never come, or truncating a file it believes is complete.
+        response = self.fetch(
+            '/transfer/download?id=tid&path=/home/ryan/big.bin',
+            headers=self.headers)
+        self.assertEqual(int(response.headers['Content-Length']),
+                         len(self.payload))
