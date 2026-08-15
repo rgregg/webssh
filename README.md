@@ -1,6 +1,6 @@
 ## WebSSH
 
-A web-based SSH client with a modern terminal UI. Connect to SSH servers from your browser with password or key-based authentication, TOTP support, and optional per-user server-side key management.
+A web-based SSH and SFTP client with a modern terminal UI. Connect to SSH servers from your browser with password or key-based authentication, TOTP support, and optional per-user server-side key management, then move files to and from the host over SFTP without leaving the terminal — the transfer rides the connection the terminal already authenticated, so it needs no second login.
 
 Built on Python, Tornado, Paramiko, and xterm.js.
 
@@ -10,6 +10,10 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 
 * Password and public-key authentication (RSA, ECDSA, Ed25519)
 * Encrypted keys and TOTP two-factor authentication
+* SFTP file transfer on the terminal's own connection: drag a file onto the
+  terminal to upload, or pick one from the host to download
+* Streamed transfers of several hundred megabytes with progress and cancel,
+  without buffering the file on the server
 * Per-user server-side SSH key generation and storage
 * Per-user host lists and preferences that roam across browsers and machines
 * YAML configuration with host allowlisting and host key pinning
@@ -23,8 +27,12 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 ```
 +---------+     http     +--------+    ssh    +-----------+
 | browser | <==========> | webssh | <=======> | ssh server|
-+---------+   websocket  +--------+    ssh    +-----------+
++---------+   websocket  +--------+  ssh+sftp +-----------+
 ```
+
+The terminal runs over a websocket. File transfers use ordinary HTTP requests
+that open an SFTP channel on the *same* SSH connection, which is why they
+inherit the session's credentials and the SSH user's permissions exactly.
 
 ### Quick Start with Docker
 
@@ -127,6 +135,27 @@ it, any client can claim any username and reach that user's stored hosts.
 
 Secrets (passwords, TOTP codes, key passphrases) are never stored server-side,
 whether for administrator or personal hosts.
+
+### File transfer
+
+Drag a file onto a connected terminal to upload it; use the download button
+in the tab bar to fetch a file back. Transfers run over SFTP on the SSH
+connection the terminal already authenticated, so they need no extra
+credentials and carry exactly the permissions of the SSH user you connected
+as.
+
+Uploads land in the directory the shell is currently in, which WebSSH learns
+from an OSC 7 sequence. Set `shell_integration: false` to disable that; the
+destination is then requested with a prompt. Uploads never overwrite an
+existing file without asking.
+
+The download picker lists one directory at a time. Typing in its path box
+filters the listing to names containing what you typed, and typing or
+clicking a directory moves to it. Long listings are capped at 1000 entries,
+and the picker says so when the cap applies.
+
+Transfers are capped at three at a time per session, and are cancelled if the
+terminal tab is closed.
 
 ### Docker Compose
 

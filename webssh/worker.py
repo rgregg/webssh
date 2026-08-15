@@ -14,6 +14,21 @@ from tornado.util import errno_from_exception
 BUF_SIZE = 32 * 1024
 clients = {}  # {ip: {id: worker}}
 
+# Workers whose websocket has attached, reachable by id for the duration of
+# the session. Deliberately separate from `clients`: the websocket handler
+# nulls the `clients` entry to make a worker id single-use for websocket
+# authentication, and that property must not be weakened to make lookup
+# convenient here.
+live_workers = {}  # {id: worker}
+
+
+def register_live_worker(worker):
+    live_workers[worker.id] = worker
+
+
+def unregister_live_worker(worker):
+    live_workers.pop(worker.id, None)
+
 
 def clear_worker(worker, clients):
     ip = worker.src_addr[0]
@@ -46,6 +61,9 @@ class Worker(object):
         self.handler = None
         self.mode = IOLoop.READ
         self.closed = False
+        # Number of transfers in flight. A nonzero count suppresses the
+        # idle disconnect, which otherwise only resets on websocket traffic.
+        self.transfers = 0
 
     def __call__(self, fd, events):
         if events & IOLoop.READ:
@@ -119,6 +137,7 @@ class Worker(object):
         if self.closed:
             return
         self.closed = True
+        unregister_live_worker(self)
 
         logging.info(
             'Closing worker {} with reason: {}'.format(self.id, reason)

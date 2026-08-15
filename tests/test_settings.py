@@ -244,6 +244,7 @@ class TestSettings(unittest.TestCase):
             'policy': 'warning',
             'userdatadir': '',
             'user_hosts': False,
+            'shell_integration': True,
         }
         defaults.update(overrides)
         return type('Options', (), defaults)()

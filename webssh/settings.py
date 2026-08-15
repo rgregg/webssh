@@ -65,6 +65,9 @@ define('userdatadir', default='',
             '(defaults to userkeydir)')
 define('user_hosts', type=bool, default=False,
        help='Allow authenticated users to manage their own host list')
+define('shell_integration', type=bool, default=True,
+       help='Ask the remote shell to report its working directory via OSC 7, '
+            'so dropped files land in the directory you are in')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -72,6 +75,12 @@ define('version', type=bool, help='Show version information',
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 font_dirs = ['webssh', 'static', 'css', 'fonts']
 max_body_size = 1 * 1024 * 1024
+
+# Uploads stream to SFTP and never sit in memory, so this is a policy
+# ceiling rather than a memory constraint. It is applied per-connection in
+# the upload handler; the global max_body_size stays small for the ordinary
+# form posts it was sized for.
+max_upload_size = 512 * 1024 * 1024
 
 
 class Font(object):
@@ -373,6 +382,8 @@ def apply_config_settings(options):
         options.userdatadir = config['userdatadir']
     if not options.user_hosts and 'user_hosts' in config:
         options.user_hosts = bool(config['user_hosts'])
+    if options.shell_integration and 'shell_integration' in config:
+        options.shell_integration = bool(config['shell_integration'])
     if 'idle_timeout' in config:
         raw = config['idle_timeout']
         try:

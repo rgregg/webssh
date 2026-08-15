@@ -880,3 +880,192 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 .settings-status.error { color: var(--danger); opacity: 1; }
 
 .input-error { border-color: var(--danger) !important; background: var(--danger-dim); }
+
+/* --- File Transfer --- */
+#download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+
+#download-btn:hover { background: var(--accent-dim); }
+
+#transfer-drop-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+}
+
+#transfer-drop-overlay.visible { display: flex; }
+
+.drop-message {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--accent);
+}
+
+#transfer-tray {
+  display: none;
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 60;
+  width: 320px;
+  max-width: calc(100% - 24px);
+}
+
+#transfer-tray.visible { display: block; }
+
+.transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.transfer-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-cancel {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.transfer-cancel:hover { color: var(--accent); }
+
+#transfer-picker {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+#transfer-picker.visible { display: flex; }
+
+.picker-box {
+  width: 480px;
+  max-width: calc(100% - 32px);
+  padding: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.picker-path {
+  width: 100%;
+  padding: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.picker-list {
+  max-height: 300px;
+  margin: 10px 0;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.picker-item {
+  padding: 5px 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.picker-item:hover { background: var(--accent-dim); color: var(--accent); }
+
+/* Directories are navigable now that typing a path is, so they keep the
+   shared hover affordance and only stay dimmer than files. */
+.picker-item.is-dir { color: var(--text-muted); }
+
+.picker-note { padding: 6px; color: var(--text-muted); font-size: 11px; }
+
+.picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* These had no rules at all and were falling back to browser-default
+   buttons, which read as light-theme chrome on a dark dialog. Follow the
+   established vocabulary: accent fill for the primary action, outlined for
+   the secondary one, as .btn-connect and .btn-reset do on the connect card. */
+.picker-download,
+.picker-cancel {
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.picker-download {
+  background: var(--accent);
+  color: var(--bg-deep);
+  border: none;
+  font-weight: 600;
+}
+
+.picker-download:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 0 20px rgba(45, 212, 168, 0.15);
+}
+
+.picker-download:active { transform: translateY(1px); }
+
+.picker-cancel {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  font-weight: 500;
+}
+
+.picker-cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.picker-cancel:active { transform: translateY(1px); }

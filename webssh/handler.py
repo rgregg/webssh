@@ -1,23 +1,31 @@
+import asyncio
 import io
 import json
 import logging
+import posixpath
 import socket
 import struct
 import traceback
 import weakref
 import paramiko
+import tornado.gen
 import tornado.web
 
 from concurrent.futures import ThreadPoolExecutor
 from tornado.ioloop import IOLoop
 from tornado.options import options
 from tornado.process import cpu_count
+from urllib.parse import quote
 from webssh.utils import (
     is_valid_ip_address, is_valid_port, is_valid_hostname, to_bytes, to_str,
     to_int, to_ip_address, UnicodeType, is_ip_hostname, is_same_primary_domain,
     is_valid_encoding
 )
-from webssh.worker import Worker, recycle_worker, clients
+from webssh.worker import (
+    Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
+)
+from webssh.settings import max_upload_size
+from webssh import transfer
 from webssh import user_data
 from webssh import user_keys
 from webssh._version import __version__
@@ -37,6 +45,18 @@ DEFAULT_PORT = 22
 
 swallow_http_errors = True
 redirecting = None
+
+# Asks the shell to report its working directory on every prompt. Written
+# once when the shell starts, then scrubbed from the screen and from bash
+# history. Kept to a single line: a partially delivered multi-line snippet
+# would strand the shell at a continuation prompt.
+SHELL_INTEGRATION_SNIPPET = (
+    ' if [ -n "$ZSH_VERSION" ]; then '
+    'precmd() { printf "\\033]7;file://%s%s\\033\\\\" "$HOST" "$PWD"; }; '
+    'elif [ -n "$BASH_VERSION" ]; then '
+    'PROMPT_COMMAND=\'printf "\\033]7;file://%s%s\\033\\\\" "$HOSTNAME" "$PWD"\'; '
+    'fi; clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
+)
 
 
 class InvalidValueError(Exception):
@@ -632,6 +652,19 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         worker = Worker(self.loop, ssh, chan, dst_addr)
         worker.encoding = options.encoding if options.encoding else \
             self.get_default_encoding(ssh)
+
+        if options.shell_integration:
+            try:
+                chan.sendall(SHELL_INTEGRATION_SNIPPET)
+            except (OSError, IOError, EOFError) as exc:
+                # Never let this cost the user their session: the path box
+                # is always available as a fallback. paramiko raises EOFError
+                # (not an OSError) when the transport is already gone, e.g.
+                # the remote end closed the connection right after the shell
+                # was invoked.
+                logging.warning(
+                    'Shell integration not sent: {}'.format(exc))
+
         return worker
 
     def check_origin(self):
@@ -910,6 +943,371 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
                     admin_hosts=self.allowed_hosts)
 
 
+def content_disposition(filename):
+    """Build an attachment header that survives a non-ASCII filename.
+
+    Remote filenames are attacker-controlled if a user can be induced to
+    download from a hostile host, so CR and LF are rejected outright rather
+    than encoded.
+    """
+    if '\r' in filename or '\n' in filename:
+        raise ValueError('Invalid filename')
+
+    fallback = filename.encode('ascii', 'replace').decode('ascii')
+    fallback = fallback.replace('\\', '_').replace('"', '_')
+    quoted = quote(filename.encode('utf-8'), safe='')
+    return "attachment; filename=\"{}\"; filename*=UTF-8''{}".format(
+        fallback, quoted)
+
+
+class TransferMixin(MixinHandler):
+    """Shared resolution for the file-transfer endpoints.
+
+    A transfer is reachable exactly where its terminal is: the same 32-byte
+    worker token, and the same client-IP check the websocket applies.
+    """
+
+    executor = ThreadPoolExecutor(max_workers=cpu_count() * 2)
+
+    MAX_CONCURRENT_TRANSFERS = 3
+
+    def initialize(self, loop):
+        super(TransferMixin, self).initialize()
+        self.loop = loop
+
+    def get_live_worker(self):
+        worker_id = self.get_argument('id', '')
+        if not worker_id:
+            raise tornado.web.HTTPError(404)
+
+        worker = live_workers.get(worker_id)
+        if worker is None:
+            raise tornado.web.HTTPError(404)
+
+        ip = self.get_client_addr()[0]
+        if worker.src_addr[0] != ip:
+            logging.warning(
+                'Transfer request for worker {} from {}, which does not own '
+                'it'.format(worker_id, ip))
+            raise tornado.web.HTTPError(404)
+
+        if worker.closed:
+            raise tornado.web.HTTPError(410, 'The terminal session ended.')
+
+        return worker
+
+    def get_path(self):
+        path = self.get_argument('path', '')
+        if not path:
+            raise tornado.web.HTTPError(400, 'Missing path')
+        return path
+
+    def transfer_error(self, exc):
+        """Remote filesystem errors describe the user's own machine and are
+        reported verbatim. Contrast handler.py's rule for server state."""
+        # log_message is later formatted as "%d %s: " + log_message with
+        # (status_code, reason) as the first two args. Passing exc.message
+        # directly as log_message means any '%' it contains (e.g. a path
+        # like /tmp/100%.txt) is interpreted as a format directive and
+        # crashes the logging call. Passing it as a '%s' argument instead
+        # keeps it a literal value.
+        raise tornado.web.HTTPError(exc.status, '%s', exc.message)
+
+    def write_error(self, status_code, **kwargs):
+        reason = self._reason
+        exc_info = kwargs.get('exc_info')
+        if exc_info and isinstance(exc_info[1], tornado.web.HTTPError):
+            exc = exc_info[1]
+            if exc.log_message:
+                # transfer_error() passes the remote message as a '%s' arg
+                # rather than folding it into log_message directly (see
+                # there for why), so it must be %-formatted back in here
+                # the same way Tornado's own logging does, or this would
+                # report the literal string '%s' instead of the message.
+                reason = exc.log_message % exc.args if exc.args \
+                    else exc.log_message
+        self.set_header('Content-Type', 'application/json')
+        self.finish({'status': reason})
+
+
+class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
+
+    @tornado.gen.coroutine
+    def get(self):
+        worker = self.get_live_worker()
+        path = self.get_path()
+        # Truncated rather than rejected: matches_filter's cost is
+        # proportional to len(needle) per entry, and an oversized filter
+        # is a performance nuisance on the executor thread, not something
+        # worth an error response over.
+        name_filter = self.get_argument('filter', '')[:256]
+
+        try:
+            result = yield self.executor.submit(
+                self._list, worker, path, name_filter)
+        except transfer.TransferError as exc:
+            self.transfer_error(exc)
+
+        self.write(result)
+
+    def _list(self, worker, path, name_filter):
+        sftp = transfer.open_sftp(worker.ssh)
+        try:
+            return transfer.list_directory(sftp, path, name_filter)
+        finally:
+            sftp.close()
+
+
+class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
+
+    _download = None
+    # Set by on_connection_close() if the client disconnects before
+    # _download exists (still on the executor in open_sftp/Download.open).
+    # _bind_download() checks this immediately once _download is assigned,
+    # so the cancellation is not missed.
+    _aborted = False
+
+    def _bind_download(self, download):
+        self._download = download
+        if self._aborted:
+            download.cancel()
+
+    @tornado.gen.coroutine
+    def get(self):
+        worker = self.get_live_worker()
+        path = self.get_path()
+
+        if worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
+            raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
+
+        try:
+            disposition = content_disposition(posixpath.basename(path))
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid filename')
+
+        sftp = None
+        worker.transfers += 1
+        try:
+            sftp = yield self.executor.submit(transfer.open_sftp, worker.ssh)
+            self._bind_download(transfer.Download(sftp, path))
+            size = yield self.executor.submit(self._download.open)
+
+            self.set_header('Content-Type', 'application/octet-stream')
+            self.set_header('Content-Length', str(size))
+            self.set_header('Content-Disposition', disposition)
+
+            while True:
+                chunk = yield self.executor.submit(self._download.read)
+                if not chunk:
+                    break
+                self.write(chunk)
+                # The flush is the backpressure point against a slow browser.
+                yield self.flush()
+        except transfer.TransferError as exc:
+            self.transfer_error(exc)
+        finally:
+            worker.transfers -= 1
+            if self._download is not None:
+                yield self.executor.submit(self._download.close)
+                self._download = None
+            if sftp is not None:
+                yield self.executor.submit(sftp.close)
+
+    def on_connection_close(self):
+        # Cancellation is connection teardown, not a message. Download.read
+        # returns b'' once cancelled, which ends the chunk loop. _download
+        # may not exist yet (open_sftp/Download.open still running on the
+        # executor), so record the abort unconditionally too; _bind_download
+        # checks it once _download is assigned.
+        self._aborted = True
+        if self._download is not None:
+            self._download.cancel()
+        super(TransferDownloadHandler, self).on_connection_close()
+
+
+@tornado.web.stream_request_body
+class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
+
+    # Set once a mid-stream SFTP write fails, so post() can report the
+    # error and any further chunks are drained without being written.
+    _write_error = None
+
+    # Set by on_connection_close() if the client disconnects while
+    # prepare() is still suspended on a yield (SFTP channel open, then
+    # Upload.open()), before self.sftp/self.upload exist for
+    # on_connection_close() to clean up itself. prepare() checks this flag
+    # right after each such yield and finishes the cleanup there instead,
+    # since on_connection_close() will not fire again for an
+    # already-closed connection. Mirrors TransferDownloadHandler's
+    # _aborted/_bind_download pattern.
+    _aborted = False
+
+    def _bind_sftp(self, sftp):
+        self.sftp = sftp
+        if self._aborted:
+            self._cleanup(abort=True)
+            return False
+        return True
+
+    @tornado.gen.coroutine
+    def prepare(self):
+        # The app-wide max_body_size is sized for form posts. Without this,
+        # any upload over 1 MB is refused before the handler ever runs.
+        self.request.connection.set_max_body_size(max_upload_size)
+
+        self.worker = self.get_live_worker()
+        if self.worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
+            raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
+
+        # Reserve the slot immediately after the cap check, before the
+        # first yield. Both open_sftp() and Upload.open() below hand off
+        # to the executor; if the increment waited until prepare() was
+        # about to return (as it used to), every prepare() racing in that
+        # window would still read the pre-increment count, all pass the
+        # cap check, and all open an SFTP channel before any of them
+        # incremented -- the concurrency cap would not hold against
+        # several uploads dropped at once. self.counted now exists before
+        # any yield, so on_connection_close()/_cleanup() can always find
+        # and release it. Every exception from here on must route through
+        # _cleanup() so this reservation is never leaked; _cleanup() is
+        # safe to call more than once (it guards on self.counted).
+        self.worker.transfers += 1
+        self.counted = True
+
+        try:
+            path = self.get_path()
+            filename = self.get_argument('filename', '') or posixpath.basename(path)
+            overwrite = self.get_argument('overwrite', '') == 'true'
+
+            # Blocking paramiko calls (SFTP channel open, then stat/open of
+            # the destination) must run on the executor, never the IOLoop.
+            # prepare() runs to completion before Tornado starts reading the
+            # request body (stream_request_body awaits it), so making it a
+            # coroutine here is safe and keeps those calls off the IOLoop
+            # like every other blocking paramiko call in this handler.
+            sftp = yield self.executor.submit(
+                transfer.open_sftp, self.worker.ssh)
+            if not self._bind_sftp(sftp):
+                # on_connection_close() already fired while this yield was
+                # pending, before self.sftp existed for it to close. It has
+                # been cleaned up above; there is nothing left to do.
+                return
+
+            self.upload = transfer.Upload(self.sftp, path, filename,
+                                          overwrite=overwrite)
+            try:
+                yield self.executor.submit(self.upload.open)
+            except transfer.TransferError as exc:
+                self._cleanup(abort=False)
+                if self._aborted:
+                    return
+                self.transfer_error(exc)
+
+            if self._aborted:
+                # Same race as above, but the disconnect landed while
+                # Upload.open() was pending instead. self.sftp/self.upload
+                # already exist here, so on_connection_close() closed them
+                # itself; nothing left to do but stop before counting this
+                # as an in-progress transfer.
+                self._cleanup(abort=True)
+                return
+        except Exception:
+            # Anything that escapes above (e.g. get_path()'s 400 for a
+            # missing path, or the HTTPError raised by transfer_error()
+            # just above) must not leave the slot reserved. _cleanup() is
+            # idempotent, so this is safe even when the branch that raised
+            # had already cleaned up itself.
+            self._cleanup(abort=True)
+            raise
+
+    def data_received(self, chunk):
+        # Returning the Future is what makes backpressure real: Tornado stops
+        # reading the socket until the SFTP write lands, so a slow host
+        # throttles the browser instead of growing server memory. The
+        # executor hands back a concurrent.futures.Future, which the IOLoop
+        # cannot await directly, so it is wrapped for asyncio.
+        if self._write_error is not None:
+            # A previous chunk already failed. Keep draining the body
+            # cheaply (no SFTP write, no backpressure future) so the
+            # connection completes normally and post() can report the
+            # error, instead of leaving the client hanging.
+            return None
+        return asyncio.wrap_future(
+            self.executor.submit(self._write, chunk))
+
+    def _write(self, chunk):
+        # Runs on the executor. A TransferError here (e.g. ENOSPC) must not
+        # escape as an exception on the wrapped future: Tornado's body-
+        # reading loop only catches HTTPInputError, so anything else would
+        # propagate uncaught, request._body_future would never resolve,
+        # post() would never run, and the client would just see the
+        # connection drop instead of the verbatim remote error. Recording
+        # it here and letting the future resolve normally lets post()
+        # surface it properly.
+        #
+        # self.upload is read into a local first: on_connection_close() ->
+        # _cleanup(abort=True) runs on the IOLoop and sets self.upload =
+        # None, and it can land while this call is already running on the
+        # executor with a data_received() future still pending. Reading
+        # self.upload a second time after that race would hit None (or,
+        # worse, a handle that abort() is concurrently sftp.remove()-ing).
+        # Binding it once up front makes this call consistent even if
+        # self.upload changes underneath it mid-write.
+        upload = self.upload
+        if upload is None:
+            return
+        try:
+            upload.write(chunk)
+        except transfer.TransferError as exc:
+            self._write_error = exc
+
+    @tornado.gen.coroutine
+    def post(self):
+        if self._write_error is not None:
+            # Abort so a truncated file isn't left under the real name,
+            # then report the remote error verbatim, same as every other
+            # transfer failure.
+            self._cleanup(abort=True)
+            self.transfer_error(self._write_error)
+            return
+        yield self.executor.submit(self.upload.close)
+        result = {'path': self.upload.final_path,
+                  'bytes': self.upload.bytes_written}
+        self._cleanup(abort=False)
+        self.write(result)
+
+    def on_connection_close(self):
+        # A cancelled upload leaves a truncated file under the real name
+        # unless it is removed. This may fire while prepare() is still
+        # suspended on a yield, before self.sftp/self.upload exist yet for
+        # _cleanup() to find (it is a no-op then); record the abort
+        # unconditionally too so prepare() can finish the cleanup itself
+        # once the resource it was waiting on exists, since this callback
+        # will not fire again for the same connection.
+        self._aborted = True
+        self._cleanup(abort=True)
+        super(TransferUploadHandler, self).on_connection_close()
+
+    def _cleanup(self, abort):
+        if getattr(self, 'counted', False):
+            self.worker.transfers -= 1
+            self.counted = False
+        upload = getattr(self, 'upload', None)
+        if upload is not None:
+            if abort:
+                upload.abort()
+            else:
+                upload.close()
+            self.upload = None
+        sftp = getattr(self, 'sftp', None)
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+            self.sftp = None
+
+
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
 
     def initialize(self, loop):
@@ -934,6 +1332,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             worker = workers.get(worker_id)
             if worker:
                 workers[worker_id] = None
+                register_live_worker(worker)
                 self.set_nodelay(True)
                 worker.set_handler(self)
                 self.worker_ref = weakref.ref(worker)
@@ -953,8 +1352,15 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             )
 
     def _idle_disconnect(self):
-        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
         worker = self.worker_ref() if self.worker_ref else None
+        if worker and worker.transfers:
+            # A transfer is in flight on this connection. Closing now would
+            # kill the SSH session it rides on, so re-arm instead.
+            logging.debug('Idle timeout deferred: transfer in progress')
+            self._reset_idle_timeout()
+            return
+
+        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
         if worker:
             worker.close(reason='Idle timeout.')
 

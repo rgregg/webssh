@@ -1,9 +1,11 @@
+import errno
 import json
 import os
 import random
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
 from unittest import mock
 import tornado.websocket
 import tornado.gen
@@ -12,13 +14,15 @@ from tornado.testing import AsyncHTTPTestCase
 from tornado.httpclient import HTTPError
 from tornado.options import options
 from tests.sshserver import run_ssh_server, banner, Server
+from tests.test_transfer import FakeSFTP, FakeAttr, FakeFile
 from tests.utils import encode_multipart_formdata, read_file, make_tests_data_path  # noqa
 from webssh import handler
 from webssh.main import make_app, make_handlers
 from webssh.settings import (
     get_app_settings, get_server_settings, max_body_size
 )
-from webssh.utils import to_str
+from webssh.utils import to_bytes, to_str
+from webssh import worker
 from webssh.worker import clients
 
 try:
@@ -209,6 +213,10 @@ class TestAppBasic(TestAppBase):
         options.syshostfile = ''
         options.tdstream = ''
         options.delay = 0.1
+        # The fake SSH server below echoes raw bytes rather than behaving
+        # like a real shell, so the injected snippet would show up as
+        # regular channel data and desync these protocol-level assertions.
+        options.shell_integration = False
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -646,6 +654,10 @@ class OtherTestBase(TestAppBase):
         options.tdstream = self.tdstream
         options.maxconn = self.maxconn
         options.origin = self.origin
+        # The fake SSH server echoes raw bytes rather than behaving like a
+        # real shell, so the injected snippet would show up as regular
+        # channel data and desync these protocol-level assertions.
+        options.shell_integration = False
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -1295,3 +1307,815 @@ class TestUserHostKeyIsolation(TestAppBase):
     def test_alice_pin_does_not_leak_to_anonymous_request(self):
         self.assertNotIn(b'is not allowed', self.post_as('alice').body)
         self.assertIn(b'is not allowed', self.post_as(None).body)
+
+
+class TestLiveWorkerRegistry(unittest.TestCase):
+
+    def make_worker(self, worker_id='wid'):
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def close(self):
+                pass
+
+        w = worker.Worker(None, FakeSSH(), FakeChan(), ('1.2.3.4', 22))
+        w.id = worker_id
+        w.src_addr = ('9.9.9.9', 1234)
+        return w
+
+    def tearDown(self):
+        worker.live_workers.clear()
+        worker.clients.clear()
+
+    def test_registering_makes_a_worker_reachable_by_id(self):
+        w = self.make_worker()
+        worker.register_live_worker(w)
+        self.assertIs(worker.live_workers.get('wid'), w)
+
+    def test_unregistering_removes_it(self):
+        w = self.make_worker()
+        worker.register_live_worker(w)
+        worker.unregister_live_worker(w)
+        self.assertIsNone(worker.live_workers.get('wid'))
+
+    def test_unregistering_an_absent_worker_is_harmless(self):
+        # close() may run without the websocket ever having attached.
+        worker.unregister_live_worker(self.make_worker())
+
+    def test_a_new_worker_starts_with_no_transfers(self):
+        self.assertEqual(self.make_worker().transfers, 0)
+
+    def test_close_unregisters_so_a_dead_id_cannot_be_reached(self):
+        w = self.make_worker()
+        worker.clients['9.9.9.9'] = {'wid': None}
+        worker.register_live_worker(w)
+        w.close(reason='test')
+        self.assertIsNone(worker.live_workers.get('wid'))
+
+
+class TransferTestBase(TestAppBase):
+    """Handler-level transfer tests with SFTP mocked at the open_sftp seam.
+
+    tests/sshserver.py implements no SFTP subsystem, and writing one just to
+    test our code would mean trusting a fake server. Patching open_sftp tests
+    the code we actually control.
+    """
+
+    headers = {'Cookie': '_xsrf=yummy'}
+
+    def get_app(self):
+        self.override_options(
+            debug=False, xsrf=True, policy='warning', hostfile='',
+            syshostfile='', tdstream='', origin='same', maxconn=20,
+        )
+        return make_app(make_handlers(self.io_loop, options),
+                        get_app_settings(options))
+
+    def setUp(self):
+        super(TransferTestBase, self).setUp()
+        worker.live_workers.clear()
+        self.addCleanup(worker.live_workers.clear)
+        self.sftp = FakeSFTP(files={'/home/ryan/a.txt': b'hello'},
+                             dirs={'/home/ryan': [FakeAttr('a.txt', size=5)]})
+        self.worker = self.make_live_worker()
+
+    def make_live_worker(self, worker_id='tid', client_ip='127.0.0.1'):
+        test_sftp = self.sftp
+
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def open_sftp(self):
+                return test_sftp
+
+            def close(self):
+                pass
+
+        w = worker.Worker(self.io_loop, FakeSSH(), FakeChan(),
+                          ('10.0.0.1', 22))
+        w.id = worker_id
+        w.src_addr = (client_ip, 1234)
+        worker.live_workers[worker_id] = w
+        return w
+
+
+class TestTransferList(TransferTestBase):
+
+    def test_lists_the_requested_directory(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan')
+        self.assertEqual(data['entries'][0]['name'], 'a.txt')
+        self.assertFalse(data['truncated'])
+
+    def test_unknown_worker_id_is_404(self):
+        response = self.fetch('/transfer/list?id=nope&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_valid_id_from_a_different_client_ip_is_404(self):
+        # The security property the transfer endpoints rest on: a leaked
+        # worker id is useless from anywhere but the session's own address.
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_missing_directory_is_404_with_the_remote_message(self):
+        response = self.fetch('/transfer/list?id=tid&path=/nope',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_closed_worker_is_410(self):
+        self.worker.closed = True
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 410)
+
+
+class TestContentDisposition(unittest.TestCase):
+
+    def test_ascii_filename_uses_the_plain_form(self):
+        value = handler.content_disposition('report.pdf')
+        self.assertIn('filename="report.pdf"', value)
+
+    def test_non_ascii_filename_gets_rfc5987_encoding(self):
+        value = handler.content_disposition('отчёт.pdf')
+        self.assertIn("filename*=UTF-8''", value)
+        # An ASCII fallback must still be present for older clients.
+        self.assertIn('filename="', value)
+
+    def test_quotes_are_escaped_not_passed_through(self):
+        value = handler.content_disposition('we"ird.txt')
+        self.assertNotIn('we"ird', value)
+
+    def test_newline_in_filename_is_rejected(self):
+        # Header injection vector: a remote filename is attacker-controlled
+        # if the user can be induced to download from a hostile host.
+        with self.assertRaises(ValueError):
+            handler.content_disposition('evil\r\nSet-Cookie: x=1')
+
+
+class TestTransferDownload(TransferTestBase):
+
+    def test_streams_the_file_with_an_attachment_header(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(response.body, b'hello')
+        disposition = response.headers['Content-Disposition']
+        self.assertIn('attachment', disposition)
+        self.assertIn('a.txt', disposition)
+
+    def test_missing_file_is_404(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/no.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_directory_is_400(self):
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 400)
+
+    def test_wrong_client_ip_is_404(self):
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_transfer_counter_is_released_after_the_download(self):
+        self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                   headers=self.headers)
+        self.assertEqual(self.worker.transfers, 0)
+
+    def test_concurrency_cap_returns_429(self):
+        self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
+                              headers=self.headers)
+        self.assertEqual(response.code, 429)
+
+
+class TestTransferDownloadCancellation(unittest.TestCase):
+    """Pins the fix for a disconnect that arrives before ``_download``
+    exists (while ``open_sftp``/``Download.open`` are still running on the
+    executor). Without hardening, that disconnect callback finds
+    ``_download is None`` and does nothing, so once ``_download`` is
+    assigned afterward there is no further callback to cancel it.
+    """
+
+    class FakeDownload(object):
+        def __init__(self):
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    def make_handler(self):
+        instance = handler.TransferDownloadHandler.__new__(
+            handler.TransferDownloadHandler)
+        instance._download = None
+        instance._aborted = False
+        return instance
+
+    def test_disconnect_before_download_exists_is_recorded(self):
+        instance = self.make_handler()
+        instance.on_connection_close()
+        self.assertTrue(instance._aborted)
+
+    def test_download_bound_after_early_disconnect_is_cancelled(self):
+        instance = self.make_handler()
+        # The disconnect races ahead of open_sftp/Download.open finishing.
+        instance.on_connection_close()
+
+        download = self.FakeDownload()
+        instance._bind_download(download)
+
+        self.assertTrue(download.cancelled)
+
+    def test_late_disconnect_still_cancels_the_bound_download(self):
+        # Ordinary ordering: _download already exists when the client
+        # disconnects. Must keep working after the hardening.
+        instance = self.make_handler()
+        download = self.FakeDownload()
+        instance._bind_download(download)
+
+        instance.on_connection_close()
+
+        self.assertTrue(download.cancelled)
+
+
+class TestTransferUpload(TransferTestBase):
+
+    def upload(self, query, body, headers=None):
+        hdrs = dict(headers if headers is not None else self.headers)
+        hdrs['X-Xsrftoken'] = 'yummy'
+        hdrs['Content-Type'] = 'application/octet-stream'
+        return self.fetch('/transfer/upload?' + query, method='POST',
+                          body=body, headers=hdrs)
+
+    def test_writes_the_body_to_the_destination(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/new.txt')
+        self.assertEqual(data['bytes'], 7)
+        self.assertEqual(self.sftp.files['/home/ryan/new.txt'], b'payload')
+
+    def test_existing_destination_is_409_and_leaves_the_file_alone(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/a.txt&filename=a.txt', b'clobber')
+        self.assertEqual(response.code, 409)
+        self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'hello')
+
+    def test_reissuing_with_overwrite_succeeds(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan/a.txt&filename=a.txt&overwrite=true',
+            b'clobber')
+        self.assertEqual(response.code, 200)
+        self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'clobber')
+
+    def test_directory_destination_appends_the_filename(self):
+        response = self.upload(
+            'id=tid&path=/home/ryan&filename=fresh.txt', b'x')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/fresh.txt')
+
+    def test_wrong_client_ip_is_404(self):
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(response.code, 404)
+
+    def test_missing_xsrf_header_is_rejected(self):
+        response = self.fetch(
+            '/transfer/upload?id=tid&path=/home/ryan/new.txt&filename=new.txt',
+            method='POST', body=b'x', headers=self.headers)
+        self.assertEqual(response.code, 403)
+
+    def test_transfer_counter_is_released_after_the_upload(self):
+        self.upload('id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(self.worker.transfers, 0)
+
+    def test_concurrency_cap_returns_429(self):
+        self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        response = self.upload(
+            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.assertEqual(response.code, 429)
+
+    def test_prepare_is_a_coroutine(self):
+        # Pins the fix for the Critical review finding: a plain (non-
+        # coroutine) prepare() calling paramiko directly stalls the whole
+        # IOLoop for the SFTP channel-open + stat/open round-trip.
+        self.assertTrue(tornado.gen.is_coroutine_function(
+            handler.TransferUploadHandler.prepare))
+
+    def test_sftp_setup_in_prepare_runs_on_the_executor_not_the_ioloop(self):
+        # Pins the fix for the Critical review finding by observing where
+        # the blocking paramiko work actually executes: on a worker thread,
+        # never on the IOLoop's own (main, test) thread.
+        main_thread_id = threading.current_thread().ident
+        seen_thread_ids = []
+        real_open_sftp = handler.transfer.open_sftp
+
+        def spy(ssh):
+            seen_thread_ids.append(threading.current_thread().ident)
+            return real_open_sftp(ssh)
+
+        with mock.patch.object(handler.transfer, 'open_sftp', side_effect=spy):
+            response = self.upload(
+                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+
+        self.assertEqual(response.code, 200)
+        self.assertEqual(len(seen_thread_ids), 1)
+        self.assertNotEqual(seen_thread_ids[0], main_thread_id)
+
+    def test_mid_stream_write_error_is_reported_verbatim_not_a_dropped_connection(self):
+        # Pins the fix for the Important review finding: a TransferError
+        # raised out of upload.write() during data_received() must surface
+        # to the client as a proper error response, not an uncaught
+        # exception that leaves request._body_future unresolved and the
+        # connection simply dropped.
+        def raising_write(fake_file, data):
+            raise OSError(errno.ENOSPC, 'No space left on device')
+
+        with mock.patch.object(FakeFile, 'write', raising_write):
+            response = self.upload(
+                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+
+        self.assertEqual(response.code, 507)
+        data = json.loads(to_str(response.body))
+        self.assertIn('No space left on device', data['status'])
+        # The partial file must not be left behind under the real name.
+        self.assertIn('/home/ryan/new.txt', self.sftp.removed)
+
+    def test_path_containing_percent_does_not_crash_logging(self):
+        # Pins the fix for the Minor review finding: transfer_error() used
+        # to pass the remote message straight through as log_message, which
+        # Tornado formats as "%d %s: " + log_message with two %-args. A '%'
+        # in the path made that crash inside logging instead of just
+        # reporting the error.
+        self.sftp.files['/home/ryan/100%.txt'] = b'existing'
+        response = self.upload(
+            'id=tid&path=/home/ryan/100%25.txt&filename=100%25.txt', b'y')
+        self.assertEqual(response.code, 409)
+        data = json.loads(to_str(response.body))
+        self.assertIn('/home/ryan/100%.txt', data['status'])
+
+
+class TestTransferUploadConcurrencyCap(TransferTestBase):
+    """Pins the fix for the Important review finding: the cap check and the
+    increment used to be separated by two yields (open_sftp, Upload.open),
+    so several prepare() calls racing that window could all observe
+    worker.transfers == 0, all pass the check, and all open an SFTP channel
+    before any of them incremented. Moving the increment to immediately
+    after the cap check (before the first yield) closes that window,
+    because each prepare() call's synchronous prefix -- including the
+    increment -- now runs to completion before it yields and lets another
+    queued request's prepare() run.
+    """
+
+    @tornado.testing.gen_test
+    def test_several_uploads_racing_prepare_cannot_all_pass_the_cap(self):
+        cap = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        n = cap + 4
+
+        pending = []
+        real_submit = handler.TransferMixin.executor.submit
+
+        def fake_submit(fn, *args, **kwargs):
+            if fn is handler.transfer.open_sftp:
+                fut = Future()
+                pending.append(fut)
+                return fut
+            return real_submit(fn, *args, **kwargs)
+
+        with mock.patch.object(handler.TransferMixin.executor, 'submit',
+                               side_effect=fake_submit):
+            headers = dict(self.headers)
+            headers['X-Xsrftoken'] = 'yummy'
+            headers['Content-Type'] = 'application/octet-stream'
+            response_futures = [
+                self.http_client.fetch(
+                    self.get_url(
+                        '/transfer/upload?id=tid&path=/home/ryan/f{}.txt'
+                        '&filename=f{}.txt'.format(i, i)),
+                    method='POST', body=b'x', headers=headers,
+                    raise_error=False)
+                for i in range(n)
+            ]
+
+            # Pump the IOLoop until every prepare() that is going to run
+            # has run its synchronous prefix and is now waiting on the
+            # (stubbed, never-resolving-yet) open_sftp future.
+            last = -1
+            for _ in range(50):
+                if len(pending) == last:
+                    break
+                last = len(pending)
+                yield tornado.gen.sleep(0.01)
+
+            # The heart of the fix: no more than `cap` requests should have
+            # made it past the cap check before any of them incremented
+            # worker.transfers.
+            self.assertLessEqual(len(pending), cap)
+            self.assertEqual(self.worker.transfers, len(pending))
+
+            for fut in pending:
+                fut.set_result(handler.transfer.open_sftp(self.worker.ssh))
+
+            responses = yield response_futures
+
+        codes = sorted(r.code for r in responses)
+        self.assertEqual(codes.count(429), n - cap)
+        self.assertEqual(codes.count(200), cap)
+        self.assertEqual(self.worker.transfers, 0)
+
+
+class TestTransferUploadCancellation(unittest.TestCase):
+    """Pins the fix for a disconnect that arrives while prepare() is still
+    suspended on a yield point (open_sftp(), then Upload.open()), before
+    self.sftp/self.upload exist for on_connection_close() to clean up
+    itself. Without hardening, that disconnect callback finds
+    nothing to clean up, then prepare() resumes and unconditionally opens
+    the upload and increments worker.transfers, leaking an SFTP handle and
+    permanently occupying a transfer slot (spurious future 429s).
+
+    Mirrors TestTransferDownloadCancellation's approach for the download
+    handler's equivalent _aborted/_bind_download hardening.
+    """
+
+    class FakeWorker(object):
+        def __init__(self):
+            self.transfers = 0
+
+    class FakeSFTP(object):
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def make_handler(self):
+        instance = handler.TransferUploadHandler.__new__(
+            handler.TransferUploadHandler)
+        instance._aborted = False
+        instance.worker = self.FakeWorker()
+        # _has_stream_request_body(TransferUploadHandler) is True, so the
+        # base on_connection_close() touches self.request._body_future;
+        # give it a Future-shaped stand-in that reports itself done so
+        # that code path is a no-op here.
+        instance.request = mock.Mock()
+        instance.request._body_future.done.return_value = True
+        return instance
+
+    def test_disconnect_before_sftp_exists_is_recorded(self):
+        instance = self.make_handler()
+        instance.on_connection_close()
+        self.assertTrue(instance._aborted)
+        self.assertEqual(instance.worker.transfers, 0)
+
+    def test_sftp_bound_after_early_disconnect_is_closed_and_not_counted(self):
+        instance = self.make_handler()
+        # The disconnect races ahead of open_sftp() finishing.
+        instance.on_connection_close()
+
+        sftp = self.FakeSFTP()
+        bound = instance._bind_sftp(sftp)
+
+        self.assertFalse(bound)
+        self.assertTrue(sftp.closed)
+        self.assertIsNone(instance.sftp)
+        self.assertEqual(instance.worker.transfers, 0)
+
+    def test_disconnect_after_sftp_bound_but_before_upload_opens_cleans_up(self):
+        instance = self.make_handler()
+        sftp = self.FakeSFTP()
+        self.assertTrue(instance._bind_sftp(sftp))
+
+        upload = mock.Mock()
+        instance.upload = upload
+
+        # The disconnect races ahead of upload.open() finishing.
+        instance.on_connection_close()
+
+        self.assertTrue(instance._aborted)
+        self.assertTrue(sftp.closed)
+        upload.abort.assert_called_once()
+        self.assertIsNone(instance.upload)
+        self.assertIsNone(instance.sftp)
+        self.assertEqual(instance.worker.transfers, 0)
+        self.assertFalse(getattr(instance, 'counted', False))
+
+    def test_late_disconnect_after_prepare_completed_decrements_once(self):
+        # Ordinary ordering: prepare() has already finished (counted=True)
+        # when the client disconnects. Must keep working after the
+        # hardening and must not double-decrement.
+        instance = self.make_handler()
+        instance.worker.transfers = 1
+        instance.sftp = self.FakeSFTP()
+        instance.upload = mock.Mock()
+        instance.counted = True
+
+        instance.on_connection_close()
+
+        self.assertEqual(instance.worker.transfers, 0)
+        self.assertFalse(instance.counted)
+
+
+class TestTransferUploadWriteDuringDisconnect(unittest.TestCase):
+    """Pins the fix for the Important review finding: _write() used to
+    read self.upload at call time, but it runs on the executor while
+    on_connection_close() -> _cleanup(abort=True) can run concurrently on
+    the IOLoop and set self.upload = None. _write() caught only
+    TransferError, so a disconnect landing mid-chunk turned into an
+    uncaught AttributeError instead of just being ignored.
+    """
+
+    def make_handler(self):
+        instance = handler.TransferUploadHandler.__new__(
+            handler.TransferUploadHandler)
+        instance._write_error = None
+        return instance
+
+    def test_write_after_upload_is_cleared_is_a_noop(self):
+        instance = self.make_handler()
+        instance.upload = None
+
+        # Must not raise AttributeError.
+        instance._write(b'chunk')
+
+        self.assertIsNone(instance._write_error)
+
+    def test_write_while_upload_still_bound_still_writes(self):
+        instance = self.make_handler()
+        upload = mock.Mock()
+        instance.upload = upload
+
+        instance._write(b'chunk')
+
+        upload.write.assert_called_once_with(b'chunk')
+        self.assertIsNone(instance._write_error)
+
+    def test_disconnect_racing_a_write_does_not_raise(self):
+        # The exact race the finding describes: self.upload is read once
+        # at the top of _write(), so a concurrent on_connection_close()
+        # clearing self.upload after that read cannot turn a write already
+        # in progress into an AttributeError.
+        instance = self.make_handler()
+        upload = mock.Mock()
+
+        def racing_write(data):
+            instance.upload = None  # simulates _cleanup(abort=True)
+
+        upload.write.side_effect = racing_write
+        instance.upload = upload
+
+        instance._write(b'chunk')
+
+        self.assertIsNone(instance._write_error)
+        self.assertIsNone(instance.upload)
+
+
+class TestIdleTimeoutDuringTransfer(unittest.TestCase):
+
+    class FakeWorker(object):
+        def __init__(self, transfers):
+            self.transfers = transfers
+            self.closed_reason = None
+
+        def close(self, reason=None):
+            self.closed_reason = reason
+
+    def make_handler(self, worker_obj):
+        ws = handler.WsockHandler.__new__(handler.WsockHandler)
+        ws.src_addr = ('127.0.0.1', 1234)
+        ws.worker_ref = lambda: worker_obj
+        ws._idle_timeout = None
+        ws.loop = None
+        return ws
+
+    def test_idle_disconnect_closes_when_no_transfer_is_running(self):
+        w = self.FakeWorker(transfers=0)
+        self.make_handler(w)._idle_disconnect()
+        self.assertEqual(w.closed_reason, 'Idle timeout.')
+
+    def test_idle_disconnect_is_deferred_while_a_transfer_runs(self):
+        # Closing here would kill the SSH connection the transfer rides on.
+        w = self.FakeWorker(transfers=1)
+        ws = self.make_handler(w)
+        ws._reset_idle_timeout = lambda: None
+        ws._idle_disconnect()
+        self.assertIsNone(w.closed_reason)
+
+
+class TestShellIntegrationSnippet(unittest.TestCase):
+
+    def test_snippet_handles_both_bash_and_zsh(self):
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('ZSH_VERSION', snippet)
+        self.assertIn('PROMPT_COMMAND', snippet)
+        self.assertIn('precmd', snippet)
+
+    def test_snippet_emits_an_osc7_sequence(self):
+        self.assertIn('\\033]7;file://', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_is_a_single_line_so_it_cannot_half_execute(self):
+        # A partially delivered multi-line snippet would leave the shell in
+        # a continuation prompt, wedging the session.
+        body = handler.SHELL_INTEGRATION_SNIPPET.rstrip('\n')
+        self.assertNotIn('\n', body)
+
+    def test_snippet_ends_with_exactly_one_newline(self):
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertTrue(snippet.endswith('\n'))
+        self.assertFalse(snippet.endswith('\n\n'))
+
+
+class FakeShellChannel(object):
+    """A minimal stand-in for a paramiko Channel, used to exercise the
+    ``ssh_connect`` call site directly without a real (or fake) SSH
+    server.
+    """
+
+    def __init__(self, sendall=None):
+        self.setblocking_calls = []
+        self.sendall = mock.Mock(side_effect=sendall)
+
+    def setblocking(self, blocking):
+        self.setblocking_calls.append(blocking)
+
+    def fileno(self):
+        return 99
+
+
+class PartialWriteChannel(object):
+    """Mimics paramiko's real ``Channel.sendall``: it loops over ``send``,
+    which here only ever accepts a few bytes at a time, to prove that a
+    partial underlying write still results in the whole snippet being
+    delivered.
+    """
+
+    def __init__(self, chunk_size=6):
+        self.chunk_size = chunk_size
+        self.sent = b''
+
+    def setblocking(self, blocking):
+        pass
+
+    def fileno(self):
+        return 99
+
+    def send(self, data):
+        chunk = data[:self.chunk_size]
+        self.sent += to_bytes(chunk)
+        return len(chunk)
+
+    def sendall(self, data):
+        while data:
+            sent = self.send(data)
+            data = data[sent:]
+
+
+class TestShellIntegrationSendSite(OptionsRestoreMixin, unittest.TestCase):
+    """Covers the ``chan.sendall(SHELL_INTEGRATION_SNIPPET)`` call site in
+    ``IndexHandler.ssh_connect``, which the fake-SSH-server-based test
+    fixtures cannot exercise (they disable ``shell_integration`` because
+    the fake server echoes raw bytes back).
+    """
+
+    def make_fake_handler(self, chan):
+        ssh_client = mock.Mock()
+        ssh_client.get_transport.return_value = None
+        ssh_client.invoke_shell.return_value = chan
+
+        fake_self = mock.Mock()
+        fake_self.ssh_client = ssh_client
+        fake_self.loop = mock.Mock()
+        fake_self.get_argument.return_value = u''
+        return fake_self
+
+    def test_sends_snippet_when_shell_integration_is_enabled(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel()
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        chan.sendall.assert_called_once_with(
+            handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_does_not_send_snippet_when_shell_integration_is_disabled(self):
+        self.override_options(shell_integration=False, encoding='utf-8')
+        chan = FakeShellChannel()
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        chan.sendall.assert_not_called()
+
+    def test_eoferror_from_sendall_does_not_break_the_session(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel(sendall=EOFError('transport is closed'))
+        fake_self = self.make_fake_handler(chan)
+
+        with self.assertLogs(level='WARNING') as log:
+            worker = handler.IndexHandler.ssh_connect(
+                fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertTrue(
+            any('Shell integration not sent' in msg
+                for msg in log.output))
+
+    def test_oserror_from_sendall_does_not_break_the_session(self):
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = FakeShellChannel(sendall=OSError('connection reset'))
+        fake_self = self.make_fake_handler(chan)
+
+        with self.assertLogs(level='WARNING') as log:
+            worker = handler.IndexHandler.ssh_connect(
+                fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertTrue(
+            any('Shell integration not sent' in msg
+                for msg in log.output))
+
+    def test_partial_write_still_delivers_the_whole_snippet(self):
+        # sendall() must not stop after writing only part of the snippet:
+        # a partial send could strand the shell mid single-quoted string.
+        self.override_options(shell_integration=True, encoding='utf-8')
+        chan = PartialWriteChannel(chunk_size=6)
+        fake_self = self.make_fake_handler(chan)
+
+        worker = handler.IndexHandler.ssh_connect(
+            fake_self, ('127.0.0.1', 22))
+
+        self.assertIsNotNone(worker)
+        self.assertEqual(
+            chan.sent, to_bytes(handler.SHELL_INTEGRATION_SNIPPET))
+
+
+class TestTransferListFilter(TransferTestBase):
+    """The filter parameter must reach through the handler to the listing."""
+
+    def setUp(self):
+        super(TestTransferListFilter, self).setUp()
+        self.sftp.dirs['/home/ryan'] = [
+            FakeAttr('syslog', size=10),
+            FakeAttr('auth.log', size=20),
+            FakeAttr('kernel', size=30),
+        ]
+
+    def test_filter_narrows_the_listing(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan&filter=log',
+                              headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        names = sorted(e['name'] for e in data['entries'])
+        self.assertEqual(names, ['auth.log', 'syslog'])
+        self.assertEqual(data['filter'], 'log')
+
+    def test_absent_filter_returns_everything(self):
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['entries']), 3)
+        self.assertEqual(data['filter'], '')
+
+    def test_filter_matching_nothing_is_an_empty_list_not_a_404(self):
+        response = self.fetch(
+            '/transfer/list?id=tid&path=/home/ryan&filter=zzz',
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(json.loads(to_str(response.body))['entries'], [])
+
+    def test_overlong_filter_is_accepted_and_truncated(self):
+        # An oversized filter is a performance nuisance, not a bad request,
+        # so the handler truncates it to 256 chars rather than rejecting it.
+        needle = 'z' * 300
+        response = self.fetch(
+            '/transfer/list?id=tid&path=/home/ryan&filter=' + needle,
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['filter'], 'z' * 256)
+        self.assertEqual(data['entries'], [])
