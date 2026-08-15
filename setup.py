@@ -10,7 +10,7 @@ with codecs.open('README.rst', encoding='utf-8') as f:
 setup(
     name='webssh',
     version=version,
-    description='Web based ssh client',
+    description='Web based ssh and sftp client',
     long_description=long_description,
     author='Shengdun Hua',
     author_email='webmaster0115@gmail.com',

@@ -7,7 +7,8 @@ Introduction
 ~~~~~~~~~~~~
 
 A simple web application to be used as an ssh client to connect to your
-ssh servers. It is written in Python, base on tornado, paramiko and
+ssh servers, and to transfer files to and from them over sftp on the same
+connection. It is written in Python, base on tornado, paramiko and
 xterm.js.
 
 Features
