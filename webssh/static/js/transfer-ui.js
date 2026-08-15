@@ -222,10 +222,13 @@ var webssh_transfer_ui = (function () {
             return;
           }
           // Keep the previous entries on screen: one mistyped character
-          // should not cost the user their place. Only the note itself is
-          // replaced, so repeated failures don't stack.
-          list.find('.picker-note').remove();
-          list.append(note('Could not list directory (' + xhr.status + ')'));
+          // should not cost the user their place. Replace only a previous
+          // error note, so repeated failures don't stack -- and so the
+          // truncation note, which still describes the entries that are
+          // still showing, survives.
+          list.find('.picker-note.is-error').remove();
+          list.append(note('Could not list directory (' + xhr.status + ')')
+            .addClass('is-error'));
         });
     }
 
