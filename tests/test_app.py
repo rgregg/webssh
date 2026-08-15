@@ -1779,6 +1779,14 @@ class TestTransferUploadCancellation(unittest.TestCase):
         def __init__(self):
             self.transfers = 0
 
+        # Mirrors Worker's clamping helpers so this double cannot report a
+        # balanced count that the real worker would have flagged.
+        def begin_transfer(self):
+            self.transfers += 1
+
+        def end_transfer(self):
+            self.transfers = max(0, self.transfers - 1)
+
     class FakeSFTP(object):
         def __init__(self):
             self.closed = False
@@ -2184,3 +2192,52 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
             headers=self.headers)
         self.assertEqual(int(response.headers['Content-Length']),
                          len(self.payload))
+
+
+class TestTransferCounter(unittest.TestCase):
+    """The counter caps concurrency and suppresses the idle disconnect, so
+    an unbalanced release does not merely lose a slot -- it leaves the
+    session unable to ever time out."""
+
+    def make_worker(self):
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def close(self):
+                pass
+
+        w = worker.Worker(None, FakeSSH(), FakeChan(), ('1.2.3.4', 22))
+        w.id = 'counter-test'
+        return w
+
+    def test_begin_and_end_balance(self):
+        w = self.make_worker()
+        w.begin_transfer()
+        w.begin_transfer()
+        self.assertEqual(w.transfers, 2)
+        w.end_transfer()
+        w.end_transfer()
+        self.assertEqual(w.transfers, 0)
+
+    def test_an_extra_release_clamps_at_zero_and_is_logged(self):
+        # Going negative would let the count drift below zero and silently
+        # raise the effective concurrency cap.
+        w = self.make_worker()
+        with self.assertLogs(level='ERROR') as captured:
+            w.end_transfer()
+        self.assertEqual(w.transfers, 0)
+        self.assertIn('underflow', ''.join(captured.output))
+
+    def test_clamping_does_not_break_a_later_legitimate_transfer(self):
+        w = self.make_worker()
+        with self.assertLogs(level='ERROR'):
+            w.end_transfer()
+        w.begin_transfer()
+        self.assertEqual(w.transfers, 1)
+        w.end_transfer()
+        self.assertEqual(w.transfers, 0)

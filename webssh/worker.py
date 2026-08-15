@@ -65,6 +65,28 @@ class Worker(object):
         # idle disconnect, which otherwise only resets on websocket traffic.
         self.transfers = 0
 
+    def begin_transfer(self):
+        self.transfers += 1
+
+    def end_transfer(self):
+        """Release one transfer slot.
+
+        Clamped at zero and logged if it would go negative. The counter is
+        load-bearing twice over -- it caps concurrency and it suppresses the
+        idle disconnect -- so an unbalanced release does not merely lose a
+        slot, it leaves the session unable to ever time out. Both handlers
+        release from `finally` blocks and disconnect callbacks that can
+        overlap, so the invariant is easy to break quietly; this makes a
+        break visible instead.
+        """
+        if self.transfers <= 0:
+            logging.error(
+                'Transfer counter underflow on worker {}; releasing a slot '
+                'that was never taken'.format(self.id))
+            self.transfers = 0
+            return
+        self.transfers -= 1
+
     def __call__(self, fd, events):
         if events & IOLoop.READ:
             self.on_read()
