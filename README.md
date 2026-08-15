@@ -1,6 +1,6 @@
 ## WebSSH
 
-A web-based SSH client with a modern terminal UI. Connect to SSH servers from your browser with password or key-based authentication, TOTP support, and optional per-user server-side key management.
+A web-based SSH and SFTP client with a modern terminal UI. Connect to SSH servers from your browser with password or key-based authentication, TOTP support, and optional per-user server-side key management, then move files to and from the host over SFTP without leaving the terminal — the transfer rides the connection the terminal already authenticated, so it needs no second login.
 
 Built on Python, Tornado, Paramiko, and xterm.js.
 
@@ -10,6 +10,10 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 
 * Password and public-key authentication (RSA, ECDSA, Ed25519)
 * Encrypted keys and TOTP two-factor authentication
+* SFTP file transfer on the terminal's own connection: drag a file onto the
+  terminal to upload, or pick one from the host to download
+* Streamed transfers of several hundred megabytes with progress and cancel,
+  without buffering the file on the server
 * Per-user server-side SSH key generation and storage
 * Per-user host lists and preferences that roam across browsers and machines
 * YAML configuration with host allowlisting and host key pinning
@@ -23,8 +27,12 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 ```
 +---------+     http     +--------+    ssh    +-----------+
 | browser | <==========> | webssh | <=======> | ssh server|
-+---------+   websocket  +--------+    ssh    +-----------+
++---------+   websocket  +--------+  ssh+sftp +-----------+
 ```
+
+The terminal runs over a websocket. File transfers use ordinary HTTP requests
+that open an SFTP channel on the *same* SSH connection, which is why they
+inherit the session's credentials and the SSH user's permissions exactly.
 
 ### Quick Start with Docker
 
