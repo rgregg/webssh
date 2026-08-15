@@ -1036,7 +1036,11 @@ class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
     def get(self):
         worker = self.get_live_worker()
         path = self.get_path()
-        name_filter = self.get_argument('filter', '')
+        # Truncated rather than rejected: matches_filter's cost is
+        # proportional to len(needle) per entry, and an oversized filter
+        # is a performance nuisance on the executor thread, not something
+        # worth an error response over.
+        name_filter = self.get_argument('filter', '')[:256]
 
         try:
             result = yield self.executor.submit(

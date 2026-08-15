@@ -2107,3 +2107,15 @@ class TestTransferListFilter(TransferTestBase):
             headers=self.headers)
         self.assertEqual(response.code, 200)
         self.assertEqual(json.loads(to_str(response.body))['entries'], [])
+
+    def test_overlong_filter_is_accepted_and_truncated(self):
+        # An oversized filter is a performance nuisance, not a bad request,
+        # so the handler truncates it to 256 chars rather than rejecting it.
+        needle = 'z' * 300
+        response = self.fetch(
+            '/transfer/list?id=tid&path=/home/ryan&filter=' + needle,
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['filter'], 'z' * 256)
+        self.assertEqual(data['entries'], [])

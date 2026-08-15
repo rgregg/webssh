@@ -12,6 +12,13 @@ var webssh_transfer_ui = (function () {
   var active = {};
   var seq = 0;
 
+  // open_picker runs fresh on every button press and builds a new `state`
+  // object each time, but #transfer-picker is a singleton DOM node shared
+  // across sessions. picker_session lets a session's in-flight request (or
+  // a debounce timer that fired late) recognize that it has been
+  // superseded and refuse to paint into a dialog another session now owns.
+  var picker_session = 0;
+
   function xsrf() {
     // Reuses main.js's helper (exposed on the shared wssh object) rather
     // than duplicating the cookie-parsing logic here. tabManager.bindWssh
@@ -137,6 +144,9 @@ var webssh_transfer_ui = (function () {
     var list = dialog.find('.picker-list').empty();
     var input = dialog.find('.picker-path');
 
+    picker_session = picker_session + 1;
+    var session_id = picker_session;
+
     // Everything the picker needs to remember for one open session.
     var state = {
       dir: null,          // directory currently listed
@@ -194,8 +204,10 @@ var webssh_transfer_ui = (function () {
       $.getJSON('/transfer/list',
                 {id: worker_id, path: dir, filter: filter || ''})
         .done(function (data) {
-          if (mine !== state.seq) {
-            return;   // a newer request has been issued; this one is stale
+          if (session_id !== picker_session || mine !== state.seq) {
+            // Either a newer request within this session, or the picker
+            // has been reopened (a new session owns the dialog now).
+            return;
           }
           state.dir = data.path;
           state.entries = data.entries;
@@ -206,11 +218,13 @@ var webssh_transfer_ui = (function () {
           render('');
         })
         .fail(function (xhr) {
-          if (mine !== state.seq) {
+          if (session_id !== picker_session || mine !== state.seq) {
             return;
           }
           // Keep the previous entries on screen: one mistyped character
-          // should not cost the user their place.
+          // should not cost the user their place. Only the note itself is
+          // replaced, so repeated failures don't stack.
+          list.find('.picker-note').remove();
           list.append(note('Could not list directory (' + xhr.status + ')'));
         });
     }
@@ -251,6 +265,10 @@ var webssh_transfer_ui = (function () {
 
     dialog.addClass('visible');
     dialog.find('.picker-download').off('click').on('click', function () {
+      if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
       var path = input.val();
       if (path) {
         window.location = webssh_transfer.download_url(worker_id, path);

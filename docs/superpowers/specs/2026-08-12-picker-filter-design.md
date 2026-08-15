@@ -71,8 +71,11 @@ the debounce timer, the stale-response guard, and rendering.
 
 1. The user types. `transfer-ui.js` calls `split_path`.
 2. If `dir` is `null` or equals the directory currently listed, the cached
-   entries are re-rendered through `match_entry`. No request.
-3. Otherwise a 250 ms timer is armed. If typing continues, the timer resets.
+   entries are re-rendered through `match_entry` immediately, as an
+   approximate local pass. Either way, a 250 ms debounce is armed for a
+   `/transfer/list` request, since filtering is server-side and the local
+   pass is only a stand-in until that response arrives.
+3. If typing continues, the timer resets.
 4. On fire, `/transfer/list` is called for the new directory.
 5. Every request carries an incrementing sequence number. A response whose
    number is not the newest is discarded, so a slow listing of `/usr/bin`
