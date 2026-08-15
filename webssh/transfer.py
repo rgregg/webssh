@@ -81,11 +81,17 @@ class Download(object):
             raise error_from_oserror(exc, self.path)
 
         # Sequential reads are several times faster with prefetch on, and
-        # this is the single largest throughput lever available.
+        # this is the single largest throughput lever available. A failure
+        # here costs speed, not correctness, so it must not fail the
+        # transfer -- but it should not vanish either, since a silently
+        # unprefetched download is several times slower for no visible
+        # reason.
         try:
             self.handle.prefetch()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning(
+                'Prefetch unavailable for {}, download will be slower: '
+                '{}'.format(self.path, exc))
 
         return attr.st_size
 
@@ -104,8 +110,12 @@ class Download(object):
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                # Not actionable for the caller -- the request is already
+                # finishing or unwinding -- but a burst of these points at
+                # a sick connection, so leave a trace rather than nothing.
+                logging.debug(
+                    'Ignoring error closing {}: {}'.format(self.path, exc))
             self.handle = None
 
 
@@ -175,8 +185,12 @@ class Upload(object):
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                # Not actionable for the caller -- the request is already
+                # finishing or unwinding -- but a burst of these points at
+                # a sick connection, so leave a trace rather than nothing.
+                logging.debug(
+                    'Ignoring error closing {}: {}'.format(self.path, exc))
             self.handle = None
 
     def abort(self):
