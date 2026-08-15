@@ -72,6 +72,24 @@ var webssh_transfer_ui = (function () {
     active[tab_id].push(controller);
   }
 
+  // Settled transfers are dropped as they finish. Without this the list
+  // only ever grew, holding a controller per transfer for the life of the
+  // tab -- harmless per transfer, but unbounded on a long-lived session
+  // that moves many files.
+  function untrack(tab_id, controller) {
+    var list = active[tab_id];
+    if (!list) {
+      return;
+    }
+    var at = list.indexOf(controller);
+    if (at !== -1) {
+      list.splice(at, 1);
+    }
+    if (!list.length) {
+      delete active[tab_id];
+    }
+  }
+
   // Transfers are scoped to the session that owns them: closing the tab
   // aborts them rather than leaving a background transfer running against
   // a terminal the user believes is gone.
@@ -121,6 +139,11 @@ var webssh_transfer_ui = (function () {
       });
     }).catch(function (err) {
       finish_row(row, err && err.name === 'AbortError' ? 'cancelled' : 'failed');
+    }).then(function () {
+      // Runs on every outcome, since the catch above already absorbed any
+      // rejection. A .then rather than .finally so this depends on nothing
+      // newer than the fetch and AbortController already in use here.
+      untrack(tab_id, controller);
     });
   }
 
