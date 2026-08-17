@@ -1086,7 +1086,7 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
             raise tornado.web.HTTPError(400, 'Invalid filename')
 
         sftp = None
-        worker.transfers += 1
+        worker.begin_transfer()
         try:
             sftp = yield self.executor.submit(transfer.open_sftp, worker.ssh)
             self._bind_download(transfer.Download(sftp, path))
@@ -1106,7 +1106,7 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
         except transfer.TransferError as exc:
             self.transfer_error(exc)
         finally:
-            worker.transfers -= 1
+            worker.end_transfer()
             if self._download is not None:
                 yield self.executor.submit(self._download.close)
                 self._download = None
@@ -1171,7 +1171,7 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         # and release it. Every exception from here on must route through
         # _cleanup() so this reservation is never leaked; _cleanup() is
         # safe to call more than once (it guards on self.counted).
-        self.worker.transfers += 1
+        self.worker.begin_transfer()
         self.counted = True
 
         try:
@@ -1290,7 +1290,7 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
 
     def _cleanup(self, abort):
         if getattr(self, 'counted', False):
-            self.worker.transfers -= 1
+            self.worker.end_transfer()
             self.counted = False
         upload = getattr(self, 'upload', None)
         if upload is not None:

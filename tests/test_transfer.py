@@ -2,6 +2,8 @@ import errno
 import stat
 import unittest
 
+import paramiko
+
 from webssh import transfer
 
 
@@ -311,3 +313,80 @@ class TestListDirectoryFilter(unittest.TestCase):
             names = [e['name'] for e in
                      transfer.list_directory(sftp, '/d', value)['entries']]
             self.assertEqual(names, ['zdir', 'a.txt', 'b.txt'])
+
+
+class TestOpenSftp(unittest.TestCase):
+    """The 410 path had no coverage: a dead session must be reported as a
+    gone session, not as an unhandled exception."""
+
+    def test_returns_the_channel_when_the_connection_is_healthy(self):
+        sentinel = FakeSFTP()
+
+        class Healthy(object):
+            def open_sftp(self):
+                return sentinel
+
+        self.assertIs(transfer.open_sftp(Healthy()), sentinel)
+
+    def test_a_dead_connection_becomes_a_410(self):
+        class Dead(object):
+            def open_sftp(self):
+                raise EOFError()
+
+        with self.assertRaises(transfer.TransferError) as caught:
+            transfer.open_sftp(Dead())
+        self.assertEqual(caught.exception.status, 410)
+
+    def test_the_410_message_does_not_leak_the_underlying_error(self):
+        # Unlike remote filesystem errors, this one is about our own
+        # connection state and says nothing useful to the user.
+        class Dead(object):
+            def open_sftp(self):
+                raise paramiko.SSHException('/internal/detail channel 3 EOF')
+
+        with self.assertRaises(transfer.TransferError) as caught:
+            transfer.open_sftp(Dead())
+        self.assertNotIn('/internal/detail', caught.exception.message)
+
+
+class TestUploadWriteGuard(unittest.TestCase):
+
+    def test_writing_before_open_is_a_400_not_an_attribute_error(self):
+        up = transfer.Upload(FakeSFTP(), '/tmp/x', 'x')
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.write(b'data')
+        self.assertEqual(caught.exception.status, 400)
+
+    def test_writing_after_close_is_a_400_not_an_attribute_error(self):
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, '/tmp/x', 'x')
+        up.open()
+        up.write(b'ok')
+        up.close()
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.write(b'late')
+        self.assertEqual(caught.exception.status, 400)
+
+
+class TestListDirectoryCapBoundary(unittest.TestCase):
+    """Exactly MAX_LIST_ENTRIES must not report truncation. An off-by-one
+    here would warn users about a cap that did not actually apply."""
+
+    def listing_of(self, count):
+        entries = [FakeAttr('f{:05d}'.format(i)) for i in range(count)]
+        return transfer.list_directory(FakeSFTP(dirs={'/d': entries}), '/d')
+
+    def test_one_below_the_cap_is_not_truncated(self):
+        result = self.listing_of(transfer.MAX_LIST_ENTRIES - 1)
+        self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES - 1)
+        self.assertFalse(result['truncated'])
+
+    def test_exactly_the_cap_is_not_truncated(self):
+        result = self.listing_of(transfer.MAX_LIST_ENTRIES)
+        self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES)
+        self.assertFalse(result['truncated'])
+
+    def test_one_above_the_cap_is_truncated(self):
+        result = self.listing_of(transfer.MAX_LIST_ENTRIES + 1)
+        self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES)
+        self.assertTrue(result['truncated'])
