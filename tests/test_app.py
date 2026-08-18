@@ -1369,6 +1369,13 @@ class TransferTestBase(TestAppBase):
 
     headers = {'Cookie': '_xsrf=yummy'}
 
+    def hdrs(self, worker_id='tid', extra=None):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = worker_id
+        if extra:
+            h.update(extra)
+        return h
+
     def get_app(self):
         self.override_options(
             debug=False, xsrf=True, policy='warning', hostfile='',
@@ -1413,8 +1420,8 @@ class TransferTestBase(TestAppBase):
 class TestTransferList(TransferTestBase):
 
     def test_lists_the_requested_directory(self):
-        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['path'], '/home/ryan')
@@ -1422,21 +1429,21 @@ class TestTransferList(TransferTestBase):
         self.assertFalse(data['truncated'])
 
     def test_unknown_worker_id_is_404(self):
-        response = self.fetch('/transfer/list?id=nope&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs('nope'))
         self.assertEqual(response.code, 404)
 
     def test_valid_id_from_a_different_client_ip_is_404(self):
         # The security property the transfer endpoints rest on: a leaked
         # worker id is useless from anywhere but the session's own address.
         self.worker.src_addr = ('203.0.113.7', 1234)
-        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 404)
 
     def test_missing_directory_is_404_with_the_remote_message(self):
-        response = self.fetch('/transfer/list?id=tid&path=/nope',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/nope',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 404)
         # The status alone would pass against a handler that returned an
         # empty body. Surfacing the remote message verbatim is a deliberate
@@ -1447,8 +1454,8 @@ class TestTransferList(TransferTestBase):
 
     def test_closed_worker_is_410(self):
         self.worker.closed = True
-        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 410)
 
 
@@ -1478,8 +1485,8 @@ class TestContentDisposition(unittest.TestCase):
 class TestTransferDownload(TransferTestBase):
 
     def test_streams_the_file_with_an_attachment_header(self):
-        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
-                              headers=self.headers)
+        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 200)
         self.assertEqual(response.body, b'hello')
         disposition = response.headers['Content-Disposition']
@@ -1487,30 +1494,30 @@ class TestTransferDownload(TransferTestBase):
         self.assertIn('a.txt', disposition)
 
     def test_missing_file_is_404(self):
-        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/no.txt',
-                              headers=self.headers)
+        response = self.fetch('/transfer/download?path=/home/ryan/no.txt',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 404)
 
     def test_directory_is_400(self):
-        response = self.fetch('/transfer/download?id=tid&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/download?path=/home/ryan',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 400)
 
     def test_wrong_client_ip_is_404(self):
         self.worker.src_addr = ('203.0.113.7', 1234)
-        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
-                              headers=self.headers)
+        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 404)
 
     def test_transfer_counter_is_released_after_the_download(self):
-        self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
-                   headers=self.headers)
+        self.fetch('/transfer/download?path=/home/ryan/a.txt',
+                   headers=self.hdrs())
         self.assertEqual(self.worker.transfers, 0)
 
     def test_concurrency_cap_returns_429(self):
         self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
-        response = self.fetch('/transfer/download?id=tid&path=/home/ryan/a.txt',
-                              headers=self.headers)
+        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 429)
 
 
@@ -1576,7 +1583,7 @@ class TestTransferDownloadCancellation(unittest.TestCase):
 class TestTransferUpload(TransferTestBase):
 
     def upload(self, query, body, headers=None):
-        hdrs = dict(headers if headers is not None else self.headers)
+        hdrs = dict(headers if headers is not None else self.hdrs())
         hdrs['X-Xsrftoken'] = 'yummy'
         hdrs['Content-Type'] = 'application/octet-stream'
         return self.fetch('/transfer/upload?' + query, method='POST',
@@ -1584,7 +1591,7 @@ class TestTransferUpload(TransferTestBase):
 
     def test_writes_the_body_to_the_destination(self):
         response = self.upload(
-            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+            'path=/home/ryan/new.txt&filename=new.txt', b'payload')
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['path'], '/home/ryan/new.txt')
@@ -1593,20 +1600,20 @@ class TestTransferUpload(TransferTestBase):
 
     def test_existing_destination_is_409_and_leaves_the_file_alone(self):
         response = self.upload(
-            'id=tid&path=/home/ryan/a.txt&filename=a.txt', b'clobber')
+            'path=/home/ryan/a.txt&filename=a.txt', b'clobber')
         self.assertEqual(response.code, 409)
         self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'hello')
 
     def test_reissuing_with_overwrite_succeeds(self):
         response = self.upload(
-            'id=tid&path=/home/ryan/a.txt&filename=a.txt&overwrite=true',
+            'path=/home/ryan/a.txt&filename=a.txt&overwrite=true',
             b'clobber')
         self.assertEqual(response.code, 200)
         self.assertEqual(self.sftp.files['/home/ryan/a.txt'], b'clobber')
 
     def test_directory_destination_appends_the_filename(self):
         response = self.upload(
-            'id=tid&path=/home/ryan&filename=fresh.txt', b'x')
+            'path=/home/ryan&filename=fresh.txt', b'x')
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['path'], '/home/ryan/fresh.txt')
@@ -1614,23 +1621,23 @@ class TestTransferUpload(TransferTestBase):
     def test_wrong_client_ip_is_404(self):
         self.worker.src_addr = ('203.0.113.7', 1234)
         response = self.upload(
-            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+            'path=/home/ryan/new.txt&filename=new.txt', b'x')
         self.assertEqual(response.code, 404)
 
     def test_missing_xsrf_header_is_rejected(self):
         response = self.fetch(
-            '/transfer/upload?id=tid&path=/home/ryan/new.txt&filename=new.txt',
-            method='POST', body=b'x', headers=self.headers)
+            '/transfer/upload?path=/home/ryan/new.txt&filename=new.txt',
+            method='POST', body=b'x', headers=self.hdrs())
         self.assertEqual(response.code, 403)
 
     def test_transfer_counter_is_released_after_the_upload(self):
-        self.upload('id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+        self.upload('path=/home/ryan/new.txt&filename=new.txt', b'x')
         self.assertEqual(self.worker.transfers, 0)
 
     def test_concurrency_cap_returns_429(self):
         self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
         response = self.upload(
-            'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+            'path=/home/ryan/new.txt&filename=new.txt', b'x')
         self.assertEqual(response.code, 429)
 
     def test_prepare_is_a_coroutine(self):
@@ -1654,7 +1661,7 @@ class TestTransferUpload(TransferTestBase):
 
         with mock.patch.object(handler.transfer, 'open_sftp', side_effect=spy):
             response = self.upload(
-                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'x')
+                'path=/home/ryan/new.txt&filename=new.txt', b'x')
 
         self.assertEqual(response.code, 200)
         self.assertEqual(len(seen_thread_ids), 1)
@@ -1671,7 +1678,7 @@ class TestTransferUpload(TransferTestBase):
 
         with mock.patch.object(FakeFile, 'write', raising_write):
             response = self.upload(
-                'id=tid&path=/home/ryan/new.txt&filename=new.txt', b'payload')
+                'path=/home/ryan/new.txt&filename=new.txt', b'payload')
 
         self.assertEqual(response.code, 507)
         data = json.loads(to_str(response.body))
@@ -1687,7 +1694,7 @@ class TestTransferUpload(TransferTestBase):
         # reporting the error.
         self.sftp.files['/home/ryan/100%.txt'] = b'existing'
         response = self.upload(
-            'id=tid&path=/home/ryan/100%25.txt&filename=100%25.txt', b'y')
+            'path=/home/ryan/100%25.txt&filename=100%25.txt', b'y')
         self.assertEqual(response.code, 409)
         data = json.loads(to_str(response.body))
         self.assertIn('/home/ryan/100%.txt', data['status'])
@@ -1722,13 +1729,13 @@ class TestTransferUploadConcurrencyCap(TransferTestBase):
 
         with mock.patch.object(handler.TransferMixin.executor, 'submit',
                                side_effect=fake_submit):
-            headers = dict(self.headers)
+            headers = self.hdrs()
             headers['X-Xsrftoken'] = 'yummy'
             headers['Content-Type'] = 'application/octet-stream'
             response_futures = [
                 self.http_client.fetch(
                     self.get_url(
-                        '/transfer/upload?id=tid&path=/home/ryan/f{}.txt'
+                        '/transfer/upload?path=/home/ryan/f{}.txt'
                         '&filename=f{}.txt'.format(i, i)),
                     method='POST', body=b'x', headers=headers,
                     raise_error=False)
@@ -2129,8 +2136,8 @@ class TestTransferListFilter(TransferTestBase):
         ]
 
     def test_filter_narrows_the_listing(self):
-        response = self.fetch('/transfer/list?id=tid&path=/home/ryan&filter=log',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan&filter=log',
+                              headers=self.hdrs())
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         names = sorted(e['name'] for e in data['entries'])
@@ -2138,16 +2145,16 @@ class TestTransferListFilter(TransferTestBase):
         self.assertEqual(data['filter'], 'log')
 
     def test_absent_filter_returns_everything(self):
-        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
-                              headers=self.headers)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
         data = json.loads(to_str(response.body))
         self.assertEqual(len(data['entries']), 3)
         self.assertEqual(data['filter'], '')
 
     def test_filter_matching_nothing_is_an_empty_list_not_a_404(self):
         response = self.fetch(
-            '/transfer/list?id=tid&path=/home/ryan&filter=zzz',
-            headers=self.headers)
+            '/transfer/list?path=/home/ryan&filter=zzz',
+            headers=self.hdrs())
         self.assertEqual(response.code, 200)
         self.assertEqual(json.loads(to_str(response.body))['entries'], [])
 
@@ -2156,8 +2163,8 @@ class TestTransferListFilter(TransferTestBase):
         # so the handler truncates it to 256 chars rather than rejecting it.
         needle = 'z' * 300
         response = self.fetch(
-            '/transfer/list?id=tid&path=/home/ryan&filter=' + needle,
-            headers=self.headers)
+            '/transfer/list?path=/home/ryan&filter=' + needle,
+            headers=self.hdrs())
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['filter'], 'z' * 256)
@@ -2176,8 +2183,8 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
 
     def test_a_file_larger_than_one_chunk_arrives_intact(self):
         response = self.fetch(
-            '/transfer/download?id=tid&path=/home/ryan/big.bin',
-            headers=self.headers)
+            '/transfer/download?path=/home/ryan/big.bin',
+            headers=self.hdrs())
         self.assertEqual(response.code, 200)
         # Download.read returns at most CHUNK_SIZE, so a body this size
         # proves the loop ran more than once and reassembled in order.
@@ -2188,8 +2195,8 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
         # A mismatch here would leave the browser waiting for bytes that
         # never come, or truncating a file it believes is complete.
         response = self.fetch(
-            '/transfer/download?id=tid&path=/home/ryan/big.bin',
-            headers=self.headers)
+            '/transfer/download?path=/home/ryan/big.bin',
+            headers=self.hdrs())
         self.assertEqual(int(response.headers['Content-Length']),
                          len(self.payload))
 
@@ -2340,3 +2347,94 @@ class TestTicketStore(unittest.TestCase):
         t = worker.mint_ticket(w.id, '/f', '10.0.0.5', now=1000)
         w.close(reason='test')
         self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=1001))
+
+
+class TestTransferTokenHeader(TransferTestBase):
+    """The worker token is a session-long credential. It must travel in a
+    header, never a URL, so it cannot land in browser history or access
+    logs."""
+
+    def hdrs(self, extra=None):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        if extra:
+            h.update(extra)
+        return h
+
+    def test_list_accepts_the_token_in_a_header(self):
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
+        self.assertEqual(response.code, 200)
+
+    def test_list_rejects_the_token_in_the_query_string(self):
+        # The point of the change: the old form must stop working, or the
+        # leak survives wherever a caller kept using it.
+        response = self.fetch('/transfer/list?id=tid&path=/home/ryan',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_list_from_a_different_client_ip_is_still_404(self):
+        self.worker.src_addr = ('203.0.113.7', 1234)
+        response = self.fetch('/transfer/list?path=/home/ryan',
+                              headers=self.hdrs())
+        self.assertEqual(response.code, 404)
+
+    def test_upload_accepts_the_token_in_a_header(self):
+        response = self.fetch(
+            '/transfer/upload?path=/home/ryan/hdr.txt&filename=hdr.txt',
+            method='POST', body=b'x',
+            headers=self.hdrs({'X-Xsrftoken': 'yummy',
+                               'Content-Type': 'application/octet-stream'}))
+        self.assertEqual(response.code, 200)
+
+    def test_upload_rejects_the_token_in_the_query_string(self):
+        response = self.fetch(
+            '/transfer/upload?id=tid&path=/home/ryan/q.txt&filename=q.txt',
+            method='POST', body=b'x',
+            headers={'Cookie': '_xsrf=yummy', 'X-Xsrftoken': 'yummy',
+                     'Content-Type': 'application/octet-stream'})
+        self.assertEqual(response.code, 404)
+
+
+class TestTransferTicketEndpoint(TransferTestBase):
+
+    def hdrs(self):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        h['X-Xsrftoken'] = 'yummy'
+        h['Content-Type'] = 'application/json'
+        return h
+
+    def mint(self, path='/home/ryan/a.txt', headers=None):
+        return self.fetch('/transfer/ticket', method='POST',
+                          body=json.dumps({'path': path}),
+                          headers=headers if headers is not None
+                          else self.hdrs())
+
+    def test_minting_returns_a_ticket_and_its_lifetime(self):
+        response = self.mint()
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertTrue(data['ticket'])
+        self.assertEqual(data['expires_in'], worker.TICKET_TTL)
+
+    def test_the_response_does_not_echo_the_worker_token(self):
+        # A ticket that carried the token would defeat its own purpose.
+        body = to_str(self.mint().body)
+        self.assertNotIn('tid', body)
+
+    def test_minting_requires_the_xsrf_header(self):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        h['Content-Type'] = 'application/json'
+        self.assertEqual(self.mint(headers=h).code, 403)
+
+    def test_minting_for_an_unknown_worker_is_404(self):
+        h = self.hdrs()
+        h['X-Worker-Id'] = 'nope'
+        self.assertEqual(self.mint(headers=h).code, 404)
+
+    def test_minting_without_a_path_is_400(self):
+        response = self.fetch('/transfer/ticket', method='POST',
+                              body=json.dumps({}), headers=self.hdrs())
+        self.assertEqual(response.code, 400)

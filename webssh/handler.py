@@ -5,6 +5,7 @@ import logging
 import posixpath
 import socket
 import struct
+import time
 import traceback
 import weakref
 import paramiko
@@ -24,6 +25,7 @@ from webssh.utils import (
 from webssh.worker import (
     Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
 )
+from webssh import worker as worker_module
 from webssh.settings import max_upload_size
 from webssh import transfer
 from webssh import user_data
@@ -975,8 +977,13 @@ class TransferMixin(MixinHandler):
         super(TransferMixin, self).initialize()
         self.loop = loop
 
+    WORKER_ID_HEADER = 'X-Worker-Id'
+
     def get_live_worker(self):
-        worker_id = self.get_argument('id', '')
+        # A header, never a query parameter: the token authorises the whole
+        # session, and a URL copy would persist in browser history and in
+        # access logs.
+        worker_id = self.request.headers.get(self.WORKER_ID_HEADER, '')
         if not worker_id:
             raise tornado.web.HTTPError(404)
 
@@ -1056,6 +1063,39 @@ class TransferListHandler(TransferMixin, tornado.web.RequestHandler):
             return transfer.list_directory(sftp, path, name_filter)
         finally:
             sftp.close()
+
+
+class TransferTicketHandler(TransferMixin, tornado.web.RequestHandler):
+    """Mints the short-lived credential the download navigation redeems.
+
+    A browser navigation cannot carry the X-Worker-Id header, so the
+    download URL needs something it can hold in the clear. A ticket is
+    that: one path, one address, one use, sixty seconds.
+    """
+
+    def post(self):
+        live = self.get_live_worker()
+
+        try:
+            payload = json.loads(to_str(self.request.body or b'{}'))
+        except ValueError:
+            raise tornado.web.HTTPError(400, 'Invalid JSON')
+        if not isinstance(payload, dict):
+            raise tornado.web.HTTPError(400, 'Invalid JSON')
+
+        path = payload.get('path') or ''
+        if not path:
+            raise tornado.web.HTTPError(400, 'Missing path')
+
+        try:
+            ticket = worker_module.mint_ticket(
+                live.id, path, self.get_client_addr()[0], time.time())
+        except worker_module.TicketStoreFull:
+            logging.warning('Download ticket store full; refusing to mint')
+            raise tornado.web.HTTPError(503, 'Too many pending downloads.')
+
+        self.write({'ticket': ticket,
+                    'expires_in': worker_module.TICKET_TTL})
 
 
 class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
