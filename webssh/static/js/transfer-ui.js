@@ -113,10 +113,10 @@ var webssh_transfer_ui = (function () {
       controller.abort();
     });
 
-    fetch(webssh_transfer.upload_url(worker_id, path, file.name, overwrite), {
+    fetch(webssh_transfer.upload_url(path, file.name, overwrite), {
       method: 'POST',
       body: file,
-      headers: {'X-Xsrftoken': xsrf()},
+      headers: {'X-Xsrftoken': xsrf(), 'X-Worker-Id': worker_id},
       signal: controller.signal
     }).then(function (response) {
       if (response.status === 409) {
@@ -224,8 +224,12 @@ var webssh_transfer_ui = (function () {
     function fetch_dir(dir, filter) {
       state.seq = state.seq + 1;
       var mine = state.seq;
-      $.getJSON('/transfer/list',
-                {id: worker_id, path: dir, filter: filter || ''})
+      $.ajax({
+        url: '/transfer/list',
+        dataType: 'json',
+        data: {path: dir, filter: filter || ''},
+        headers: {'X-Worker-Id': worker_id}
+      })
         .done(function (data) {
           if (session_id !== picker_session || mine !== state.seq) {
             // Either a newer request within this session, or the picker
@@ -291,15 +295,35 @@ var webssh_transfer_ui = (function () {
 
     dialog.addClass('visible');
     dialog.find('.picker-download').off('click').on('click', function () {
+      var path = input.val();
       if (state.timer) {
         clearTimeout(state.timer);
         state.timer = null;
       }
-      var path = input.val();
-      if (path) {
-        window.location = webssh_transfer.download_url(worker_id, path);
+      if (!path) {
+        dialog.removeClass('visible');
+        return;
       }
-      dialog.removeClass('visible');
+      // Mint a single-use ticket, then navigate to it. The worker token
+      // stays out of the URL, so the browser's download history records a
+      // credential that is already spent.
+      $.ajax({
+        url: '/transfer/ticket',
+        type: 'POST',
+        contentType: 'application/json',
+        dataType: 'json',
+        data: JSON.stringify({path: path}),
+        headers: {'X-Worker-Id': worker_id, 'X-Xsrftoken': xsrf()}
+      }).done(function (data) {
+        window.location = webssh_transfer.download_url(data.ticket);
+        dialog.removeClass('visible');
+      }).fail(function (xhr) {
+        // Report rather than failing silently: a dead button with no
+        // explanation is worse than an error.
+        list.find('.picker-note.is-error').remove();
+        list.append(note('Could not start download (' + xhr.status + ')')
+          .addClass('is-error'));
+      });
     });
     dialog.find('.picker-cancel').off('click').on('click', function () {
       if (state.timer) {
