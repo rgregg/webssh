@@ -80,9 +80,15 @@ terminal on the same session.
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/transfer/download` | GET | Stream a remote file to the browser |
-| `/transfer/upload` | POST | Stream a request body to a remote file |
+| `/transfer/ticket` | POST | Mint a single-use download ticket |
 | `/transfer/list` | GET | List one directory, for the download picker |
+| `/transfer/download` | GET | Stream a remote file, authorised by a ticket |
+| `/transfer/upload` | POST | Stream a request body to a remote file |
+
+`list` and `upload` carry the worker token in an `X-Worker-Id` header.
+`download` is a browser navigation and cannot send headers, so it redeems a
+single-use ticket minted by `POST /transfer/ticket`. The token never appears
+in a URL; see `2026-08-18-transfer-token-exposure-design.md` for why.
 
 A shared mixin resolves worker ID plus client IP to a live worker, or raises
 404. Transfers are reachable exactly where the terminal is: same client-IP
