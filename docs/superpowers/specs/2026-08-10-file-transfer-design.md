@@ -134,7 +134,7 @@ automatic destination detection, not the feature.
 
 1. A drop resolves the destination from the tracked OSC 7 directory, or opens
    the path box if no directory is known.
-2. `fetch('/transfer/upload?id=...&path=...', {method: 'POST', body: file})`.
+2. `fetch('/transfer/upload?path=...', {method: 'POST', body: file, headers: {'X-Worker-Id': ..., 'X-Xsrftoken': ...}})`.
    The `File` object streams; it is never read into a string.
 3. `@stream_request_body` delivers chunks to `data_received`, which hands each
    to the executor for `sftp_file.write()` and **returns that Future**. Tornado
@@ -167,14 +167,17 @@ which is what justifies the extra round trip in the rare colliding case.
    re-lists it; directories are clickable. This supersedes the original
    no-navigation boundary — see `2026-08-12-picker-filter-design.md`. The
    picker still offers no tree, no rename, and no delete.
-2. `/transfer/download` sets `Content-Disposition: attachment` and streams
+2. The browser calls `POST /transfer/ticket` to mint a single-use download
+   ticket for the chosen file. Browser navigations (step 3) cannot send headers,
+   so the ticket carries the session context instead of the worker token.
+3. `/transfer/download` sets `Content-Disposition: attachment` and streams
    fixed-size chunks, each `self.write()` followed by `await self.flush()`.
    The flush is the backpressure point against a slow browser.
 
 Transfers use their own chunk size of 256 KB, not `worker.BUF_SIZE`. That
 constant is 32 KB and tuned for interactive terminal latency; bulk SFTP
 throughput wants larger reads.
-3. The browser's own download manager writes to disk. Nothing accumulates in
+4. The browser's own download manager writes to disk. Nothing accumulates in
    JavaScript memory.
 
 Downloads call `SFTPFile.prefetch()`. Sequential reads are dramatically faster
