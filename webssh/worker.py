@@ -30,6 +30,63 @@ def unregister_live_worker(worker):
     live_workers.pop(worker.id, None)
 
 
+# Short-lived, single-use credentials for the one transfer a browser cannot
+# authenticate with a header: the download navigation. A ticket authorises
+# one download of one path from one address for TICKET_TTL seconds, so a
+# copy recovered from browser history is worthless.
+TICKET_TTL = 60
+MAX_TICKETS = 256
+
+tickets = {}  # ticket -> {'worker_id', 'path', 'ip', 'expires'}
+
+
+class TicketStoreFull(Exception):
+    pass
+
+
+def _sweep_tickets(now):
+    for key in [k for k, v in tickets.items() if v['expires'] < now]:
+        tickets.pop(key, None)
+
+
+def mint_ticket(worker_id, path, ip, now):
+    _sweep_tickets(now)
+    if len(tickets) >= MAX_TICKETS:
+        # A legitimate user holds a handful at once. Reaching the cap after
+        # a sweep means something is looping, so refuse rather than let the
+        # store grow without bound.
+        raise TicketStoreFull()
+
+    ticket = Worker.gen_id()
+    tickets[ticket] = {
+        'worker_id': worker_id,
+        'path': path,
+        'ip': ip,
+        'expires': now + TICKET_TTL,
+    }
+    return ticket
+
+
+def consume_ticket(ticket, ip, now):
+    """Redeem a ticket, returning its claim or None.
+
+    The ticket is removed on every outcome where it existed, including an
+    address mismatch: leaving it live would let someone who guessed one
+    retry from every address they control.
+    """
+    claim = tickets.pop(ticket, None)
+    if claim is None:
+        return None
+    if claim['expires'] < now or claim['ip'] != ip:
+        return None
+    return {'worker_id': claim['worker_id'], 'path': claim['path']}
+
+
+def drop_tickets_for(worker_id):
+    for key in [k for k, v in tickets.items() if v['worker_id'] == worker_id]:
+        tickets.pop(key, None)
+
+
 def clear_worker(worker, clients):
     ip = worker.src_addr[0]
     workers = clients.get(ip)
@@ -160,6 +217,7 @@ class Worker(object):
             return
         self.closed = True
         unregister_live_worker(self)
+        drop_tickets_for(self.id)
 
         logging.info(
             'Closing worker {} with reason: {}'.format(self.id, reason)

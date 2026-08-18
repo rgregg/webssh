@@ -2241,3 +2241,102 @@ class TestTransferCounter(unittest.TestCase):
         self.assertEqual(w.transfers, 1)
         w.end_transfer()
         self.assertEqual(w.transfers, 0)
+
+
+class TestTicketStore(unittest.TestCase):
+    """A ticket replaces the session-long worker token in the download URL.
+    Its whole value is that a copy recovered from browser history is
+    already useless, so expiry, single use, and IP binding are the point."""
+
+    def setUp(self):
+        worker.tickets.clear()
+        self.addCleanup(worker.tickets.clear)
+
+    def test_a_minted_ticket_consumes_to_its_worker_and_path(self):
+        t = worker.mint_ticket('wid', '/var/log/syslog', '10.0.0.5', now=1000)
+        claim = worker.consume_ticket(t, '10.0.0.5', now=1001)
+        self.assertEqual(claim['worker_id'], 'wid')
+        self.assertEqual(claim['path'], '/var/log/syslog')
+
+    def test_a_ticket_cannot_be_used_twice(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        self.assertIsNotNone(worker.consume_ticket(t, '10.0.0.5', now=1001))
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=1002))
+
+    def test_an_expired_ticket_is_refused(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        after = 1000 + worker.TICKET_TTL + 1
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=after))
+
+    def test_a_ticket_at_exactly_the_ttl_is_still_valid(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        self.assertIsNotNone(
+            worker.consume_ticket(t, '10.0.0.5', now=1000 + worker.TICKET_TTL))
+
+    def test_a_ticket_from_another_ip_is_refused(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        self.assertIsNone(worker.consume_ticket(t, '203.0.113.9', now=1001))
+
+    def test_an_ip_mismatch_still_burns_the_ticket(self):
+        # Otherwise an attacker who guessed a ticket could retry from
+        # every address they control until one matched.
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        worker.consume_ticket(t, '203.0.113.9', now=1001)
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=1002))
+
+    def test_an_unknown_ticket_is_refused(self):
+        self.assertIsNone(worker.consume_ticket('never-minted', '1.2.3.4',
+                                                now=1000))
+
+    def test_tickets_are_unguessable_and_distinct(self):
+        a = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        b = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        self.assertNotEqual(a, b)
+        self.assertGreaterEqual(len(a), 32)
+
+    def test_minting_sweeps_expired_tickets(self):
+        for i in range(10):
+            worker.mint_ticket('wid', '/f{}'.format(i), '10.0.0.5', now=1000)
+        self.assertEqual(len(worker.tickets), 10)
+        worker.mint_ticket('wid', '/fresh', '10.0.0.5',
+                           now=1000 + worker.TICKET_TTL + 1)
+        # The ten stale ones are gone; only the fresh one remains.
+        self.assertEqual(len(worker.tickets), 1)
+
+    def test_minting_past_the_cap_raises_rather_than_growing(self):
+        for i in range(worker.MAX_TICKETS):
+            worker.mint_ticket('wid', '/f{}'.format(i), '10.0.0.5', now=1000)
+        with self.assertRaises(worker.TicketStoreFull):
+            worker.mint_ticket('wid', '/overflow', '10.0.0.5', now=1000)
+        self.assertEqual(len(worker.tickets), worker.MAX_TICKETS)
+
+    def test_dropping_a_workers_tickets_leaves_other_workers_alone(self):
+        mine = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        theirs = worker.mint_ticket('other', '/f', '10.0.0.5', now=1000)
+        worker.drop_tickets_for('wid')
+        self.assertIsNone(worker.consume_ticket(mine, '10.0.0.5', now=1001))
+        self.assertIsNotNone(worker.consume_ticket(theirs, '10.0.0.5',
+                                                   now=1001))
+
+    def test_closing_a_worker_drops_its_tickets(self):
+        # A ticket must not outlive the session it authorises.
+        class FakeChan(object):
+            def fileno(self):
+                return 0
+
+            def close(self):
+                pass
+
+        class FakeSSH(object):
+            def close(self):
+                pass
+
+        w = worker.Worker(None, FakeSSH(), FakeChan(), ('1.2.3.4', 22))
+        w.id = 'closing'
+        w.src_addr = ('10.0.0.5', 1234)
+        worker.clients['10.0.0.5'] = {'closing': None}
+        self.addCleanup(worker.clients.clear)
+
+        t = worker.mint_ticket(w.id, '/f', '10.0.0.5', now=1000)
+        w.close(reason='test')
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=1001))
