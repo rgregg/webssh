@@ -37,10 +37,24 @@ def unregister_live_worker(worker):
 TICKET_TTL = 60
 MAX_TICKETS = 256
 
+# A legitimate user holds a handful of tickets at once. Without a per-worker
+# limit, one authenticated session (or a looping client) could mint enough
+# tickets to exhaust MAX_TICKETS by itself, returning 503 to every other
+# user's /transfer/ticket for up to TICKET_TTL seconds.
+MAX_TICKETS_PER_WORKER = 8
+
+# PATH_MAX on Linux. Rejected at mint rather than stored, so an oversized
+# path never occupies a ticket slot in the first place.
+MAX_TICKET_PATH_LENGTH = 4096
+
 tickets = {}  # ticket -> {'worker_id', 'path', 'ip', 'expires'}
 
 
 class TicketStoreFull(Exception):
+    pass
+
+
+class TicketPathTooLong(Exception):
     pass
 
 
@@ -50,11 +64,20 @@ def _sweep_tickets(now):
 
 
 def mint_ticket(worker_id, path, ip, now):
+    if len(path.encode('utf-8')) > MAX_TICKET_PATH_LENGTH:
+        raise TicketPathTooLong()
+
     _sweep_tickets(now)
     if len(tickets) >= MAX_TICKETS:
-        # A legitimate user holds a handful at once. Reaching the cap after
-        # a sweep means something is looping, so refuse rather than let the
-        # store grow without bound.
+        # Reaching the global cap after a sweep means something is looping,
+        # so refuse rather than let the store grow without bound.
+        raise TicketStoreFull()
+
+    per_worker = sum(1 for v in tickets.values()
+                     if v['worker_id'] == worker_id)
+    if per_worker >= MAX_TICKETS_PER_WORKER:
+        # Same refusal as the global cap: the caller cannot tell, from the
+        # response, which limit it hit, and does not need to.
         raise TicketStoreFull()
 
     ticket = Worker.gen_id()
@@ -65,6 +88,24 @@ def mint_ticket(worker_id, path, ip, now):
         'expires': now + TICKET_TTL,
     }
     return ticket
+
+
+def peek_ticket(ticket, ip, now):
+    """Validate a ticket without spending it, returning its claim or None.
+
+    Used to resolve the worker for the download concurrency check before
+    the ticket is consumed, so a request the cap rejects leaves the ticket
+    usable for a retry rather than burning a single-use credential on a
+    429. Applies the same expiry/address checks as consume_ticket, but
+    never removes the ticket -- callers that intend to act on the claim
+    must still call consume_ticket to actually redeem it.
+    """
+    claim = tickets.get(ticket)
+    if claim is None:
+        return None
+    if claim['expires'] < now or claim['ip'] != ip:
+        return None
+    return {'worker_id': claim['worker_id'], 'path': claim['path']}
 
 
 def consume_ticket(ticket, ip, now):

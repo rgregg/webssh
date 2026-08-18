@@ -2324,20 +2324,49 @@ class TestTicketStore(unittest.TestCase):
         self.assertGreaterEqual(len(a), 32)
 
     def test_minting_sweeps_expired_tickets(self):
+        # Ten distinct worker ids, one ticket each, so this exercises the
+        # sweep rather than the per-worker cap (which is below 10).
         for i in range(10):
-            worker.mint_ticket('wid', '/f{}'.format(i), '10.0.0.5', now=1000)
+            worker.mint_ticket('wid{}'.format(i), '/f{}'.format(i),
+                               '10.0.0.5', now=1000)
         self.assertEqual(len(worker.tickets), 10)
-        worker.mint_ticket('wid', '/fresh', '10.0.0.5',
+        worker.mint_ticket('fresh-wid', '/fresh', '10.0.0.5',
                            now=1000 + worker.TICKET_TTL + 1)
         # The ten stale ones are gone; only the fresh one remains.
         self.assertEqual(len(worker.tickets), 1)
 
     def test_minting_past_the_cap_raises_rather_than_growing(self):
+        # Spread across enough distinct worker ids that the per-worker cap
+        # is never hit before the global one -- this test is about the
+        # global cap, not the per-worker cap (covered separately below).
+        assert worker.MAX_TICKETS % worker.MAX_TICKETS_PER_WORKER == 0
+        n_workers = worker.MAX_TICKETS // worker.MAX_TICKETS_PER_WORKER
         for i in range(worker.MAX_TICKETS):
-            worker.mint_ticket('wid', '/f{}'.format(i), '10.0.0.5', now=1000)
+            wid = 'wid{}'.format(i % n_workers)
+            worker.mint_ticket(wid, '/f{}'.format(i), '10.0.0.5', now=1000)
         with self.assertRaises(worker.TicketStoreFull):
-            worker.mint_ticket('wid', '/overflow', '10.0.0.5', now=1000)
+            worker.mint_ticket('overflow-wid', '/overflow', '10.0.0.5',
+                               now=1000)
         self.assertEqual(len(worker.tickets), worker.MAX_TICKETS)
+
+    def test_per_worker_cap_blocks_the_ninth_ticket(self):
+        # The per-worker cap exists so one session cannot consume the
+        # global budget and lock out every other user; it must trip well
+        # before MAX_TICKETS, and it must not affect other workers.
+        for i in range(worker.MAX_TICKETS_PER_WORKER):
+            worker.mint_ticket('hog', '/f{}'.format(i), '10.0.0.5', now=1000)
+        with self.assertRaises(worker.TicketStoreFull):
+            worker.mint_ticket('hog', '/ninth', '10.0.0.5', now=1000)
+        # A different worker is unaffected by the first worker's cap.
+        other = worker.mint_ticket('other', '/g', '10.0.0.5', now=1000)
+        self.assertIsNotNone(
+            worker.consume_ticket(other, '10.0.0.5', now=1001))
+
+    def test_an_over_long_path_is_rejected_rather_than_stored(self):
+        long_path = '/' + ('a' * worker.MAX_TICKET_PATH_LENGTH)
+        with self.assertRaises(worker.TicketPathTooLong):
+            worker.mint_ticket('wid', long_path, '10.0.0.5', now=1000)
+        self.assertEqual(len(worker.tickets), 0)
 
     def test_dropping_a_workers_tickets_leaves_other_workers_alone(self):
         mine = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
@@ -2461,6 +2490,29 @@ class TestTransferTicketEndpoint(TransferTestBase):
                               body=json.dumps({}), headers=self.hdrs())
         self.assertEqual(response.code, 400)
 
+    def test_minting_rejects_the_token_in_the_query_string(self):
+        # Matches the other three transfer routes: the worker token is a
+        # header-only credential.
+        response = self.fetch(
+            '/transfer/ticket?id=tid', method='POST',
+            body=json.dumps({'path': '/home/ryan/a.txt'}),
+            headers={'Cookie': '_xsrf=yummy', 'X-Xsrftoken': 'yummy',
+                     'Content-Type': 'application/json'})
+        self.assertEqual(response.code, 404)
+
+    def test_minting_rejects_a_non_string_path(self):
+        # An unchecked path type mints fine and then blows up later at
+        # posixpath.basename() on download; catch it here instead.
+        response = self.fetch('/transfer/ticket', method='POST',
+                              body=json.dumps({'path': {'a': 1}}),
+                              headers=self.hdrs())
+        self.assertEqual(response.code, 400)
+
+    def test_minting_rejects_an_over_long_path(self):
+        long_path = '/' + ('a' * worker.MAX_TICKET_PATH_LENGTH)
+        response = self.mint(path=long_path)
+        self.assertEqual(response.code, 400)
+
 
 class TestTransferDownloadTicket(TransferTestBase):
 
@@ -2503,6 +2555,48 @@ class TestTransferDownloadTicket(TransferTestBase):
         self.assertEqual(
             self.fetch('/transfer/download', headers=self.headers).code, 404)
 
+    def test_the_404_body_does_not_distinguish_which_check_failed(self):
+        # An unknown ticket and a replayed (already-consumed) one must
+        # produce indistinguishable bodies, or a caller could use the
+        # response to tell a guess from a stale credential.
+        ticket = self.mint()
+        self.assertEqual(
+            self.fetch('/transfer/download?ticket=' + ticket,
+                       headers=self.headers).code, 200)
+        replayed = self.fetch('/transfer/download?ticket=' + ticket,
+                              headers=self.headers)
+        unknown = self.fetch('/transfer/download?ticket=nonsense',
+                             headers=self.headers)
+        self.assertEqual(replayed.code, 404)
+        self.assertEqual(unknown.code, 404)
+        replayed_body = json.loads(to_str(replayed.body))
+        unknown_body = json.loads(to_str(unknown.body))
+        self.assertEqual(replayed_body, unknown_body)
+        self.assertNotIn('ticket', to_str(replayed.body).lower())
+
+    def test_a_429_leaves_the_ticket_redeemable(self):
+        # The concurrency cap is checked before the ticket is consumed:
+        # a rejected download must not burn a single-use credential the
+        # user still needs for a retry.
+        cap = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
+        for _ in range(cap):
+            self.worker.begin_transfer()
+        self.addCleanup(lambda: [self.worker.end_transfer()
+                                 for _ in range(self.worker.transfers)])
+
+        ticket = self.mint()
+        capped = self.fetch('/transfer/download?ticket=' + ticket,
+                            headers=self.headers)
+        self.assertEqual(capped.code, 429)
+
+        for _ in range(cap):
+            self.worker.end_transfer()
+
+        retried = self.fetch('/transfer/download?ticket=' + ticket,
+                             headers=self.headers)
+        self.assertEqual(retried.code, 200)
+        self.assertEqual(retried.body, b'hello')
+
     def test_the_path_comes_from_the_ticket_not_the_query(self):
         # Otherwise a ticket for one file would authorise any file.
         ticket = self.mint('/home/ryan/a.txt')
@@ -2513,10 +2607,18 @@ class TestTransferDownloadTicket(TransferTestBase):
         self.assertEqual(response.body, b'hello')
 
     def test_a_ticket_is_useless_once_the_session_ends(self):
-        # The ticket itself is still valid, so this is the one redemption
-        # failure that reports 410 rather than 404.
+        # Worker.close() unregisters from live_workers and drops the
+        # worker's tickets in the same step (see worker.py), so a ticket
+        # for an ended session fails redemption as an unknown ticket (404)
+        # rather than ever reaching the handler's worker-closed/410 check.
+        # That 410 branch is defence in depth for a future code path that
+        # might set `closed` without also dropping tickets; it is not
+        # reachable via the real close() path exercised here.
         ticket = self.mint()
-        self.worker.closed = True
+        ip = self.worker.src_addr[0]
+        worker.clients[ip] = {self.worker.id: self.worker}
+        self.addCleanup(worker.clients.clear)
+        self.worker.close(reason='test')
         response = self.fetch('/transfer/download?ticket=' + ticket,
                               headers=self.headers)
-        self.assertEqual(response.code, 410)
+        self.assertEqual(response.code, 404)

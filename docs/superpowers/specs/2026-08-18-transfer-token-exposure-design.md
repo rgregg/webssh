@@ -74,6 +74,16 @@ tickets = {}   # ticket -> {'worker_id', 'path', 'ip', 'expires'}
 - **Hard cap.** `MAX_TICKETS = 256`. When the store is full *after* sweeping,
   minting fails with 503 rather than growing without bound. A legitimate user
   holds at most a handful at once; hitting the cap means something is looping.
+- **Per-worker cap.** `MAX_TICKETS_PER_WORKER = 8`. The global cap alone lets
+  one authenticated session (or a looping client) consume the entire budget
+  and return 503 to every other user's `/transfer/ticket` for up to
+  `TICKET_TTL`; the per-worker cap bounds one session's share of it. Both
+  caps surface as the same 503 — the caller does not need to know which one
+  it hit.
+- **Path length limit at mint.** `MAX_TICKET_PATH_LENGTH = 4096` (PATH_MAX on
+  Linux). A path longer than that is rejected with 400 and never stored,
+  so an oversized `path` cannot combine with the ticket cap to retain
+  disproportionate memory for up to `TICKET_TTL` seconds.
 - **Dropped with the worker.** `Worker.close()` removes any tickets belonging
   to it, so a ticket cannot outlive the session it authorises.
 
@@ -83,18 +93,28 @@ Every *ticket* failure returns **404** with no detail about which check
 failed, so a caller learns nothing about whether a ticket existed, expired, or
 belonged to someone else.
 
-The one exception is a valid ticket whose session has since ended, which
-returns **410** like the other transfer routes. That distinction leaks
-nothing an attacker could not already observe: holding a valid ticket means
-they already knew the worker existed.
+The concurrency cap is checked against the ticket's worker *before* the
+ticket is consumed, so a request rejected with 429 leaves the ticket usable
+for a retry rather than spending a single-use credential on a rejection.
 
 1. Ticket present and known, else 404.
-2. Not expired, else 404 (and drop it).
+2. Not expired, else 404.
 3. Client IP matches the minting IP, else 404.
-4. Consume it — remove before streaming, so a concurrent second use fails.
-5. The worker is still live and not closed, else 410.
-6. The path comes from the ticket, never from the query string, so a valid
+4. The worker is still live, else 404.
+5. The worker is not at the concurrency cap, else 429 — checked before the
+   ticket is consumed.
+6. Consume it — remove before streaming, so a concurrent second use fails.
+7. The path comes from the ticket, never from the query string, so a valid
    ticket cannot be redirected at another file.
+
+The handler also has a 410 branch ("the terminal session ended") for a
+worker found not live/closed, matching the other transfer routes. It is
+defence in depth, not reachable behaviour: `Worker.close()` unregisters the
+worker from `live_workers` and drops its tickets in the same step, so a
+ticket for an ended session always fails redemption at step 1 or 4 as an
+unknown/unresolvable ticket (404), never reaches the worker-closed check.
+The branch is kept for a future code path that might set `closed` without
+also dropping tickets.
 
 ## What does not change
 
@@ -130,16 +150,28 @@ Ticket lifecycle, tested directly against the store:
 - `Worker.close()` drops that worker's tickets and leaves others alone
 - the sweep reclaims expired entries so the cap is not reached by abandoned
   tickets
-- minting past the cap fails rather than growing the store
+- minting past the global cap fails rather than growing the store
+- minting past the per-worker cap fails while a different worker can still
+  mint
+- a path over `MAX_TICKET_PATH_LENGTH` is rejected at the API boundary
+  rather than stored
 
 Handler tests:
 
 - all three endpoints accept the token in `X-Worker-Id`
-- **all three reject the token supplied in the query string**, which is what
-  proves the leak is closed rather than merely unused
+- **all four routes reject the token/ticket supplied via `?id=`**, which is
+  what proves the leak is closed rather than merely unused (including
+  `/transfer/ticket` itself)
 - redemption failures are 404 and carry no detail about which check failed
+  (the body does not distinguish an unknown, expired, or mismatched ticket)
 - the download path comes from the ticket, so a ticket plus a different
   `?path=` still downloads the ticketed file
+- a non-string `path` in the mint payload is rejected with 400 rather than
+  minting a ticket that later 500s
+- a download rejected with 429 (concurrency cap) leaves the ticket
+  redeemable for a retry
+- a closed session's ticket now fails redemption via `Worker.close()`
+  (404, an unresolvable ticket), not by setting `worker.closed` directly
 
 ## Constraints
 

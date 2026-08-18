@@ -23,7 +23,7 @@ from webssh.utils import (
     is_valid_encoding
 )
 from webssh.worker import (
-    Worker, recycle_worker, clients, live_workers, register_live_worker  # noqa
+    Worker, recycle_worker, clients, register_live_worker  # noqa
 )
 from webssh import worker as worker_module
 from webssh.settings import max_upload_size
@@ -987,7 +987,7 @@ class TransferMixin(MixinHandler):
         if not worker_id:
             raise tornado.web.HTTPError(404)
 
-        worker = live_workers.get(worker_id)
+        worker = worker_module.live_workers.get(worker_id)
         if worker is None:
             raise tornado.web.HTTPError(404)
 
@@ -1083,13 +1083,18 @@ class TransferTicketHandler(TransferMixin, tornado.web.RequestHandler):
         if not isinstance(payload, dict):
             raise tornado.web.HTTPError(400, 'Invalid JSON')
 
-        path = payload.get('path') or ''
+        path = payload.get('path')
+        if path is not None and not isinstance(path, str):
+            raise tornado.web.HTTPError(400, 'Invalid path')
+        path = path or ''
         if not path:
             raise tornado.web.HTTPError(400, 'Missing path')
 
         try:
             ticket = worker_module.mint_ticket(
                 live.id, path, self.get_client_addr()[0], time.time())
+        except worker_module.TicketPathTooLong:
+            raise tornado.web.HTTPError(400, 'Path too long')
         except worker_module.TicketStoreFull:
             logging.warning('Download ticket store full; refusing to mint')
             raise tornado.web.HTTPError(503, 'Too many pending downloads.')
@@ -1118,22 +1123,43 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
         # route authenticates with a single-use ticket instead. Both the
         # worker and the path come from the ticket: a ticket for one file
         # must not authorise another.
-        claim = worker_module.consume_ticket(
-            self.get_argument('ticket', ''),
-            self.get_client_addr()[0], time.time())
+        #
+        # The ticket is only *peeked* here, not consumed: the worker it
+        # names is needed for the concurrency check below, and if that
+        # check rejects the request with 429, the ticket must still be
+        # usable for a retry rather than having been spent on a rejection.
+        # It is consumed for real, below, only once the request is known
+        # to proceed.
+        ticket = self.get_argument('ticket', '')
+        ip = self.get_client_addr()[0]
+        now = time.time()
+        claim = worker_module.peek_ticket(ticket, ip, now)
         if claim is None:
             raise tornado.web.HTTPError(404)
 
-        worker = live_workers.get(claim['worker_id'])
+        worker = worker_module.live_workers.get(claim['worker_id'])
         if worker is None:
             raise tornado.web.HTTPError(404)
         if worker.closed:
+            # Kept as defence in depth: Worker.close() unregisters from
+            # live_workers and drops the worker's tickets in the same
+            # step, so in practice a closed session's tickets always fail
+            # the live_workers.get() above (or peek_ticket itself, once
+            # consumed) and this branch is not reachable while that
+            # invariant holds. It exists for a future code path that might
+            # set `closed` without dropping tickets.
             raise tornado.web.HTTPError(410, 'The terminal session ended.')
-
-        path = claim['path']
 
         if worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
             raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
+
+        # The request is proceeding: spend the ticket now. Re-validates
+        # expiry/address rather than trusting the peek above, so a ticket
+        # that happened to expire in between is still refused correctly.
+        claim = worker_module.consume_ticket(ticket, ip, now)
+        if claim is None:
+            raise tornado.web.HTTPError(404)
+        path = claim['path']
 
         try:
             disposition = content_disposition(posixpath.basename(path))
