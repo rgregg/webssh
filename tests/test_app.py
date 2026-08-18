@@ -1484,9 +1484,18 @@ class TestContentDisposition(unittest.TestCase):
 
 class TestTransferDownload(TransferTestBase):
 
+    def mint(self, path='/home/ryan/a.txt'):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        h['X-Xsrftoken'] = 'yummy'
+        h['Content-Type'] = 'application/json'
+        response = self.fetch('/transfer/ticket', method='POST',
+                              body=json.dumps({'path': path}), headers=h)
+        return json.loads(to_str(response.body))['ticket']
+
     def test_streams_the_file_with_an_attachment_header(self):
-        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
-                              headers=self.hdrs())
+        response = self.fetch(
+            '/transfer/download?ticket=' + self.mint(), headers=self.headers)
         self.assertEqual(response.code, 200)
         self.assertEqual(response.body, b'hello')
         disposition = response.headers['Content-Disposition']
@@ -1494,30 +1503,36 @@ class TestTransferDownload(TransferTestBase):
         self.assertIn('a.txt', disposition)
 
     def test_missing_file_is_404(self):
-        response = self.fetch('/transfer/download?path=/home/ryan/no.txt',
-                              headers=self.hdrs())
+        response = self.fetch(
+            '/transfer/download?ticket=' + self.mint('/home/ryan/no.txt'),
+            headers=self.headers)
         self.assertEqual(response.code, 404)
 
     def test_directory_is_400(self):
-        response = self.fetch('/transfer/download?path=/home/ryan',
-                              headers=self.hdrs())
+        response = self.fetch(
+            '/transfer/download?ticket=' + self.mint('/home/ryan'),
+            headers=self.headers)
         self.assertEqual(response.code, 400)
 
     def test_wrong_client_ip_is_404(self):
-        self.worker.src_addr = ('203.0.113.7', 1234)
-        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
-                              headers=self.hdrs())
+        # A ticket is bound to the address that minted it; redeeming it from
+        # a different address must fail exactly like an unknown ticket.
+        ticket = self.mint()
+        worker.tickets[ticket]['ip'] = '203.0.113.7'
+        response = self.fetch(
+            '/transfer/download?ticket=' + ticket, headers=self.headers)
         self.assertEqual(response.code, 404)
 
     def test_transfer_counter_is_released_after_the_download(self):
-        self.fetch('/transfer/download?path=/home/ryan/a.txt',
-                   headers=self.hdrs())
+        self.fetch(
+            '/transfer/download?ticket=' + self.mint(), headers=self.headers)
         self.assertEqual(self.worker.transfers, 0)
 
     def test_concurrency_cap_returns_429(self):
+        ticket = self.mint()
         self.worker.transfers = handler.TransferMixin.MAX_CONCURRENT_TRANSFERS
-        response = self.fetch('/transfer/download?path=/home/ryan/a.txt',
-                              headers=self.hdrs())
+        response = self.fetch(
+            '/transfer/download?ticket=' + ticket, headers=self.headers)
         self.assertEqual(response.code, 429)
 
 
@@ -2181,10 +2196,18 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
             (i % 251) for i in range(transfer.CHUNK_SIZE * 2 + 7)))
         self.sftp.files['/home/ryan/big.bin'] = self.payload
 
+    def mint(self, path='/home/ryan/big.bin'):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        h['X-Xsrftoken'] = 'yummy'
+        h['Content-Type'] = 'application/json'
+        response = self.fetch('/transfer/ticket', method='POST',
+                              body=json.dumps({'path': path}), headers=h)
+        return json.loads(to_str(response.body))['ticket']
+
     def test_a_file_larger_than_one_chunk_arrives_intact(self):
         response = self.fetch(
-            '/transfer/download?path=/home/ryan/big.bin',
-            headers=self.hdrs())
+            '/transfer/download?ticket=' + self.mint(), headers=self.headers)
         self.assertEqual(response.code, 200)
         # Download.read returns at most CHUNK_SIZE, so a body this size
         # proves the loop ran more than once and reassembled in order.
@@ -2195,8 +2218,7 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
         # A mismatch here would leave the browser waiting for bytes that
         # never come, or truncating a file it believes is complete.
         response = self.fetch(
-            '/transfer/download?path=/home/ryan/big.bin',
-            headers=self.hdrs())
+            '/transfer/download?ticket=' + self.mint(), headers=self.headers)
         self.assertEqual(int(response.headers['Content-Length']),
                          len(self.payload))
 
@@ -2438,3 +2460,63 @@ class TestTransferTicketEndpoint(TransferTestBase):
         response = self.fetch('/transfer/ticket', method='POST',
                               body=json.dumps({}), headers=self.hdrs())
         self.assertEqual(response.code, 400)
+
+
+class TestTransferDownloadTicket(TransferTestBase):
+
+    def mint(self, path='/home/ryan/a.txt'):
+        h = dict(self.headers)
+        h['X-Worker-Id'] = 'tid'
+        h['X-Xsrftoken'] = 'yummy'
+        h['Content-Type'] = 'application/json'
+        response = self.fetch('/transfer/ticket', method='POST',
+                              body=json.dumps({'path': path}), headers=h)
+        return json.loads(to_str(response.body))['ticket']
+
+    def test_a_ticket_downloads_the_file(self):
+        response = self.fetch(
+            '/transfer/download?ticket=' + self.mint(), headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(response.body, b'hello')
+
+    def test_the_worker_token_no_longer_works_for_download(self):
+        response = self.fetch(
+            '/transfer/download?id=tid&path=/home/ryan/a.txt',
+            headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_a_ticket_cannot_be_replayed(self):
+        ticket = self.mint()
+        self.assertEqual(
+            self.fetch('/transfer/download?ticket=' + ticket,
+                       headers=self.headers).code, 200)
+        self.assertEqual(
+            self.fetch('/transfer/download?ticket=' + ticket,
+                       headers=self.headers).code, 404)
+
+    def test_an_unknown_ticket_is_404(self):
+        response = self.fetch('/transfer/download?ticket=nonsense',
+                              headers=self.headers)
+        self.assertEqual(response.code, 404)
+
+    def test_a_missing_ticket_is_404(self):
+        self.assertEqual(
+            self.fetch('/transfer/download', headers=self.headers).code, 404)
+
+    def test_the_path_comes_from_the_ticket_not_the_query(self):
+        # Otherwise a ticket for one file would authorise any file.
+        ticket = self.mint('/home/ryan/a.txt')
+        response = self.fetch(
+            '/transfer/download?ticket=' + ticket + '&path=/etc/shadow',
+            headers=self.headers)
+        self.assertEqual(response.code, 200)
+        self.assertEqual(response.body, b'hello')
+
+    def test_a_ticket_is_useless_once_the_session_ends(self):
+        # The ticket itself is still valid, so this is the one redemption
+        # failure that reports 410 rather than 404.
+        ticket = self.mint()
+        self.worker.closed = True
+        response = self.fetch('/transfer/download?ticket=' + ticket,
+                              headers=self.headers)
+        self.assertEqual(response.code, 410)

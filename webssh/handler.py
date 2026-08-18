@@ -1114,8 +1114,23 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
 
     @tornado.gen.coroutine
     def get(self):
-        worker = self.get_live_worker()
-        path = self.get_path()
+        # A browser navigation cannot carry the X-Worker-Id header, so this
+        # route authenticates with a single-use ticket instead. Both the
+        # worker and the path come from the ticket: a ticket for one file
+        # must not authorise another.
+        claim = worker_module.consume_ticket(
+            self.get_argument('ticket', ''),
+            self.get_client_addr()[0], time.time())
+        if claim is None:
+            raise tornado.web.HTTPError(404)
+
+        worker = live_workers.get(claim['worker_id'])
+        if worker is None:
+            raise tornado.web.HTTPError(404)
+        if worker.closed:
+            raise tornado.web.HTTPError(410, 'The terminal session ended.')
+
+        path = claim['path']
 
         if worker.transfers >= self.MAX_CONCURRENT_TRANSFERS:
             raise tornado.web.HTTPError(429, 'Too many transfers in progress.')
