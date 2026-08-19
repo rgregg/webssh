@@ -4,6 +4,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import Future
 from unittest import mock
@@ -2317,6 +2318,31 @@ class TestTicketStore(unittest.TestCase):
         self.assertIsNone(worker.consume_ticket('never-minted', '1.2.3.4',
                                                 now=1000))
 
+    def test_a_wrong_address_peek_burns_the_ticket(self):
+        # peek_ticket exists so a 429 does not spend the ticket, but a
+        # wrong-address attempt must still burn it exactly as consume_ticket
+        # does -- otherwise an attacker holding a leaked ticket gets a free
+        # retry from every address they control within the TTL.
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        self.assertIsNone(worker.peek_ticket(t, '203.0.113.9', now=1001))
+        # The ticket is gone even for the address it was actually minted for.
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=1002))
+
+    def test_an_expired_peek_burns_the_ticket(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        after = 1000 + worker.TICKET_TTL + 1
+        self.assertIsNone(worker.peek_ticket(t, '10.0.0.5', now=after))
+        self.assertIsNone(worker.consume_ticket(t, '10.0.0.5', now=after))
+
+    def test_a_successful_peek_leaves_the_ticket_redeemable(self):
+        t = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
+        claim = worker.peek_ticket(t, '10.0.0.5', now=1001)
+        self.assertEqual(claim['worker_id'], 'wid')
+        self.assertEqual(claim['path'], '/f')
+        redeemed = worker.consume_ticket(t, '10.0.0.5', now=1002)
+        self.assertEqual(redeemed['worker_id'], 'wid')
+        self.assertEqual(redeemed['path'], '/f')
+
     def test_tickets_are_unguessable_and_distinct(self):
         a = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
         b = worker.mint_ticket('wid', '/f', '10.0.0.5', now=1000)
@@ -2596,6 +2622,25 @@ class TestTransferDownloadTicket(TransferTestBase):
                              headers=self.headers)
         self.assertEqual(retried.code, 200)
         self.assertEqual(retried.body, b'hello')
+
+    def test_a_wrong_address_download_cannot_be_retried_from_the_right_one(self):
+        # Regression coverage: TransferDownloadHandler.get() peeks the
+        # ticket before the concurrency check, then consumes it for real.
+        # A wrong-address attempt must burn the ticket at the peek, or an
+        # attacker holding a leaked ticket gets a free guess from every
+        # address they control within the TTL.
+        ticket = worker.mint_ticket(self.worker.id, '/home/ryan/a.txt',
+                                    '203.0.113.7', time.time())
+        # Our test client's real address (127.0.0.1) does not match the
+        # address the ticket was minted for, simulating an attacker who
+        # intercepted the ticket but is not the legitimate holder.
+        wrong = self.fetch('/transfer/download?ticket=' + ticket,
+                           headers=self.headers)
+        self.assertEqual(wrong.code, 404)
+        # Even the legitimate address can no longer redeem it -- the
+        # wrong-address attempt already burned it.
+        self.assertIsNone(
+            worker.consume_ticket(ticket, '203.0.113.7', time.time()))
 
     def test_the_path_comes_from_the_ticket_not_the_query(self):
         # Otherwise a ticket for one file would authorise any file.

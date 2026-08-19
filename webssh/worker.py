@@ -96,15 +96,24 @@ def peek_ticket(ticket, ip, now):
     Used to resolve the worker for the download concurrency check before
     the ticket is consumed, so a request the cap rejects leaves the ticket
     usable for a retry rather than burning a single-use credential on a
-    429. Applies the same expiry/address checks as consume_ticket, but
-    never removes the ticket -- callers that intend to act on the claim
-    must still call consume_ticket to actually redeem it.
+    429.
+
+    Despite the name, this pops the ticket before comparing, exactly like
+    consume_ticket: an address mismatch (or expiry) must still burn it, or
+    an attacker holding a leaked ticket gets a free retry from every
+    address they control within the TTL. The difference from consume_ticket
+    is only what happens on success -- the claim is valid, so the ticket is
+    restored to the store instead of staying popped, leaving it live for
+    the real consume_ticket call once the caller decides to proceed. Do not
+    "simplify" this to tickets.get(): that reopens the retry-from-anywhere
+    hole this function exists to close.
     """
-    claim = tickets.get(ticket)
+    claim = tickets.pop(ticket, None)
     if claim is None:
         return None
     if claim['expires'] < now or claim['ip'] != ip:
         return None
+    tickets[ticket] = claim
     return {'worker_id': claim['worker_id'], 'path': claim['path']}
 
 
