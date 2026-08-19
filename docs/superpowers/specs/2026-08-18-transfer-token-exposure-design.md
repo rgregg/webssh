@@ -118,6 +118,14 @@ also dropping tickets.
 
 ## What does not change
 
+- **A failed download navigates to the error body.** `window.location` on a
+  download that fails shows the JSON error rather than a styled page — most
+  visibly when an expired ticket is reloaded from browser history, which used
+  to re-download and now cannot. Reviewed and deliberately left alone: the
+  behaviour predates tickets, the error text is readable, and the alternatives
+  (probing with a HEAD request first, or returning HTML from this one route)
+  cost more than the annoyance is worth.
+
 - **`ws?id=` keeps its token in the URL.** It predates this feature, it works
   differently — the token is consumed at attach and nulled in `clients` — and
   changing it would touch the connection path. Recorded as a decision, not an
