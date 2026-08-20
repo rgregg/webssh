@@ -29,8 +29,12 @@ STRING_SETTINGS = ('last_hostname', 'last_username')
 def get_user_data_dir(base_dir, username):
     sanitize_username(username)
     user_dir = os.path.join(base_dir, username)
-    real_base = os.path.realpath(base_dir)
-    real_user = os.path.realpath(user_dir)
+    try:
+        real_base = os.path.realpath(base_dir)
+        real_user = os.path.realpath(user_dir)
+    except OSError:
+        # Callers only ever catch ValueError from this function.
+        raise ValueError('Invalid username.')
     if not real_user.startswith(real_base + os.sep):
         raise ValueError('Invalid username.')
     return real_user

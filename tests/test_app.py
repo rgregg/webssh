@@ -2,6 +2,7 @@ import errno
 import json
 import os
 import random
+import shutil
 import tempfile
 import threading
 import time
@@ -935,6 +936,7 @@ class UserDataTestBase(TestAppBase):
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.data_dir, ignore_errors=True)
         self.override_options(
             debug=False,
             xsrf=True,
@@ -1276,6 +1278,7 @@ class TestUserHostKeyIsolation(TestAppBase):
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.data_dir, ignore_errors=True)
         self.override_options(
             debug=False,
             xsrf=True,

@@ -198,16 +198,12 @@ def start_config_watcher(config_path, live_config, host_keys_settings,
 def check_user_hosts_configuration(user_hosts, user_data_dir, tdstream=''):
     """Warn (and validate the directory) when user_hosts is enabled.
 
-    Split out of main() so the "enabled but unconfigured" warning can be
-    exercised directly in tests without going through the full startup path.
+    Split out of main() so the checks can be exercised directly in tests
+    without going through the full startup path. The "enabled but
+    unconfigured" warning itself lives in check_user_data_dir, which
+    already owns the empty-directory decision.
     """
     if not user_hosts:
-        return
-    if not user_data_dir:
-        logging.warning(
-            'user_hosts is enabled but no userdatadir or userkeydir '
-            'is configured, so user host management is disabled.'
-        )
         return
     check_user_data_dir(user_data_dir, tdstream)
 
