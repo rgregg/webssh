@@ -828,7 +828,7 @@ class UserDataMixin(object):
         return self.live_config.get('allowed_hosts', self._allowed_hosts) or []
 
     def check_feature_enabled(self):
-        if not self.user_hosts_enabled or not self.user_data_dir:
+        if not self.user_hosts_enabled:
             raise tornado.web.HTTPError(
                 403, 'User host management is not enabled.')
 
