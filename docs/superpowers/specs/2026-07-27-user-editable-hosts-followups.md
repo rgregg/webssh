@@ -5,6 +5,11 @@ deliberately deferred rather than fixed before merge. None blocks merge. They ar
 recorded here so the judgement is available later; delete this file once it has
 been triaged.
 
+**Audited against the code on 2026-08-20.** Everything below still applies
+except the struck-through items. The file-transfer work (PRs #30-#33) resolved
+the JavaScript harness gap and, separately, fixed two test-isolation defects of
+exactly the kind the Tests section describes.
+
 Items fixed before merge are not listed. The security defect found by the final
 whole-branch review — user host key pins leaking into a process-global paramiko
 store — was fixed in `e1b184f` and is covered by tests.
@@ -53,7 +58,8 @@ store — was fixed in `e1b184f` and is covered by tests.
   form; a stale `current` value can select a different host.
 - **`get_xsrf_token` reads the cookie with a regex**, which is more fragile than
   the existing `$('input[name="_xsrf"]').val()` idiom already used elsewhere in
-  `main.js`.
+  `main.js`. Now slightly higher stakes: `transfer-ui.js` reuses this helper via
+  `wssh.get_xsrf_token`, so uploads and download tickets depend on it too.
 - **Residual narrow race in preference flushing.** A connect that arms a new flush
   while the settings pane's PUTs are in flight can be stomped by the pane's
   response rebind. Window is a few hundred milliseconds.
@@ -92,11 +98,12 @@ store — was fixed in `e1b184f` and is covered by tests.
   though both share `_read_json`.
 - **No dedicated test for the non-numeric-port `ValueError` path**, which was the
   one sanctioned behaviour change in the initial refactor.
-- **No JavaScript test harness exists in this repository.** A large fraction of
-  this feature is client-side and therefore has no automated coverage; it was
-  verified by code review plus three scripted browser passes. Introducing a JS
-  harness would be the single largest durable improvement to this feature's
-  safety net.
+- ~~**No JavaScript test harness exists in this repository.**~~ Fixed, and it
+  was indeed the largest durable improvement: `tests/js/` now runs 67
+  dependency-free `node --test` cases across `user-hosts.js` and
+  `file-transfer.js`, with a CI job on Node 20, 22, and 24. `scripts/check_es5.js`
+  additionally enforces the ES5 constraint that was previously upheld by review
+  alone.
 
 ## Lint modernisation backlog
 
