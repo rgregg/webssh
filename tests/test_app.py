@@ -119,7 +119,7 @@ class TestSuiteLeavesOptionsClean(unittest.TestCase):
 
     watched = ('debug', 'xsrf', 'policy', 'hostfile', 'syshostfile',
                'tdstream', 'origin', 'user_hosts', 'userdatadir',
-               'userheader', 'config', 'maxconn')
+               'userheader', 'config', 'maxconn', 'shell_integration')
 
     def assert_no_leak(self, cls):
         before = {}
@@ -138,6 +138,13 @@ class TestSuiteLeavesOptionsClean(unittest.TestCase):
 
     def test_user_host_key_isolation_leaves_options_clean(self):
         self.assert_no_leak(TestUserHostKeyIsolation)
+
+    def test_other_test_base_leaves_options_clean(self):
+        # OtherTestBase is the widest mutator in the suite -- ten globals,
+        # including a randomised policy -- and every connection test class
+        # derives from it. A leak here is what made the rest of the suite
+        # pass by execution order rather than construction.
+        self.assert_no_leak(TestAppInDebugMode)
 
     def test_user_data_api_leaves_options_clean(self):
         self.assert_no_leak(TestUserDataApi)
@@ -648,18 +655,22 @@ class OtherTestBase(TestAppBase):
     def get_app(self):
         self.body.update(port=str(self.sshserver_port))
         loop = self.io_loop
-        options.debug = self.debug
-        options.xsrf = self.xsrf
-        options.policy = self.policy if self.policy else random.choice(['warning', 'autoadd'])  # noqa
-        options.hostfile = self.hostfile
-        options.syshostfile = self.syshostfile
-        options.tdstream = self.tdstream
-        options.maxconn = self.maxconn
-        options.origin = self.origin
-        # The fake SSH server echoes raw bytes rather than behaving like a
-        # real shell, so the injected snippet would show up as regular
-        # channel data and desync these protocol-level assertions.
-        options.shell_integration = False
+        self.override_options(
+            debug=self.debug,
+            xsrf=self.xsrf,
+            policy=(self.policy if self.policy
+                    else random.choice(['warning', 'autoadd'])),
+            hostfile=self.hostfile,
+            syshostfile=self.syshostfile,
+            tdstream=self.tdstream,
+            maxconn=self.maxconn,
+            origin=self.origin,
+            # The fake SSH server echoes raw bytes rather than behaving
+            # like a real shell, so the injected snippet would show up as
+            # regular channel data and desync these protocol-level
+            # assertions.
+            shell_integration=False,
+        )
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -2667,3 +2678,53 @@ class TestTransferDownloadTicket(TransferTestBase):
         response = self.fetch('/transfer/download?ticket=' + ticket,
                               headers=self.headers)
         self.assertEqual(response.code, 404)
+
+
+class TestEffectiveHostsMemoized(TransferTestBase):
+    """A connect POST asks for the effective host list twice -- once for the
+    allowlist check, once for host-key pinning. Each miss re-reads and
+    re-parses hosts.json from disk, synchronously on the IOLoop thread."""
+
+    def make_handler(self):
+        instance = handler.IndexHandler.__new__(handler.IndexHandler)
+        instance.allowed_hosts = [
+            {'hostname': 'admin.lan', 'port': 22, 'host_keys': []}]
+        instance._effective_hosts = None
+        return instance
+
+    def test_the_user_host_file_is_read_once_per_request(self):
+        instance = self.make_handler()
+        reads = []
+
+        def counting_read():
+            reads.append(1)
+            return [{'hostname': 'user.lan', 'port': 22}]
+
+        instance.get_user_hosts = counting_read
+
+        first = instance.get_effective_hosts()
+        second = instance.get_effective_hosts()
+
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(first, second)
+
+    def test_the_memoized_result_still_merges_admin_and_user_hosts(self):
+        instance = self.make_handler()
+        instance.get_user_hosts = lambda: [
+            {'hostname': 'user.lan', 'port': 22}]
+        names = [h['hostname'] for h in instance.get_effective_hosts()]
+        self.assertEqual(names, ['admin.lan', 'user.lan'])
+
+    def test_a_fresh_request_does_not_reuse_another_requests_cache(self):
+        # Tornado builds a handler per request, so the cache must live on
+        # the instance and not leak across them.
+        one = self.make_handler()
+        one.get_user_hosts = lambda: [{'hostname': 'one.lan', 'port': 22}]
+        self.assertIn('one.lan',
+                      [h['hostname'] for h in one.get_effective_hosts()])
+
+        two = self.make_handler()
+        two.get_user_hosts = lambda: [{'hostname': 'two.lan', 'port': 22}]
+        names = [h['hostname'] for h in two.get_effective_hosts()]
+        self.assertIn('two.lan', names)
+        self.assertNotIn('one.lan', names)

@@ -364,6 +364,9 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
+    # Per-request cache for get_effective_hosts. See its comment.
+    _effective_hosts = None
+
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
                    user_key_dir='', user_header='X-Authentik-Username',
                    user_data_dir='', user_hosts_enabled=False,
@@ -481,6 +484,14 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             return []
 
     def get_effective_hosts(self):
+        # Memoized per request. A connect POST asks twice -- once for the
+        # allowlist check, once for host-key pinning -- and each miss
+        # re-reads and re-parses hosts.json from disk, synchronously on
+        # the IOLoop thread. Tornado builds a handler per request, so an
+        # instance attribute is per-request by construction.
+        if self._effective_hosts is not None:
+            return self._effective_hosts
+
         admin = self.allowed_hosts
         seen = set((h['hostname'], h['port']) for h in admin)
         merged = list(admin)
@@ -497,6 +508,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                 continue
             if (hostname, port) not in seen:
                 merged.append(host)
+        self._effective_hosts = merged
         return merged
 
     def check_allowed_hosts(self, hostname, port):
