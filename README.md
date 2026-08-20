@@ -77,6 +77,15 @@ userheader: X-Authentik-Username
 # Trusted proxy IPs (required when userkeydir is set)
 trusted_proxies:
   - 10.0.0.1
+
+# Disconnect sessions idle this many seconds (default: 1800, 0 disables).
+# A file transfer in progress holds this off, so a long download does not
+# drop the terminal it is running on.
+idle_timeout: 1800
+
+# Ask the remote shell to report its working directory, so files dropped on
+# the terminal land where you are (default: true)
+shell_integration: true
 ```
 
 See [config.yaml.example](config.yaml.example) for all options.
@@ -158,8 +167,10 @@ Downloads are authorised by a single-use ticket that expires after a minute
 and is tied to your address, so the link in your browser's download history
 cannot be reused.
 
-Transfers are capped at three at a time per session, and are cancelled if the
-terminal tab is closed.
+Uploads are capped at 512 MB, and transfers at three at a time per session.
+Transfers are cancelled if the terminal tab is closed. A transfer in progress
+holds off the idle timeout, so a long one will not drop the terminal it is
+running on.
 
 ### Docker Compose
 
