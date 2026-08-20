@@ -328,6 +328,9 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
 
     def _make_handler(self, allowed_hosts=None):
         handler_obj = Mock(spec=IndexHandler)
+        # A real handler starts with an empty per-request cache;
+        # a Mock would otherwise hand back a Mock for it.
+        handler_obj._effective_hosts = None
         handler_obj.allowed_hosts = allowed_hosts or []
         handler_obj.get_user_hosts = lambda: []
         handler_obj.get_effective_hosts = lambda: \
@@ -394,6 +397,9 @@ class TestLoadConfiguredHostKey(unittest.TestCase):
 
     def _make_handler(self, allowed_hosts):
         handler_obj = Mock(spec=IndexHandler)
+        # A real handler starts with an empty per-request cache;
+        # a Mock would otherwise hand back a Mock for it.
+        handler_obj._effective_hosts = None
         handler_obj.allowed_hosts = allowed_hosts
         handler_obj.get_effective_hosts = lambda: \
             IndexHandler.get_effective_hosts(handler_obj)
@@ -465,6 +471,9 @@ class TestLoadConfiguredHostKey(unittest.TestCase):
 class TestIndexHandler(unittest.TestCase):
     def test_null_in_encoding(self):
         handler = Mock(spec=IndexHandler)
+        # A real handler starts with an empty per-request cache;
+        # a Mock would otherwise hand back a Mock for it.
+        handler._effective_hosts = None
 
         # This is a little nasty, but the index handler has a lot of
         # dependencies to mock. Mocking out everything but the bits
@@ -497,6 +506,9 @@ class TestIndexHandlerStoredKey(unittest.TestCase):
 
     def _make_handler(self, headers=None, arguments=None):
         handler_obj = Mock(spec=IndexHandler)
+        # A real handler starts with an empty per-request cache;
+        # a Mock would otherwise hand back a Mock for it.
+        handler_obj._effective_hosts = None
         handler_obj.user_key_dir = self.tmpdir
         handler_obj.user_header = 'X-Authentik-Username'
         handler_obj.policy = Mock()
