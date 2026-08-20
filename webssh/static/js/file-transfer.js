@@ -67,9 +67,11 @@ var webssh_transfer = (function () {
     return value.toFixed(1) + ' ' + UNITS[unit];
   }
 
-  function upload_url(id, path, filename, overwrite) {
-    var url = '/transfer/upload?id=' + encodeURIComponent(id) +
-      '&path=' + encodeURIComponent(path) +
+  // Neither builder takes a worker id: the token travels in the
+  // X-Worker-Id header for upload, and the download is authorised by a
+  // single-use ticket instead.
+  function upload_url(path, filename, overwrite) {
+    var url = '/transfer/upload?path=' + encodeURIComponent(path) +
       '&filename=' + encodeURIComponent(filename);
     if (overwrite) {
       url = url + '&overwrite=true';
@@ -77,9 +79,8 @@ var webssh_transfer = (function () {
     return url;
   }
 
-  function download_url(id, path) {
-    return '/transfer/download?id=' + encodeURIComponent(id) +
-      '&path=' + encodeURIComponent(path);
+  function download_url(ticket) {
+    return '/transfer/download?ticket=' + encodeURIComponent(ticket);
   }
 
   // Splits what the user typed into the directory to list and the fragment

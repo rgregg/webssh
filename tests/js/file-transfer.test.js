@@ -50,22 +50,26 @@ test('format_bytes produces short human units', function () {
   assert.strictEqual(ft.format_bytes(3221225472), '3.0 GB');
 });
 
-test('upload_url encodes every component', function () {
-  var url = ft.upload_url('wid', '/tmp/a b', 'a b.txt', false);
-  assert.ok(url.indexOf('id=wid') !== -1);
+test('upload_url no longer carries the worker token', function () {
+  // The token authorises the whole session; a URL copy would persist in
+  // access logs. It travels in the X-Worker-Id header instead.
+  var url = ft.upload_url('/tmp/a b', 'a b.txt', false);
+  assert.strictEqual(url.indexOf('id='), -1);
   assert.ok(url.indexOf('path=%2Ftmp%2Fa%20b') !== -1);
   assert.ok(url.indexOf('filename=a%20b.txt') !== -1);
   assert.strictEqual(url.indexOf('overwrite=true'), -1);
 });
 
 test('upload_url sets overwrite only when asked', function () {
-  assert.ok(ft.upload_url('w', '/t', 'f', true).indexOf('overwrite=true') !== -1);
+  assert.ok(ft.upload_url('/t', 'f', true).indexOf('overwrite=true') !== -1);
 });
 
-test('download_url encodes the path', function () {
-  var url = ft.download_url('wid', '/tmp/a b');
+test('download_url carries only the ticket', function () {
+  var url = ft.download_url('tick et/+value');
   assert.ok(url.indexOf('/transfer/download?') === 0);
-  assert.ok(url.indexOf('path=%2Ftmp%2Fa%20b') !== -1);
+  assert.ok(url.indexOf('ticket=tick%20et%2F%2Bvalue') !== -1);
+  assert.strictEqual(url.indexOf('id='), -1);
+  assert.strictEqual(url.indexOf('path='), -1);
 });
 
 test('split_path splits at the last slash', function () {

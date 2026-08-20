@@ -154,6 +154,10 @@ filters the listing to names containing what you typed, and typing or
 clicking a directory moves to it. Long listings are capped at 1000 entries,
 and the picker says so when the cap applies.
 
+Downloads are authorised by a single-use ticket that expires after a minute
+and is tied to your address, so the link in your browser's download history
+cannot be reused.
+
 Transfers are capped at three at a time per session, and are cancelled if the
 terminal tab is closed.
 

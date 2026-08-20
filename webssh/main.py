@@ -11,7 +11,8 @@ from webssh import handler
 from webssh.handler import (
     IndexHandler, WsockHandler, NotFoundHandler, UserKeyHandler,
     UserHostsHandler, UserSettingsHandler, SettingsPaneHandler,
-    TransferListHandler, TransferDownloadHandler, TransferUploadHandler
+    TransferListHandler, TransferDownloadHandler, TransferUploadHandler,
+    TransferTicketHandler
 )
 from webssh.policy import get_policy_class
 from webssh.settings import (
@@ -67,6 +68,7 @@ def make_handlers(loop, options, live_config=None):
         (r'/transfer/list', TransferListHandler, transfer_kwargs),
         (r'/transfer/download', TransferDownloadHandler, transfer_kwargs),
         (r'/transfer/upload', TransferUploadHandler, transfer_kwargs),
+        (r'/transfer/ticket', TransferTicketHandler, transfer_kwargs),
         (r'/ws', WsockHandler, dict(loop=loop)),
         (r'/api/hosts', UserHostsHandler, user_data_kwargs),
         (r'/api/settings', UserSettingsHandler, user_data_kwargs),
