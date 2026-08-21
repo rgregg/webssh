@@ -167,6 +167,23 @@ class TestRoundTrip(unittest.TestCase):
             json.dump({'version': 1, 'hosts': 'not-a-list'}, f)
         self.assertEqual(read_hosts(self.base, 'alice'), [])
 
+    def test_read_corrupt_settings_returns_empty(self):
+        # hosts.json and settings.json both go through the same
+        # _read_json helper; this is the settings.json half of
+        # test_read_corrupt_returns_empty above.
+        user_dir = get_user_data_dir(self.base, 'alice')
+        os.makedirs(user_dir, mode=0o700)
+        with open(os.path.join(user_dir, 'settings.json'), 'w') as f:
+            f.write('{not json at all')
+        self.assertEqual(read_settings(self.base, 'alice'), {})
+
+    def test_read_wrong_shape_settings_returns_empty(self):
+        user_dir = get_user_data_dir(self.base, 'alice')
+        os.makedirs(user_dir, mode=0o700)
+        with open(os.path.join(user_dir, 'settings.json'), 'w') as f:
+            json.dump({'version': 1, 'settings': 'not-a-dict'}, f)
+        self.assertEqual(read_settings(self.base, 'alice'), {})
+
     def test_written_file_has_version_and_mode(self):
         write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
         path = os.path.join(get_user_data_dir(self.base, 'alice'), 'hosts.json')
