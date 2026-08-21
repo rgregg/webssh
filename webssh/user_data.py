@@ -3,6 +3,8 @@ import logging
 import os
 import re
 import tempfile
+import time
+import uuid
 
 from webssh.settings import parse_host_entry
 from webssh.user_keys import sanitize_username
@@ -132,18 +134,26 @@ def quarantine_file(path):
 
     Returns the path the file was moved to, or None if it could not be
     moved. An existing .corrupt file is never overwritten; a numeric
-    suffix is added instead.
+    suffix is added instead, up to MAX_CORRUPT_COPIES -- beyond that, a
+    name with enough entropy to not collide is used instead of giving up,
+    since giving up would leave the unreadable file in place and reopen
+    the exact data-loss path this function exists to prevent.
     """
     target = path + '.corrupt'
     suffix = 0
     while os.path.exists(target):
         suffix += 1
         if suffix > MAX_CORRUPT_COPIES:
-            logging.error(
-                'Not quarantining {!r}: too many .corrupt files '
-                'already present'.format(path)
-            )
-            return None
+            # A random suffix on top of the current time makes a
+            # collision astronomically unlikely, but still check --
+            # os.rename would otherwise silently overwrite an existing
+            # target, destroying whatever was quarantined there.
+            while True:
+                target = '{}.corrupt.{}-{}'.format(
+                    path, int(time.time()), uuid.uuid4().hex[:8])
+                if not os.path.exists(target):
+                    break
+            break
         target = '{}.corrupt.{}'.format(path, suffix)
     try:
         os.rename(path, target)
@@ -202,22 +212,28 @@ def _write_json(base_dir, username, filename, payload_key, payload):
 
     path = os.path.join(user_dir, filename)
     fd, tmp_path = tempfile.mkstemp(dir=user_dir)
-    closed = False
     try:
-        os.write(fd, body)
-        os.fchmod(fd, 0o600)
-        os.close(fd)
-        closed = True
+        # os.fdopen + file.write loops until every byte is written (or
+        # raises), unlike a bare os.write, which is permitted to return
+        # having written fewer bytes than asked and cannot be relied on
+        # for a single call over an arbitrary payload size.
+        with os.fdopen(fd, 'wb') as f:
+            f.write(body)
+            f.flush()
+            os.fchmod(f.fileno(), 0o600)
         os.rename(tmp_path, path)
-    except Exception:
-        os.unlink(tmp_path)
-        raise
-    finally:
-        if not closed:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+    except OSError as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        # Every caller of write_hosts/write_settings only catches
+        # ValueError; an uncaught OSError here would otherwise escape as
+        # an unhandled 500 with no useful message for the client.
+        raise ValueError(
+            'Could not write {} for user {!r}: {}'.format(
+                filename, username, exc)
+        )
 
 
 def read_hosts(base_dir, username):

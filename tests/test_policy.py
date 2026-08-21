@@ -121,3 +121,57 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(paramiko.hostkeys.HostKeys(filename),
                          client._host_keys)
         os.unlink(filename)
+
+    def test_missing_host_key_mirrors_into_shared_store(self):
+        # A request with user_hosts enabled connects against its own copy
+        # of the process-wide host_keys store (see handler.get_ssh_client),
+        # so a key learned there must also be mirrored into the shared
+        # store client._shared_host_keys points at -- otherwise every
+        # later request starts from the same stale snapshot and
+        # re-appends an identical line on every single connection.
+        file1 = make_tests_data_path('known_hosts_example')
+        file2 = make_tests_data_path('known_hosts_example2')
+        filename = make_tests_data_path('known_hosts')
+        copyfile(file1, filename)
+
+        shared = paramiko.hostkeys.HostKeys(filename)
+        client = paramiko.SSHClient()
+        client._host_keys = paramiko.hostkeys.HostKeys()
+        for entry in shared._entries:
+            client._host_keys._entries.append(entry)
+        client._system_host_keys = paramiko.hostkeys.HostKeys()
+        client._host_keys_filename = filename
+        client._shared_host_keys = shared
+        n_shared = len(shared)
+
+        autoadd = AutoAddPolicy()
+        entry = paramiko.hostkeys.HostKeys(file2)._entries[0]
+        hostname = entry.hostnames[0]
+        key = entry.key
+        autoadd.missing_host_key(client, hostname, key)
+
+        self.assertEqual(len(shared), n_shared + 1)
+        self.assertIsNone(autoadd.is_missing_host_key(client, hostname, key))
+        os.unlink(filename)
+
+    def test_missing_host_key_does_not_double_add_without_isolation(self):
+        # When _shared_host_keys is the same object as _host_keys (no
+        # per-request copy was made), the mirroring step must not add a
+        # second, duplicate entry.
+        client = paramiko.SSHClient()
+        file1 = make_tests_data_path('known_hosts_example')
+        filename = make_tests_data_path('known_hosts')
+        copyfile(file1, filename)
+        client.load_host_keys(filename)
+        client._shared_host_keys = client._host_keys
+        n1 = len(client._host_keys)
+
+        autoadd = AutoAddPolicy()
+        file2 = make_tests_data_path('known_hosts_example2')
+        entry = paramiko.hostkeys.HostKeys(file2)._entries[0]
+        hostname = entry.hostnames[0]
+        key = entry.key
+        autoadd.missing_host_key(client, hostname, key)
+
+        self.assertEqual(len(client._host_keys), n1 + 1)
+        os.unlink(filename)

@@ -403,7 +403,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def get_ssh_client(self):
         ssh = SSHClient()
         ssh._system_host_keys = self.host_keys_settings['system_host_keys']
-        host_keys = self.host_keys_settings['host_keys']
+        shared_host_keys = self.host_keys_settings['host_keys']
+        host_keys = shared_host_keys
         if self.user_hosts_enabled:
             # User-supplied host entries can contribute host key pins, and
             # paramiko's HostKeys.add() mutates the store in place (replacing
@@ -414,8 +415,15 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             # copy: new HostKeys, new HostKeyEntry objects, new hostname
             # lists. The PKey objects themselves are never mutated, only
             # rebound, so they can be shared.
-            host_keys = self.copy_host_keys(host_keys)
+            host_keys = self.copy_host_keys(shared_host_keys)
         ssh._host_keys = host_keys
+        # AutoAddPolicy also mirrors newly learned keys here, so a host
+        # learned via one request's (possibly copied) _host_keys is
+        # already known to the next request's copy, instead of being
+        # re-added -- and re-appended to the known_hosts file -- every
+        # time, since the request-scoped copy above is otherwise discarded
+        # once the request ends.
+        ssh._shared_host_keys = shared_host_keys
         ssh._host_keys_filename = self.host_keys_settings['host_keys_filename']
         ssh.set_missing_host_key_policy(self.policy)
         return ssh
