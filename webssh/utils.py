@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import re
 
 try:
@@ -26,6 +27,23 @@ def to_bytes(ustr, encoding='utf-8'):
     if isinstance(ustr, UnicodeType):
         return ustr.encode(encoding)
     return ustr
+
+
+def json_encode_for_script(value):
+    """JSON-encode a value for safe inline embedding in a <script> block.
+
+    tornado.escape.json_encode backslash-escapes "</" so a literal
+    "</script>" cannot appear, but that alone does not stop the HTML
+    tokenizer: inside script data, a "<!--" followed by a case-insensitive
+    "<script" -- with no closing tag needed -- switches the tokenizer into
+    the "script data double escaped" state. That decision is made by the
+    raw HTML parser scanning for '<', not by anything JS-level escaping
+    can influence. Escaping every '<' to its unicode form removes every
+    one of those trigger sequences ("</script>", "<!--", "<script") from
+    the HTML source at once, which is why this replaces '<' outright
+    rather than only the "</" pair tornado's own helper targets.
+    """
+    return json.dumps(value).replace('<', '\\u003c')
 
 
 def to_int(string):

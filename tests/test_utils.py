@@ -1,8 +1,10 @@
+import json
 import unittest
 
 from webssh.utils import (
     is_valid_ip_address, is_valid_port, is_valid_hostname, to_str, to_bytes,
-    to_int, is_ip_hostname, is_same_primary_domain, parse_origin_from_url
+    to_int, is_ip_hostname, is_same_primary_domain, parse_origin_from_url,
+    json_encode_for_script
 )
 
 
@@ -125,3 +127,28 @@ class TestUitls(unittest.TestCase):
 
         url = 'http://www.example.com:443'
         self.assertEqual(parse_origin_from_url(url), url)
+
+
+class TestJsonEncodeForScript(unittest.TestCase):
+
+    def test_round_trips_through_json(self):
+        value = {'last_hostname': 'nas.lan', 'font_size': 16}
+        encoded = json_encode_for_script(value)
+        self.assertEqual(json.loads(encoded), value)
+
+    def test_escapes_script_closing_tag(self):
+        value = {'last_username': '</script><script>alert(1)</script>'}
+        encoded = json_encode_for_script(value)
+        self.assertNotIn('</script>', encoded.lower())
+        self.assertEqual(json.loads(encoded), value)
+
+    def test_escapes_double_escape_trigger_sequence(self):
+        # A bare "<!--" followed by a case-insensitive "<script" switches
+        # the HTML tokenizer into "script data double escaped" state --
+        # confusing it even without a literal "</script>" anywhere in the
+        # payload.
+        value = {'last_hostname': '<!--<script>x'}
+        encoded = json_encode_for_script(value)
+        self.assertNotIn('<!--', encoded)
+        self.assertNotIn('<script', encoded.lower())
+        self.assertEqual(json.loads(encoded), value)

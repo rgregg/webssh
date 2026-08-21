@@ -1023,6 +1023,25 @@ class TestUserDataApi(UserDataTestBase):
         data = json.loads(to_str(response.body))
         self.assertEqual(data['settings']['font_size'], 15)
 
+    def test_stored_settings_are_safely_inlined_into_index_page(self):
+        # Stored settings are echoed back inline in a <script> block on
+        # the index page (see the user_settings_json render arg). A
+        # "<!--<script" sequence confuses the HTML tokenizer's script-data
+        # state even without a literal "</script>" closing the block.
+        payload = '<!--<script>alert(1)</script>-->'
+        self.put('/api/settings', {'settings': {'last_hostname': payload}})
+        response = self.fetch('/', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        body = to_str(response.body)
+        self.assertNotIn('<!--<script', body)
+        self.assertNotIn('</script>alert', body)
+        # The escaped payload still round-trips to the original string.
+        marker = 'var user_settings = '
+        start = body.index(marker) + len(marker)
+        end = body.index(';', start)
+        self.assertEqual(
+            json.loads(body[start:end])['last_hostname'], payload)
+
     def test_settings_drops_secrets(self):
         self.put('/api/settings',
                  {'settings': {'font_size': 15, 'password': 'hunter2'}})
