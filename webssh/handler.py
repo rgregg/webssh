@@ -20,7 +20,7 @@ from urllib.parse import quote
 from webssh.utils import (
     is_valid_ip_address, is_valid_port, is_valid_hostname, to_bytes, to_str,
     to_int, to_ip_address, UnicodeType, is_ip_hostname, is_same_primary_domain,
-    is_valid_encoding
+    is_valid_encoding, json_encode_for_script
 )
 from webssh.worker import (
     Worker, recycle_worker, clients, register_live_worker  # noqa
@@ -735,7 +735,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                     auth_username=auth_username,
                     user_hosts_enabled=self.user_hosts_enabled,
                     user_hosts=user_hosts,
-                    user_settings=user_settings,
+                    user_settings_json=json_encode_for_script(user_settings),
                     version=__version__)
 
     @tornado.gen.coroutine

@@ -200,7 +200,7 @@
       var user_key_enabled = {% if user_key_enabled %}true{% else %}false{% end %};
       var has_stored_key = {% if has_stored_key %}true{% else %}false{% end %};
       var user_hosts_enabled = {% if user_hosts_enabled %}true{% else %}false{% end %};
-      var user_settings = {% raw json_encode(user_settings) %};
+      var user_settings = {% raw user_settings_json %};
     </script>
     <script src="static/js/user-hosts.js"></script>
     <script src="static/js/file-transfer.js"></script>
