@@ -558,7 +558,12 @@ class TestUserDataSettings(unittest.TestCase):
 
     def test_check_user_data_dir_noop_when_empty(self):
         from webssh.settings import check_user_data_dir
-        self.assertIsNone(check_user_data_dir(''))
+        with self.assertLogs(level='WARNING') as cm:
+            self.assertIsNone(check_user_data_dir(''))
+        self.assertTrue(any(
+            'user_hosts is enabled but no userdatadir or userkeydir' in msg
+            for msg in cm.output
+        ))
 
     def test_check_user_data_dir_rejects_file(self):
         import tempfile

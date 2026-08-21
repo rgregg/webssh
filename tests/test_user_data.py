@@ -28,6 +28,15 @@ class TestGetUserDataDir(unittest.TestCase):
             with self.assertRaises(ValueError):
                 get_user_data_dir(self.base, name)
 
+    def test_oserror_from_realpath_becomes_value_error(self):
+        # Callers only ever catch ValueError from this function; an
+        # unhandled OSError (e.g. a permission error while resolving a
+        # symlink) would otherwise escape as a 500 instead.
+        from unittest import mock
+        with mock.patch('os.path.realpath', side_effect=OSError('boom')):
+            with self.assertRaises(ValueError):
+                get_user_data_dir(self.base, 'alice')
+
 
 class TestValidateHosts(unittest.TestCase):
 

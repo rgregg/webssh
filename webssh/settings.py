@@ -368,6 +368,13 @@ def get_config_settings(options):
 
 
 def apply_config_settings(options):
+    # Each check below compares the CLI value against its own default to
+    # decide whether the config file should win. That means a config value
+    # equal to the default is indistinguishable from "not set on the CLI
+    # either" -- harmless for booleans defaulting to False/True as used
+    # here, but a trap for any future option where that difference
+    # matters: such an option would need real "was this explicitly passed
+    # on the CLI" tracking, not a default-value comparison.
     config = get_config_settings(options)
     if not config:
         return
@@ -451,6 +458,10 @@ def get_user_data_dir_setting(options):
 
 def check_user_data_dir(user_data_dir, tdstream=''):
     if not user_data_dir:
+        logging.warning(
+            'user_hosts is enabled but no userdatadir or userkeydir '
+            'is configured, so user host management is disabled.'
+        )
         return
     if not tdstream:
         logging.warning(
