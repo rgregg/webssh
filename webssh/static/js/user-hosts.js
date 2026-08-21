@@ -56,14 +56,27 @@ var webssh_hosts = (function () {
 
   // rows: [{name, hostname, port_text, keys_text, username, default_command}]
   // (see HOST_ROW_KEYS above)
-  // Rows with a blank hostname are skipped, matching the pane's behaviour of
-  // ignoring a half-filled row rather than submitting it.
+  // A row that is entirely blank (a fresh, untouched "Add host" row) is
+  // silently skipped. A row with a blank hostname but *some* other field
+  // filled in is a half-filled row the user is actively editing, so it is
+  // reported as an error rather than being dropped without feedback.
   function build_host_payload(rows) {
     var result = [];
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var hostname = trimmed(r.hostname);
       if (!hostname) {
+        var has_other_data = trimmed(r.name) || trimmed(r.port_text) ||
+          trimmed(r.keys_text) || trimmed(r.username) || trimmed(r.default_command);
+        if (has_other_data) {
+          return {
+            hosts: result,
+            error: 'Host name is required for row ' + (i + 1) +
+                   ' (fill it in or delete the row).',
+            error_index: i,
+            error_field: 'host-hostname'
+          };
+        }
         continue;
       }
       var name = trimmed(r.name) || hostname;
@@ -85,7 +98,8 @@ var webssh_hosts = (function () {
           hosts: result,
           error: 'Invalid port "' + trimmed(r.port_text) +
                  '" for host "' + name + '" (must be 1-65535).',
-          error_index: i
+          error_index: i,
+          error_field: 'host-port'
         };
       }
       if (port_result.port) {
@@ -180,14 +194,24 @@ var webssh_hosts = (function () {
   }
 
   // Legacy per-host default commands were stored under 'command:<host>:<port>'.
+  // IPv6 hostnames contain colons of their own, so splitting on every ':'
+  // would chop the address apart. Instead, only the final ':' is treated as
+  // the host/port separator; everything before it (colons included) is the
+  // hostname.
   function parse_command_key(key) {
     if (!key || String(key).indexOf('command:') !== 0) {
       return null;
     }
-    var parts = String(key).split(':');
+    var rest = String(key).slice('command:'.length);
+    var sep = rest.lastIndexOf(':');
+    var hostname = sep === -1 ? rest : rest.slice(0, sep);
+    var port_str = sep === -1 ? '' : rest.slice(sep + 1);
+    if (!hostname) {
+      return null;
+    }
     return {
-      hostname: parts[1],
-      port: parseInt(parts[2], 10) || 22
+      hostname: hostname,
+      port: parseInt(port_str, 10) || 22
     };
   }
 

@@ -267,15 +267,25 @@ jQuery(function($){
       }
       var tab = this.createTab('settings');
       var pane = $(tab.containerEl);
-      pane.html('<div class="settings-loading">Loading settings...</div>');
-      $.get('/settings-pane')
-        .done(function(html) {
-          pane.html(html);
-          init_settings_pane(pane);
-        })
-        .fail(function() {
-          pane.html('<div class="settings-loading">Failed to load settings.</div>');
-        });
+      var load_settings_pane = function() {
+        pane.html('<div class="settings-loading">Loading settings...</div>');
+        $.get('/settings-pane')
+          .done(function(html) {
+            pane.html(html);
+            init_settings_pane(pane);
+          })
+          .fail(function() {
+            pane.html(
+              '<div class="settings-loading">Failed to load settings. ' +
+              '<a href="#" class="settings-retry">Retry</a></div>'
+            );
+            pane.find('.settings-retry').on('click', function(e) {
+              e.preventDefault();
+              load_settings_pane();
+            });
+          });
+      };
+      load_settings_pane();
       return tab;
     },
 
@@ -414,8 +424,18 @@ jQuery(function($){
 
   var prefs = {
     timer: null,
+    // Set while the settings pane's own /api/settings PUT is in flight (see
+    // the #settings-save handler). A connect() in this window still calls
+    // schedule(), so flush() must not run concurrently with that PUT: it
+    // would send the pre-save user_settings object and could land at the
+    // server after the pane's PUT, silently reverting whatever was just
+    // saved (issue #45).
+    blocked: false,
 
     schedule: function() {
+      // Arming a 1s timer whose flush() immediately no-ops is pointless
+      // when the feature is disabled.
+      if (!user_hosts_enabled) return;
       var self = this;
       if (this.timer) window.clearTimeout(this.timer);
       this.timer = window.setTimeout(function() { self.flush(); }, 1000);
@@ -424,6 +444,12 @@ jQuery(function($){
     flush: function() {
       if (!user_hosts_enabled) return;
       this.timer = null;
+      if (this.blocked) {
+        // Don't drop the pending roamed values -- re-arm for once the
+        // in-flight settings-pane save has finished.
+        this.schedule();
+        return;
+      }
       $.ajax({
         url: '/api/settings', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},
@@ -872,10 +898,23 @@ jQuery(function($){
   function collect_host_rows(pane) {
     var rows = [];
     var row_els = [];
-    pane.find('#user-host-rows .host-port').removeClass('input-error');
+    var bad_port_input_index = -1;
+    pane.find('#user-host-rows .host-port, #user-host-rows .host-hostname')
+      .removeClass('input-error');
     pane.find('#user-host-rows tr.user-host').each(function() {
       var row = $(this);
+      var index = row_els.length;
       row_els.push(row);
+      var port_el = row.find('.host-port')[0];
+      // A non-numeric port typo (e.g. "abc") is sanitised to "" by the
+      // browser's type=number input before this code ever sees it, so a
+      // blank port_text is otherwise indistinguishable from an
+      // intentionally-empty port (which defaults to 22). validity.badInput
+      // is the only place that distinction still exists.
+      if (bad_port_input_index === -1 && port_el && port_el.validity &&
+          port_el.validity.badInput) {
+        bad_port_input_index = index;
+      }
       rows.push({
         name: row.find('.host-name').val(),
         hostname: row.find('.host-hostname').val(),
@@ -886,9 +925,21 @@ jQuery(function($){
       });
     });
 
+    if (bad_port_input_index !== -1) {
+      row_els[bad_port_input_index].find('.host-port').addClass('input-error');
+      var bad_row = rows[bad_port_input_index];
+      return {
+        hosts: [],
+        error: 'Invalid port for host "' +
+               (bad_row.name || bad_row.hostname || '(row ' + (bad_port_input_index + 1) + ')') +
+               '" (must be numeric, 1-65535).'
+      };
+    }
+
     var built = webssh_hosts.build_host_payload(rows);
     if (built.error && built.error_index >= 0) {
-      row_els[built.error_index].find('.host-port').addClass('input-error');
+      row_els[built.error_index].find('.' + (built.error_field || 'host-port'))
+        .addClass('input-error');
     }
     return {hosts: built.hosts, error: built.error};
   }
@@ -973,6 +1024,10 @@ jQuery(function($){
         window.clearTimeout(prefs.timer);
         prefs.timer = null;
       }
+      // Also block any flush armed by a connect() *during* the PUTs below
+      // (a narrow window of a few hundred ms) until they finish, for the
+      // same reason.
+      prefs.blocked = true;
       settings_status(pane, 'Saving...');
       var hosts = collected.hosts;
       var settings = collect_settings(pane);
@@ -999,9 +1054,12 @@ jQuery(function($){
             'Hosts saved, but settings failed to save: ' + save_error_text(xhr),
             true
           );
+        }).always(function() {
+          prefs.blocked = false;
         });
       }).fail(function(xhr) {
         settings_status(pane, 'Hosts failed to save: ' + save_error_text(xhr), true);
+        prefs.blocked = false;
       });
     });
   }
@@ -1097,8 +1155,22 @@ jQuery(function($){
           el.append(option);
         }
       }
-      if (current) el.val(current);
-      el.trigger('change');
+      if (current) {
+        el.val(current);
+        // Only cascade into the rest of the form (username/port/command)
+        // when the previous selection no longer exists in the refreshed
+        // list -- val() then silently falls back to another option. A
+        // selection that still exists keeps whatever the user has typed.
+        if (el.val() !== current) {
+          el.trigger('change');
+        }
+      } else {
+        el.trigger('change');
+      }
+    }).fail(function() {
+      // The hostname field keeps showing whatever it last had -- that's
+      // still coherent, but silent, so let the user know it may be stale.
+      log_status('Failed to refresh host list; showing the last known hosts.');
     });
   }
 
@@ -1646,14 +1718,9 @@ jQuery(function($){
     // for console use
     var result, opts;
     var tab = tabManager.getActiveTab();
+    var from_settings_tab = tab && tab.kind === 'settings';
 
-    // A settings tab is never a valid connect target; open a new terminal
-    // tab and connect there instead.
-    if (tab && tab.kind === 'settings') {
-      tab = tabManager.createTab('terminal');
-    }
-
-    if (!tab || tab.state !== DISCONNECTED) {
+    if (!from_settings_tab && (!tab || tab.state !== DISCONNECTED)) {
       if (tab) {
         console.log(messages[tab.state]);
       }
@@ -1661,22 +1728,39 @@ jQuery(function($){
     }
 
     if (hostname === undefined) {
+      opts = null;
+    } else if (typeof hostname === 'string') {
+      opts = {
+        hostname: hostname,
+        port: port,
+        username: username,
+        password: password,
+        privatekey: privatekey,
+        passphrase: passphrase,
+        totp: totp
+      };
+    } else {
+      opts = hostname;
+    }
+
+    // A settings tab is never a valid connect target; open a new terminal
+    // tab and connect there instead. Validate first so that a connect
+    // which fails validation does not leave an empty terminal tab behind
+    // for the user to close (issue #43).
+    if (from_settings_tab) {
+      var precheck = opts ?
+        validate_form_data(wrap_object(opts)) :
+        validate_form_data(new FormData(document.querySelector(form_id)));
+      if (!precheck.valid) {
+        log_status(precheck.errors.join('\n'));
+        return;
+      }
+      tab = tabManager.createTab('terminal');
+    }
+
+    if (!opts) {
       result = connect_without_options();
     } else {
-      if (typeof hostname === 'string') {
-        opts = {
-          hostname: hostname,
-          port: port,
-          username: username,
-          password: password,
-          privatekey: privatekey,
-          passphrase: passphrase,
-          totp: totp
-        };
-      } else {
-        opts = hostname;
-      }
-
       result = connect_with_options(opts);
     }
 
@@ -2011,8 +2095,15 @@ jQuery(function($){
     term_type.val(user_settings.term);
   }
 
-  if (user_settings.key_source === 'stored' && user_key_enabled) {
-    $('#key_source_stored').prop('checked', true).trigger('change');
+  if (user_key_enabled) {
+    if (user_settings.key_source === 'stored' && has_stored_key) {
+      $('#key_source_stored').prop('checked', true).trigger('change');
+    } else if (user_settings.key_source === 'upload') {
+      // Also restore the upload direction -- previously only 'stored' was
+      // ever applied, so a stored preference of 'upload' left whatever the
+      // server template defaulted to (issue #46).
+      $('#key_source_upload').prop('checked', true).trigger('change');
+    }
   }
 
   // One-time upgrade of any locally-stored per-host default commands onto

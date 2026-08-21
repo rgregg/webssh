@@ -85,15 +85,30 @@ test('build_host_payload omits port entirely when blank', function () {
             'a blank port must be absent, not null/0/NaN, so the server defaults it');
 });
 
-test('build_host_payload skips rows with a blank hostname', function () {
+test('build_host_payload skips a row that is entirely blank', function () {
   var out = hosts.build_host_payload([
     row({hostname: 'a.com'}),
-    row({name: 'half-filled', keys_text: 'ssh-ed25519 AAA'}),
+    row({}),
     row({hostname: 'b.com'})
   ]);
+  assert.strictEqual(out.error, null);
   assert.strictEqual(out.hosts.length, 2);
   assert.deepStrictEqual([out.hosts[0].hostname, out.hosts[1].hostname],
                          ['a.com', 'b.com']);
+});
+
+test('build_host_payload reports an error for a half-filled row instead of dropping it', function () {
+  // Regression: a row with data in it but no hostname used to be silently
+  // dropped on save, so a half-filled row would simply vanish with no
+  // feedback to the user.
+  var out = hosts.build_host_payload([
+    row({hostname: 'a.com'}),
+    row({name: 'half-filled', keys_text: 'ssh-ed25519 AAA'})
+  ]);
+  assert.strictEqual(out.hosts.length, 1);
+  assert.strictEqual(out.error_index, 1);
+  assert.strictEqual(out.error_field, 'host-hostname');
+  assert.ok(/Host name is required/.test(out.error));
 });
 
 test('build_host_payload reports an invalid port with the offending row index', function () {
@@ -297,6 +312,16 @@ test('parse_command_key reads a legacy command key', function () {
 test('parse_command_key defaults a missing port to 22', function () {
   assert.deepStrictEqual(hosts.parse_command_key('command:nas.lan:'),
                          {hostname: 'nas.lan', port: 22});
+});
+
+test('parse_command_key keeps colons inside an IPv6 hostname', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:2001:db8::1:2222'),
+                         {hostname: '2001:db8::1', port: 2222});
+});
+
+test('parse_command_key defaults an IPv6 hostname with no port to 22', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:::1:'),
+                         {hostname: '::1', port: 22});
 });
 
 test('parse_command_key ignores unrelated localStorage keys', function () {
