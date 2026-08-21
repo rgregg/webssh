@@ -1072,8 +1072,10 @@ jQuery(function($){
 
 
   function get_xsrf_token() {
-    var match = document.cookie.match(/\b_xsrf=([^;]+)/);
-    return match ? decodeURIComponent(match[1]) : '';
+    // Reuses the same hidden <input name="_xsrf"> idiom already used
+    // elsewhere in this file, rather than parsing document.cookie with a
+    // regex (issue #44).
+    return $('input[name="_xsrf"]').val() || '';
   }
   // Exposed on the shared wssh object so transfer-ui.js can reuse it
   // instead of keeping its own copy. index.html loads transfer-ui.js

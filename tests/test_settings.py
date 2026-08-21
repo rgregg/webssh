@@ -504,6 +504,17 @@ class TestParseHostEntry(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_host_entry({'hostname': 'a.com', 'port': port})
 
+    def test_non_numeric_port_raises_value_error(self):
+        # Distinct from test_invalid_port above: 0/70000/-1 all pass
+        # int() fine and are rejected by the range check below it. This
+        # covers the try/except (TypeError, ValueError) branch around
+        # int(...) itself -- the one behaviour change made when this
+        # parsing was pulled out into its own function.
+        from webssh.settings import parse_host_entry
+        for port in ['abc', '22abc', [1, 2], {}]:
+            with self.assertRaises(ValueError):
+                parse_host_entry({'hostname': 'a.com', 'port': port})
+
     def test_invalid_host_key_type(self):
         from webssh.settings import parse_host_entry
         with self.assertRaises(ValueError):

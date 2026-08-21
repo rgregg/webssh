@@ -1016,6 +1016,28 @@ class TestUserDataApi(UserDataTestBase):
         data = json.loads(to_str(response.body))
         self.assertIn('error', data)
 
+    def test_put_settings_without_xsrf_returns_403(self):
+        response = self.fetch(
+            '/api/settings', method='PUT',
+            body=json.dumps({'settings': {}}), headers=self.headers)
+        self.assertEqual(response.code, 403)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
+
+    def test_hosts_unsupported_method_returns_405(self):
+        response = self.fetch(
+            '/api/hosts', method='DELETE',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy'}))
+        self.assertEqual(response.code, 405)
+
+    def test_settings_unsupported_method_returns_405(self):
+        response = self.fetch(
+            '/api/settings', method='DELETE',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy'}))
+        self.assertEqual(response.code, 405)
+
     def test_settings_round_trip(self):
         response = self.put('/api/settings', {'settings': {'font_size': 15}})
         self.assertEqual(response.code, 200)
@@ -1175,9 +1197,52 @@ class TestUserDataApiDisabled(UserDataTestBase):
         response = self.fetch('/api/settings', headers=self.headers)
         self.assertEqual(response.code, 403)
 
+    def test_put_hosts_returns_403(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body=json.dumps({'hosts': []}),
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 403)
+
+    def test_put_settings_returns_403(self):
+        response = self.fetch(
+            '/api/settings', method='PUT', body=json.dumps({'settings': {}}),
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 403)
+
     def test_settings_pane_returns_404(self):
         response = self.fetch('/settings-pane', headers=self.headers)
         self.assertEqual(response.code, 404)
+
+
+class TestUserDataApiAdminHosts(UserDataTestBase):
+    """admin_hosts in the /api/hosts response reflects the configured
+    allowlist, not just its presence."""
+
+    def setUp(self):
+        import yaml
+        fd, self.config_path = tempfile.mkstemp(suffix='.yaml')
+        with os.fdopen(fd, 'w') as f:
+            yaml.safe_dump({'hosts': [
+                {'name': 'prod-db', 'hostname': 'db.example.com',
+                 'port': 5432}]}, f)
+        self.override_options(config=self.config_path)
+        super(TestUserDataApiAdminHosts, self).setUp()
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        super(TestUserDataApiAdminHosts, self).tearDown()
+
+    def test_admin_hosts_reflects_configured_allowlist(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['admin_hosts']), 1)
+        admin_host = data['admin_hosts'][0]
+        self.assertEqual(admin_host['name'], 'prod-db')
+        self.assertEqual(admin_host['hostname'], 'db.example.com')
+        self.assertEqual(admin_host['port'], 5432)
 
 
 class TestEffectiveHosts(unittest.TestCase):

@@ -847,9 +847,20 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   margin: 16px 0 8px;
 }
 
-.settings-table { width: 100%; border-collapse: collapse; }
+.settings-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .settings-table td { padding: 4px; vertical-align: top; }
 .settings-table tr.admin-host td { opacity: 0.55; padding: 6px 4px; }
+
+/* Fixed column widths, shared by the admin-hosts and user-hosts tables in
+   settings.html, so their columns line up vertically even though they are
+   separate <table> elements (issue #53). */
+.host-col-name { width: 14%; }
+.host-col-hostname { width: 18%; }
+.host-col-port { width: 8%; }
+.host-col-username { width: 12%; }
+.host-col-command { width: 20%; }
+.host-col-keys { width: 22%; }
+.host-col-action { width: 6%; }
 
 .host-badge {
   font-size: 0.7em;

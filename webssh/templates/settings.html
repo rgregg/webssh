@@ -15,12 +15,21 @@
       {% if admin_hosts %}
       <div class="settings-subhead">Administrator hosts (read-only)</div>
       <table class="settings-table">
+        <!-- Keep this colgroup identical to the one on the "Your hosts"
+             table below so the two tables' columns line up vertically
+             (issue #53). -->
+        <colgroup>
+          <col class="host-col-name"><col class="host-col-hostname"><col class="host-col-port">
+          <col class="host-col-username"><col class="host-col-command"><col class="host-col-keys">
+          <col class="host-col-action">
+        </colgroup>
         <tbody>
           {% for host in admin_hosts %}
           <tr class="admin-host">
             <td>{{ host['name'] }}</td>
             <td>{{ host['hostname'] }}</td>
             <td>{{ host['port'] }}</td>
+            <td colspan="3"></td>
             <td><span class="host-badge">admin</span></td>
           </tr>
           {% end %}
@@ -30,6 +39,11 @@
 
       <div class="settings-subhead">Your hosts</div>
       <table class="settings-table">
+        <colgroup>
+          <col class="host-col-name"><col class="host-col-hostname"><col class="host-col-port">
+          <col class="host-col-username"><col class="host-col-command"><col class="host-col-keys">
+          <col class="host-col-action">
+        </colgroup>
         <tbody id="user-host-rows"></tbody>
       </table>
       <button type="button" class="btn-generate" id="add-host-btn">+ Add host</button>
