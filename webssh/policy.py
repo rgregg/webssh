@@ -76,6 +76,19 @@ class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
                 client._host_keys._entries.append(
                     paramiko.hostkeys.HostKeyEntry([hostname], key)
                 )
+                # A request that has user_hosts enabled gets its own copy
+                # of the process-wide host_keys store (see get_ssh_client's
+                # copy_host_keys), so this client's _host_keys is discarded
+                # once the request ends. Without also updating the shared
+                # store, the next connection to the same host would start
+                # from the same stale snapshot and re-append an identical
+                # line here, growing the file unboundedly. _shared_host_keys
+                # is only set by webssh's SSHClient wiring, hence getattr.
+                shared = getattr(client, '_shared_host_keys', None)
+                if shared is not None and shared is not client._host_keys:
+                    shared._entries.append(
+                        paramiko.hostkeys.HostKeyEntry([hostname], key)
+                    )
 
                 with open(client._host_keys_filename, 'a') as f:
                     f.write('{} {} {}\n'.format(
