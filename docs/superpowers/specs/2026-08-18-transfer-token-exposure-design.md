@@ -1,5 +1,7 @@
 # Keeping the Worker Token Out of URLs — Design
 
+> **Historical note (#52):** The "match existing code style" constraint below (no f-strings, `super(ClassName, self)`, `u''` prefixes, root-logger calls) described the codebase as it stood when this plan was written. The repository was modernized to current ruff defaults afterwards; new code should follow that modern style, not this plan's.
+
 The worker token authorises every transfer request. It currently travels in
 the query string, which puts it in the browser's download history and in
 server access logs.

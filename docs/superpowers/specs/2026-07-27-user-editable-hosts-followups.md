@@ -100,36 +100,43 @@ store — was fixed in `e1b184f` and is covered by tests.
 
 ## Lint modernisation backlog
 
-CI's `lint` job installed `ruff` unpinned, so the 0.16 release turned the gate
-red across the whole repository without any code change — 250 errors on `main`,
-308 on the user-hosts branch. The job is now pinned to `ruff==0.15.6`, the last
-version under which the repository is clean. Upgrading the pin is worth doing,
-but it is a deliberate piece of work rather than a version bump:
+**Resolved (#52).** CI's `lint` job installed `ruff` unpinned, so the 0.16
+release turned the gate red across the whole repository without any code
+change — 250 errors on `main`, 308 on the user-hosts branch. The job was
+pinned to `ruff==0.15.6` while this was deferred. The whole repository has
+since been modernized in one deliberate pass and CI is pinned to
+`ruff==0.16.4` (updated as later ruff releases are deliberately adopted):
 
-- **`UP032`** (88) — `.format()` calls that ruff wants as f-strings.
-- **`LOG015`** (63) — `logging.info()` and friends on the root logger. The whole
-  codebase does this; there are 61 such calls in `webssh/` alone.
-- **`UP025`** (27) — `u''` prefixes.
-- **`I001`** (25) — import blocks in the repository's compact parenthesised
-  style rather than ruff's one-per-line isort profile.
-- **`UP008`** (14) — `super(ClassName, self)` rather than bare `super()`.
-- **`UP004`** (9) — explicit `object` inheritance.
+- **`UP032`** — `.format()` calls converted to f-strings.
+- **`LOG015`** — every module that logs now has its own
+  `logger = logging.getLogger(__name__)` instead of calling the root logger
+  directly.
+- **`UP025`** — `u''` prefixes removed.
+- **`I001`** — import blocks reformatted to ruff's isort profile (one import
+  per line, alphabetized).
+- **`UP008`** — `super(ClassName, self)` replaced with bare `super()`.
+- **`UP004`** — explicit `object` inheritance removed.
+- Plus a long tail of rules ruff added between the 250-error count above and
+  0.16.4 (`RUF012`, `BLE001`, `SIM*`, `S110`, `YTT204`, etc.), each fixed or
+  given a targeted, justified `noqa` — see the modernization PR for details.
 
-Two cautions for whoever does it:
+The one caution below was honoured:
 
-- **`TRY004` must not be auto-fixed.** It wants `TypeError` where
-  `user_data.validate_hosts` and `validate_settings` raise `ValueError` for a
-  malformed payload. `handler.py` catches `ValueError` at five sites to return
-  400; raising `TypeError` would turn a bad request into an unhandled 500 and
-  break twelve tests. The current behaviour is correct.
-- Fix the whole repository in one pass or not at all. Modernising individual
-  files leaves them stylistically inconsistent with the modules they mirror —
-  `user_data.py` was written to match `user_keys.py`, and `test_user_data.py` to
-  match `test_user_keys.py`, down to the import formatting.
+- **`TRY004` was not auto-fixed.** `user_data.validate_hosts`,
+  `validate_settings`, and a few sites in `settings.py` still raise
+  `ValueError` (not `TypeError`) for a malformed payload, each with a
+  `# noqa: TRY004` and a comment explaining why. `handler.py` catches
+  `ValueError` at these call sites to return 400; raising `TypeError` would
+  turn a bad request into an unhandled 500 and break tests. The current
+  behaviour is unchanged.
 
-Note that the plans and specs under `docs/superpowers/` mandate the current
-style as an explicit constraint. If the codebase modernises, that guidance
-becomes stale and should be updated or marked historical.
+The modernization was done in one pass across the whole repository, as
+originally planned, so no module is left stylistically inconsistent with
+the ones it mirrors.
+
+Note that the plans and specs under `docs/superpowers/` that predate this
+work mandate the old style as an explicit constraint; they now carry a
+historical-note callout pointing here instead of being rewritten.
 
 ## Cosmetic
 
