@@ -8,6 +8,7 @@ import time
 import traceback
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from typing import ClassVar
 from urllib.parse import quote
 
 import paramiko
@@ -141,7 +142,7 @@ class PrivateKey:
 
     max_length = 16384  # rough number
 
-    tag_to_name = {
+    tag_to_name: ClassVar[dict] = {
         'RSA': 'RSA',
         'EC': 'ECDSA',
         'OPENSSH': 'Ed25519'
@@ -220,7 +221,7 @@ class PrivateKey:
 
 class MixinHandler:
 
-    custom_headers = {
+    custom_headers: ClassVar[dict] = {
         'Server': 'TornadoServer'
     }
 

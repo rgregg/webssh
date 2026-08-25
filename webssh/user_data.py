@@ -45,7 +45,10 @@ def get_user_data_dir(base_dir, username):
 
 def _check_string(value, name, allow_empty=True):
     if not isinstance(value, str):
-        raise ValueError(f'{name} must be a string')
+        # Deliberately ValueError, not TypeError: handler.py catches
+        # ValueError at these call sites to return a 400 for malformed
+        # request payloads; TypeError would surface as an unhandled 500.
+        raise ValueError(f'{name} must be a string')  # noqa: TRY004
     if len(value) > MAX_FIELD_LENGTH:
         raise ValueError(f'{name} is too long')
     if not allow_empty and not value:
@@ -55,7 +58,9 @@ def _check_string(value, name, allow_empty=True):
 
 def validate_hosts(hosts):
     if not isinstance(hosts, list):
-        raise ValueError('hosts must be a list')
+        # See _check_string above: ValueError is intentional here too, for
+        # the same 400-vs-500 reason.
+        raise ValueError('hosts must be a list')  # noqa: TRY004
     if len(hosts) > MAX_HOSTS:
         raise ValueError(f'Too many hosts; the limit is {MAX_HOSTS}')
 
@@ -72,7 +77,9 @@ def validate_hosts(hosts):
 
 def validate_settings(settings):
     if not isinstance(settings, dict):
-        raise ValueError('settings must be a mapping')
+        # See _check_string above: ValueError is intentional here too, for
+        # the same 400-vs-500 reason.
+        raise ValueError('settings must be a mapping')  # noqa: TRY004
 
     result = {}
 

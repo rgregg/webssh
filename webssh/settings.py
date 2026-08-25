@@ -264,7 +264,10 @@ def load_config_file(filepath):
         data = yaml.safe_load(f)
 
     if not isinstance(data, dict):
-        raise ValueError(
+        # Deliberately ValueError, not TypeError: this is bad *content* in a
+        # syntactically valid YAML file, not a Python type-usage bug, and
+        # callers only catch ValueError to turn it into a 400/config error.
+        raise ValueError(  # noqa: TRY004
             'Config file must contain a YAML mapping'
         )
 
@@ -297,14 +300,17 @@ def _validate_host_key(host_key, hostname):
 
 def parse_host_entry(entry):
     if not isinstance(entry, dict):
-        raise ValueError('Each host entry must be a mapping')
+        # Deliberately ValueError, not TypeError: this is malformed request
+        # data, not a Python type-usage bug -- callers catch ValueError to
+        # return a 400.
+        raise ValueError('Each host entry must be a mapping')  # noqa: TRY004
     if 'hostname' not in entry:
         raise ValueError('Each host entry must have a "hostname" field')
     raw_keys = entry.get('host_key', [])
     if isinstance(raw_keys, str):
         raw_keys = [raw_keys] if raw_keys else []
     elif not isinstance(raw_keys, list):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004
             'host_key for {!r} must be a string or list'.format(
                 entry['hostname'])
         )

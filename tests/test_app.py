@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import Future
+from typing import ClassVar
 from unittest import mock
 
 import tornado.gen
@@ -67,7 +68,7 @@ class OptionsRestoreMixin:
 class TestOptionsRestoreMixin(unittest.TestCase):
 
     class Case(OptionsRestoreMixin, unittest.TestCase):
-        overrides = {}
+        overrides: ClassVar[dict] = {}
         raises = False
 
         def runTest(self):
@@ -210,10 +211,10 @@ class TestAppBase(OptionsRestoreMixin, AsyncHTTPTestCase):
 
 class TestAppBasic(TestAppBase):
 
-    running = [True]
+    running: ClassVar[list] = [True]
     sshserver_port = 2200
     body = 'hostname=127.0.0.1&port={}&_xsrf=yummy&username=robey&password=foo'.format(sshserver_port) # noqa
-    headers = {'Cookie': '_xsrf=yummy'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
 
     def get_app(self):
         self.body_dict = {
@@ -642,7 +643,7 @@ class TestAppBasic(TestAppBase):
 
 class OtherTestBase(TestAppBase):
     sshserver_port = 3300
-    headers = {'Cookie': '_xsrf=yummy'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
     debug = False
     policy = None
     xsrf = True
@@ -651,8 +652,8 @@ class OtherTestBase(TestAppBase):
     tdstream = ''
     maxconn = 20
     origin = 'same'
-    encodings = []
-    body = {
+    encodings: ClassVar[list] = []
+    body: ClassVar[dict] = {
         'hostname': '127.0.0.1',
         'port': '',
         'username': 'robey',
@@ -912,7 +913,7 @@ class TestAppWithCrossOriginOperation(OtherTestBase):
 
 class TestAppWithBadEncoding(OtherTestBase):
 
-    encodings = ['\u7f16\u7801']
+    encodings: ClassVar[list] = ['\u7f16\u7801']
 
     @tornado.testing.gen_test
     def test_app_with_a_bad_encoding(self):
@@ -924,7 +925,7 @@ class TestAppWithBadEncoding(OtherTestBase):
 
 class TestAppWithUnknownEncoding(OtherTestBase):
 
-    encodings = ['\u7f16\u7801', 'UnknownEncoding']
+    encodings: ClassVar[list] = ['\u7f16\u7801', 'UnknownEncoding']
 
     @tornado.testing.gen_test
     def test_app_with_a_unknown_encoding(self):
@@ -937,8 +938,8 @@ class TestAppWithUnknownEncoding(OtherTestBase):
 
 class UserDataTestBase(TestAppBase):
 
-    headers = {'Cookie': '_xsrf=yummy',
-               'X-Authentik-Username': 'alice'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy',
+                                'X-Authentik-Username': 'alice'}
     user_hosts = True
 
     def get_app(self):
@@ -1473,7 +1474,7 @@ class TransferTestBase(TestAppBase):
     the code we actually control.
     """
 
-    headers = {'Cookie': '_xsrf=yummy'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
 
     def hdrs(self, worker_id='tid', extra=None):
         h = dict(self.headers)

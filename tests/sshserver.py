@@ -5,6 +5,7 @@ import socket
 # import sys
 import threading
 from binascii import hexlify
+from typing import ClassVar
 
 # import traceback
 import paramiko
@@ -32,11 +33,11 @@ class Server(paramiko.ServerInterface):
             b'UWT10hcuO4Ks8=')
     good_pub_key = paramiko.RSAKey(data=base64.decodebytes(data))
 
-    commands = [
+    commands: ClassVar[list] = [
         b'$SHELL -ilc "locale charmap"',
         b'$SHELL -ic "locale charmap"'
     ]
-    encodings = ['UTF-8', 'GBK', 'UTF-8\r\n', 'GBK\r\n']
+    encodings: ClassVar[list] = ['UTF-8', 'GBK', 'UTF-8\r\n', 'GBK\r\n']
 
     def __init__(self, encodings=None):
         if encodings is None:
