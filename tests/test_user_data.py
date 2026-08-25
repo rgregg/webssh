@@ -5,10 +5,15 @@ import tempfile
 import unittest
 
 from webssh.user_data import (
-    SCHEMA_VERSION, get_user_data_dir, read_hosts, write_hosts,
-    read_settings, write_settings, validate_hosts, validate_settings
+    SCHEMA_VERSION,
+    get_user_data_dir,
+    read_hosts,
+    read_settings,
+    validate_hosts,
+    validate_settings,
+    write_hosts,
+    write_settings,
 )
-
 
 VALID_KEY = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzd'
              'Knd2MlrZ2sAs5qF7XMRF')
@@ -79,7 +84,7 @@ class TestValidateHosts(unittest.TestCase):
 
     def test_rejects_too_many_hosts(self):
         with self.assertRaises(ValueError):
-            validate_hosts([{'hostname': 'h{}.com'.format(i)}
+            validate_hosts([{'hostname': f'h{i}.com'}
                             for i in range(201)])
 
     def test_empty_list_is_valid(self):
@@ -270,13 +275,13 @@ class TestRoundTrip(unittest.TestCase):
         # later save would still destroy it. Simulate every sequential
         # slot already being taken and confirm a fresh corruption is
         # still moved aside rather than left behind.
-        from webssh.user_data import quarantine_file, MAX_CORRUPT_COPIES
+        from webssh.user_data import MAX_CORRUPT_COPIES, quarantine_file
         path = self._write_raw('hosts.json', 'original')
         with open(path + '.corrupt', 'w') as f:
             f.write('taken')
         for i in range(1, MAX_CORRUPT_COPIES + 1):
-            with open('{}.corrupt.{}'.format(path, i), 'w') as f:
-                f.write('taken-{}'.format(i))
+            with open(f'{path}.corrupt.{i}', 'w') as f:
+                f.write(f'taken-{i}')
 
         target = quarantine_file(path)
 

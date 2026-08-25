@@ -6,10 +6,9 @@ import unittest
 import yaml
 from tornado.options import options
 from tornado.web import Application
+
 from webssh import handler
-from webssh.main import (
-    app_listen, reload_config, check_user_hosts_configuration
-)
+from webssh.main import app_listen, check_user_hosts_configuration, reload_config
 
 
 class TestMain(unittest.TestCase):
@@ -19,12 +18,12 @@ class TestMain(unittest.TestCase):
         app.listen = lambda x, y, **kwargs: 1
 
         handler.redirecting = None
-        server_settings = dict()
+        server_settings = {}
         app_listen(app, 80, '127.0.0.1', server_settings)
         self.assertFalse(handler.redirecting)
 
         handler.redirecting = None
-        server_settings = dict(ssl_options='enabled')
+        server_settings = {'ssl_options': 'enabled'}
         app_listen(app, 80, '127.0.0.1', server_settings)
         self.assertTrue(handler.redirecting)
 

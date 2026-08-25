@@ -5,13 +5,10 @@ import sys
 
 import yaml
 from tornado.options import define
-from webssh.policy import (
-    load_host_keys, get_policy_class, check_policy_setting
-)
-from webssh.utils import (
-    to_ip_address, parse_origin_from_url, is_valid_encoding
-)
+
 from webssh._version import __version__
+from webssh.policy import check_policy_setting, get_policy_class, load_host_keys
+from webssh.utils import is_valid_encoding, parse_origin_from_url, to_ip_address
 
 
 def print_version(flag):
@@ -83,7 +80,7 @@ max_body_size = 1 * 1024 * 1024
 max_upload_size = 512 * 1024 * 1024
 
 
-class Font(object):
+class Font:
 
     def __init__(self, filename, dirs):
         self.family = self.get_family(filename)
@@ -97,28 +94,28 @@ class Font(object):
 
 
 def get_app_settings(options):
-    settings = dict(
-        template_path=os.path.join(base_dir, 'webssh', 'templates'),
-        static_path=os.path.join(base_dir, 'webssh', 'static'),
-        websocket_ping_interval=options.wpintvl,
-        debug=options.debug,
-        xsrf_cookies=options.xsrf,
-        font=Font(
+    settings = {
+        'template_path': os.path.join(base_dir, 'webssh', 'templates'),
+        'static_path': os.path.join(base_dir, 'webssh', 'static'),
+        'websocket_ping_interval': options.wpintvl,
+        'debug': options.debug,
+        'xsrf_cookies': options.xsrf,
+        'font': Font(
             get_font_filename(options.font,
                               os.path.join(base_dir, *font_dirs)),
             font_dirs[1:]
         ),
-        origin_policy=get_origin_setting(options)
-    )
+        'origin_policy': get_origin_setting(options)
+    }
     return settings
 
 
 def get_server_settings(options):
-    settings = dict(
-        xheaders=options.xheaders,
-        max_body_size=max_body_size,
-        trusted_downstream=get_trusted_downstream(options.tdstream)
-    )
+    settings = {
+        'xheaders': options.xheaders,
+        'max_body_size': max_body_size,
+        'trusted_downstream': get_trusted_downstream(options.tdstream)
+    }
     return settings
 
 
@@ -135,11 +132,11 @@ def get_host_keys_settings(options):
         filename = options.syshostfile
     system_host_keys = load_host_keys(filename)
 
-    settings = dict(
-        host_keys=host_keys,
-        system_host_keys=system_host_keys,
-        host_keys_filename=host_keys_filename
-    )
+    settings = {
+        'host_keys': host_keys,
+        'system_host_keys': system_host_keys,
+        'host_keys_filename': host_keys_filename
+    }
     return settings
 
 
@@ -158,9 +155,9 @@ def get_ssl_context(options):
     elif not options.keyfile:
         raise ValueError('keyfile is not provided')
     elif not os.path.isfile(options.certfile):
-        raise ValueError('File {!r} does not exist'.format(options.certfile))
+        raise ValueError(f'File {options.certfile!r} does not exist')
     elif not os.path.isfile(options.keyfile):
-        raise ValueError('File {!r} does not exist'.format(options.keyfile))
+        raise ValueError(f'File {options.keyfile!r} does not exist')
     else:
         ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_ctx.load_cert_chain(options.certfile, options.keyfile)
@@ -242,7 +239,7 @@ def get_font_filename(font, font_dir):
     if font:
         if font not in filenames:
             raise ValueError(
-                'Font file {!r} not found'.format(os.path.join(font_dir, font))
+                f'Font file {os.path.join(font_dir, font)!r} not found'
             )
     elif filenames:
         font = filenames.pop()
@@ -252,13 +249,13 @@ def get_font_filename(font, font_dir):
 
 def check_encoding_setting(encoding):
     if encoding and not is_valid_encoding(encoding):
-        raise ValueError('Unknown character encoding {!r}.'.format(encoding))
+        raise ValueError(f'Unknown character encoding {encoding!r}.')
 
 
 def load_config_file(filepath):
     if not os.path.isfile(filepath):
         raise ValueError(
-            'Config file {!r} does not exist'.format(filepath)
+            f'Config file {filepath!r} does not exist'
         )
 
     with open(filepath, 'r') as f:
@@ -277,8 +274,7 @@ def _validate_host_key(host_key, hostname):
     parts = host_key.strip().split()
     if len(parts) < 2:
         raise ValueError(
-            'Invalid host_key for {!r}: expected "key-type base64-key"'.format(
-                hostname)
+            f'Invalid host_key for {hostname!r}: expected "key-type base64-key"'
         )
     key_type = parts[0]
     valid_types = (
@@ -287,13 +283,13 @@ def _validate_host_key(host_key, hostname):
     )
     if key_type not in valid_types:
         raise ValueError(
-            'Invalid host_key type {!r} for {!r}'.format(key_type, hostname)
+            f'Invalid host_key type {key_type!r} for {hostname!r}'
         )
     try:
         base64.b64decode(parts[1], validate=True)
     except Exception:
         raise ValueError(
-            'Invalid host_key base64 data for {!r}'.format(hostname)
+            f'Invalid host_key base64 data for {hostname!r}'
         )
 
 
@@ -397,11 +393,11 @@ def apply_config_settings(options):
             timeout = int(raw)
         except (TypeError, ValueError):
             raise ValueError(
-                'Invalid idle_timeout value {!r} in config; must be a non-negative integer'.format(raw)
+                f'Invalid idle_timeout value {raw!r} in config; must be a non-negative integer'
             )
         if timeout < 0:
             raise ValueError(
-                'Invalid idle_timeout value {!r} in config; must be a non-negative integer'.format(raw)
+                f'Invalid idle_timeout value {raw!r} in config; must be a non-negative integer'
             )
         options.idletimeout = timeout
     if 'trusted_proxies' in config:
@@ -438,17 +434,17 @@ def check_user_key_dir(user_key_dir, tdstream=''):
         os.makedirs(user_key_dir, mode=0o700, exist_ok=True)
     except PermissionError:
         raise ValueError(
-            'Cannot create user key directory {!r}: permission denied. '
+            f'Cannot create user key directory {user_key_dir!r}: permission denied. '
             'Create the directory manually or run with appropriate '
-            'permissions.'.format(user_key_dir)
+            'permissions.'
         )
     except (FileExistsError, NotADirectoryError):
         raise ValueError(
-            'User key directory {!r} is not a directory'.format(user_key_dir)
+            f'User key directory {user_key_dir!r} is not a directory'
         )
     if not os.path.isdir(user_key_dir):
         raise ValueError(
-            'User key directory {!r} is not a directory'.format(user_key_dir)
+            f'User key directory {user_key_dir!r} is not a directory'
         )
 
 
@@ -472,15 +468,15 @@ def check_user_data_dir(user_data_dir, tdstream=''):
         os.makedirs(user_data_dir, mode=0o700, exist_ok=True)
     except PermissionError:
         raise ValueError(
-            'Cannot create user data directory {!r}: permission denied. '
+            f'Cannot create user data directory {user_data_dir!r}: permission denied. '
             'Create the directory manually or run with appropriate '
-            'permissions.'.format(user_data_dir)
+            'permissions.'
         )
     except (FileExistsError, NotADirectoryError):
         raise ValueError(
-            'User data directory {!r} is not a directory'.format(user_data_dir)
+            f'User data directory {user_data_dir!r} is not a directory'
         )
     if not os.path.isdir(user_data_dir):
         raise ValueError(
-            'User data directory {!r} is not a directory'.format(user_data_dir)
+            f'User data directory {user_data_dir!r} is not a directory'
         )

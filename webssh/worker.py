@@ -1,15 +1,15 @@
 import logging
+
 try:
     import secrets
 except ImportError:
     secrets = None
-import tornado.websocket
-
 from uuid import uuid4
+
+import tornado.websocket
 from tornado.ioloop import IOLoop
 from tornado.iostream import _ERRNO_CONNRESET
 from tornado.util import errno_from_exception
-
 
 BUF_SIZE = 32 * 1024
 clients = {}  # {ip: {id: worker}}
@@ -152,11 +152,11 @@ def clear_worker(worker, clients):
 def recycle_worker(worker):
     if worker.handler:
         return
-    logging.warning('Recycling worker {}'.format(worker.id))
+    logging.warning(f'Recycling worker {worker.id}')
     worker.close(reason='worker recycled')
 
 
-class Worker(object):
+class Worker:
     def __init__(self, loop, ssh, chan, dst_addr):
         self.loop = loop
         self.ssh = ssh
@@ -188,8 +188,8 @@ class Worker(object):
         """
         if self.transfers <= 0:
             logging.error(
-                'Transfer counter underflow on worker {}; releasing a slot '
-                'that was never taken'.format(self.id))
+                f'Transfer counter underflow on worker {self.id}; releasing a slot '
+                'that was never taken')
             self.transfers = 0
             return
         self.transfers -= 1
@@ -218,10 +218,10 @@ class Worker(object):
             self.loop.call_later(0.1, self, self.fd, IOLoop.WRITE)
 
     def on_read(self):
-        logging.debug('worker {} on read'.format(self.id))
+        logging.debug(f'worker {self.id} on read')
         try:
             data = self.chan.recv(BUF_SIZE)
-        except (OSError, IOError) as e:
+        except OSError as e:
             logging.error(e)
             if self.chan.closed or errno_from_exception(e) in _ERRNO_CONNRESET:
                 self.close(reason='chan error on reading')
@@ -238,7 +238,7 @@ class Worker(object):
                 self.close(reason='websocket closed')
 
     def on_write(self):
-        logging.debug('worker {} on write'.format(self.id))
+        logging.debug(f'worker {self.id} on write')
         if not self.data_to_dst:
             return
 
@@ -247,7 +247,7 @@ class Worker(object):
 
         try:
             sent = self.chan.send(data)
-        except (OSError, IOError) as e:
+        except OSError as e:
             logging.error(e)
             if self.chan.closed or errno_from_exception(e) in _ERRNO_CONNRESET:
                 self.close(reason='chan error on writing')
@@ -270,7 +270,7 @@ class Worker(object):
         drop_tickets_for(self.id)
 
         logging.info(
-            'Closing worker {} with reason: {}'.format(self.id, reason)
+            f'Closing worker {self.id} with reason: {reason}'
         )
         if self.handler:
             self.loop.remove_handler(self.fd)

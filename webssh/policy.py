@@ -1,6 +1,7 @@
 import logging
 import os.path
 import threading
+
 import paramiko
 
 
@@ -31,7 +32,7 @@ def get_policy_class(policy):
     try:
         cls = dic[policy]
     except KeyError:
-        raise ValueError('Unknown policy {!r}'.format(origin_policy))
+        raise ValueError(f'Unknown policy {origin_policy!r}')
     return cls
 
 
@@ -71,7 +72,7 @@ class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
             if self.is_missing_host_key(client, hostname, key):
                 keytype = key.get_name()
                 logging.info(
-                    'Adding {} host key for {}'.format(keytype, hostname)
+                    f'Adding {keytype} host key for {hostname}'
                 )
                 client._host_keys._entries.append(
                     paramiko.hostkeys.HostKeyEntry([hostname], key)
@@ -91,9 +92,7 @@ class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
                     )
 
                 with open(client._host_keys_filename, 'a') as f:
-                    f.write('{} {} {}\n'.format(
-                        hostname, keytype, key.get_base64()
-                    ))
+                    f.write(f'{hostname} {keytype} {key.get_base64()}\n')
 
 
 paramiko.client.AutoAddPolicy = AutoAddPolicy

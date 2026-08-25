@@ -1,13 +1,17 @@
 import os
 import unittest
-import paramiko
-
 from shutil import copyfile
+
+import paramiko
 from paramiko.client import RejectPolicy, WarningPolicy
+
 from tests.utils import make_tests_data_path
 from webssh.policy import (
-    AutoAddPolicy, get_policy_dictionary, load_host_keys,
-    get_policy_class, check_policy_setting
+    AutoAddPolicy,
+    check_policy_setting,
+    get_policy_class,
+    get_policy_dictionary,
+    load_host_keys,
 )
 
 
@@ -46,11 +50,11 @@ class TestPolicy(unittest.TestCase):
 
     def test_check_policy_setting(self):
         host_keys_filename = make_tests_data_path('host_keys_test.db')
-        host_keys_settings = dict(
-            host_keys=paramiko.hostkeys.HostKeys(),
-            system_host_keys=paramiko.hostkeys.HostKeys(),
-            host_keys_filename=host_keys_filename
-        )
+        host_keys_settings = {
+            'host_keys': paramiko.hostkeys.HostKeys(),
+            'system_host_keys': paramiko.hostkeys.HostKeys(),
+            'host_keys_filename': host_keys_filename
+        }
 
         with self.assertRaises(ValueError):
             check_policy_setting(RejectPolicy, host_keys_settings)

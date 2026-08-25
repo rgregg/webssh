@@ -74,7 +74,7 @@ def is_valid_port(port):
 
 def is_valid_encoding(encoding):
     try:
-        u'test'.encode(encoding)
+        'test'.encode(encoding)
     except LookupError:
         return False
     except ValueError:
@@ -144,8 +144,7 @@ def parse_origin_from_url(url):
     if not url:
         return
 
-    if not (url.startswith('http://') or url.startswith('https://') or
-            url.startswith('//')):
+    if not (url.startswith(('http://', 'https://', '//'))):
         url = '//' + url
 
     parsed = urlparse(url)
@@ -162,4 +161,4 @@ def parse_origin_from_url(url):
     else:
         netloc = parsed.netloc
 
-    return '{}://{}'.format(scheme, netloc)
+    return f'{scheme}://{netloc}'
