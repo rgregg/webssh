@@ -8,6 +8,8 @@ import paramiko
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+logger = logging.getLogger(__name__)
+
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
 
 
@@ -112,5 +114,5 @@ def generate_key_pair(base_dir, username):
             except OSError:
                 pass
 
-    logging.info(f'Generated SSH key pair for user {username!r}')
+    logger.info(f'Generated SSH key pair for user {username!r}')
     return pub_key_str

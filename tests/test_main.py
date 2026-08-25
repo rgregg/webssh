@@ -10,6 +10,8 @@ from tornado.web import Application
 from webssh import handler
 from webssh.main import app_listen, check_user_hosts_configuration, reload_config
 
+logger = logging.getLogger(__name__)
+
 
 class TestMain(unittest.TestCase):
 
@@ -32,7 +34,7 @@ class TestCheckUserHostsConfiguration(unittest.TestCase):
 
     def test_disabled_does_nothing(self):
         with self.assertLogs(level='WARNING') as cm:
-            logging.warning('sentinel')
+            logger.warning('sentinel')
             check_user_hosts_configuration(False, '')
         self.assertEqual(len(cm.output), 1)
 

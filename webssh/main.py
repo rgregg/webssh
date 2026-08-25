@@ -39,6 +39,8 @@ from webssh.settings import (
     parse_allowed_hosts,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def make_handlers(loop, options, live_config=None):
     host_keys_settings = get_host_keys_settings(options)
@@ -115,7 +117,7 @@ def app_listen(app, port, address, server_settings):
     else:
         server_type = 'https'
         handler.redirecting = bool(options.redirect)
-    logging.info(
+    logger.info(
         f'Listening on {address}:{port} ({server_type})'
     )
 
@@ -132,7 +134,7 @@ def reload_config(config_path, live_config, host_keys_settings):
     try:
         data = load_config_file(config_path)
     except Exception as exc:
-        logging.error(f'Failed to reload config: {exc}')
+        logger.error(f'Failed to reload config: {exc}')
         return
 
     # Stage all values before applying
@@ -141,7 +143,7 @@ def reload_config(config_path, live_config, host_keys_settings):
     try:
         updates['allowed_hosts'] = parse_allowed_hosts(data)
     except ValueError as exc:
-        logging.error(f'Invalid hosts in config reload: {exc}')
+        logger.error(f'Invalid hosts in config reload: {exc}')
         return
 
     if 'policy' in data:
@@ -151,7 +153,7 @@ def reload_config(config_path, live_config, host_keys_settings):
             check_policy_setting(policy_class, host_keys_settings)
             updates['policy'] = policy_class()
         except ValueError as exc:
-            logging.error(f'Invalid policy in config reload: {exc}')
+            logger.error(f'Invalid policy in config reload: {exc}')
             return
 
     new_idle_timeout = None
@@ -159,12 +161,12 @@ def reload_config(config_path, live_config, host_keys_settings):
         try:
             new_idle_timeout = int(data['idle_timeout'])
         except (TypeError, ValueError):
-            logging.error(
+            logger.error(
                 'Invalid idle_timeout in config reload: {!r}'.format(
                     data['idle_timeout']))
             return
         if new_idle_timeout < 0:
-            logging.error(
+            logger.error(
                 f'Invalid idle_timeout (must be >= 0): {new_idle_timeout}')
             return
 
@@ -182,7 +184,7 @@ def reload_config(config_path, live_config, host_keys_settings):
         parts.append('policy={}'.format(data['policy']))
     if new_idle_timeout is not None:
         parts.append(f'idle_timeout={new_idle_timeout}')
-    logging.info('Config reloaded: {}'.format(', '.join(parts)))
+    logger.info('Config reloaded: {}'.format(', '.join(parts)))
 
 
 def start_config_watcher(config_path, live_config, host_keys_settings,
@@ -202,7 +204,7 @@ def start_config_watcher(config_path, live_config, host_keys_settings,
             return
         if mtime > state['mtime']:
             state['mtime'] = mtime
-            logging.info('Config file changed, reloading...')
+            logger.info('Config file changed, reloading...')
             reload_config(config_path, live_config, host_keys_settings)
 
     watcher = PeriodicCallback(check_config, interval)
@@ -227,7 +229,7 @@ def main():
     options.parse_command_line()
     if not options.config and os.path.isfile(DEFAULT_CONFIG_PATH):
         options.config = DEFAULT_CONFIG_PATH
-        logging.info(f'Using default config file: {DEFAULT_CONFIG_PATH}')
+        logger.info(f'Using default config file: {DEFAULT_CONFIG_PATH}')
     apply_config_settings(options)
     check_encoding_setting(options.encoding)
     check_user_key_dir(options.userkeydir, options.tdstream)
@@ -256,7 +258,7 @@ def main():
     try:
         loop.start()
     except KeyboardInterrupt:
-        logging.info('Exiting.')
+        logger.info('Exiting.')
 
 
 if __name__ == '__main__':

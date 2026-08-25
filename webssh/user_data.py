@@ -10,6 +10,8 @@ from webssh.settings import parse_host_entry
 from webssh.user_keys import sanitize_username
 from webssh.utils import is_valid_encoding
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_VERSION = 1
 MAX_HOSTS = 200
 MAX_FIELD_LENGTH = 512
@@ -156,7 +158,7 @@ def quarantine_file(path):
     try:
         os.rename(path, target)
     except OSError as exc:
-        logging.error(
+        logger.error(
             f'Could not quarantine unreadable file {path!r}: {exc}')
         return None
     return target
@@ -173,7 +175,7 @@ def _read_json(base_dir, username, filename, payload_key, empty):
         # a later save would overwrite the file with the empty payload. Move
         # the original aside so it stays recoverable.
         target = quarantine_file(path)
-        logging.error(
+        logger.error(
             'Unreadable {} for user {!r}: {}{}'.format(
                 filename, username, reason,
                 f'; moved to {target!r}' if target else ''

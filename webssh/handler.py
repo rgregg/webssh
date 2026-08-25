@@ -53,6 +53,8 @@ except ImportError:
     from urlparse import urlparse
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_PORT = 22
 
 swallow_http_errors = True
@@ -102,7 +104,7 @@ class SSHClient(paramiko.SSHClient):
         two_factor_types = {'keyboard-interactive', 'password'}
 
         if pkey is not None:
-            logging.info('Trying publickey authentication')
+            logger.info('Trying publickey authentication')
             try:
                 allowed_types = set(
                     self._transport.auth_publickey(username, pkey)
@@ -114,11 +116,11 @@ class SSHClient(paramiko.SSHClient):
                 saved_exception = e
 
         if two_factor:
-            logging.info('Trying publickey 2fa')
+            logger.info('Trying publickey 2fa')
             return self.auth_interactive(username, self.handler)
 
         if password is not None:
-            logging.info('Trying password authentication')
+            logger.info('Trying password authentication')
             try:
                 self._transport.auth_password(username, password)
                 return
@@ -128,7 +130,7 @@ class SSHClient(paramiko.SSHClient):
                 two_factor = allowed_types & two_factor_types
 
         if two_factor:
-            logging.info('Trying password 2fa')
+            logger.info('Trying password 2fa')
             return self.auth_interactive(username, self.handler)
 
         assert saved_exception is not None
@@ -174,9 +176,9 @@ class PrivateKey:
 
     def get_specific_pkey(self, name, offset, password):
         self.iostr.seek(offset)
-        logging.debug(f'Reset offset to {offset}.')
+        logger.debug(f'Reset offset to {offset}.')
 
-        logging.debug(f'Try parsing it as {name} type key')
+        logger.debug(f'Try parsing it as {name} type key')
         pkeycls = getattr(paramiko, name+'Key')
         pkey = None
 
@@ -186,12 +188,12 @@ class PrivateKey:
             raise InvalidValueError('Need a passphrase to decrypt the key.')
         except (paramiko.SSHException, ValueError) as exc:
             self.last_exception = exc
-            logging.debug(str(exc))
+            logger.debug(str(exc))
 
         return pkey
 
     def get_pkey_obj(self):
-        logging.info(f'Parsing private key {self.filename!r}')
+        logger.info(f'Parsing private key {self.filename!r}')
         name, length = self.parse_name(self.iostr, self.tag_to_name)
         if not name:
             raise InvalidValueError(f'Invalid key {self.filename}.')
@@ -209,7 +211,7 @@ class PrivateKey:
         if pkey:
             return pkey
 
-        logging.error(str(self.last_exception))
+        logger.error(str(self.last_exception))
         msg = 'Invalid key'
         if self.password:
             msg += ' or wrong passphrase for decrypting it.'
@@ -276,10 +278,10 @@ class MixinHandler:
 
         parsed_origin = urlparse(origin)
         netloc = parsed_origin.netloc.lower()
-        logging.debug(f'netloc: {netloc}')
+        logger.debug(f'netloc: {netloc}')
 
         host = self.request.headers.get('Host')
-        logging.debug(f'host: {host}')
+        logger.debug(f'host: {host}')
 
         if netloc == host:
             return True
@@ -299,7 +301,7 @@ class MixinHandler:
         ip_address = None
 
         if lst and ip not in lst:
-            logging.warning(
+            logger.warning(
                 f'IP {ip!r} not found in trusted downstream {lst!r}'
             )
             self._untrusted_ip = ip
@@ -316,7 +318,7 @@ class MixinHandler:
                 if ip_address is None:
                     ip_address = to_ip_address(ip)
                 if not ip_address.is_private:
-                    logging.warning('Public plain http request is forbidden.')
+                    logger.warning('Public plain http request is forbidden.')
                     return True
 
     def get_redirect_url(self, hostname, port, uri):
@@ -514,13 +516,13 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         merged = list(admin)
         for host in self.get_user_hosts():
             if not isinstance(host, dict):
-                logging.warning(
+                logger.warning(
                     f'Skipping malformed user host entry: {host!r}')
                 continue
             hostname = host.get('hostname')
             port = host.get('port')
             if hostname is None or port is None:
-                logging.warning(
+                logger.warning(
                     f'Skipping malformed user host entry: {host!r}')
                 continue
             if (hostname, port) not in seen:
@@ -571,7 +573,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             host_entry = f'[{hostname}]:{port}'
 
         self.ssh_client._host_keys.add(host_entry, key_type, key)
-        logging.debug(
+        logger.debug(
             f'Loaded configured host key ({key_type}) for {host_entry}'
         )
 
@@ -616,7 +618,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
         self.ssh_client.totp = totp
         args = (hostname, port, username, password, pkey)
-        logging.debug((hostname, port, username))
+        logger.debug((hostname, port, username))
 
         return args
 
@@ -641,25 +643,25 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                                                 get_pty=True,
                                                 timeout=1)
             except paramiko.SSHException as exc:
-                logging.info(str(exc))
+                logger.info(str(exc))
             else:
                 try:
                     data = stdout.read()
                 except TimeoutError:
                     pass
                 else:
-                    logging.debug(f'{command!r} => {data!r}')
+                    logger.debug(f'{command!r} => {data!r}')
                     result = self.parse_encoding(data)
                     if result:
                         return result
 
-        logging.warning('Could not detect the default encoding.')
+        logger.warning('Could not detect the default encoding.')
         return 'utf-8'
 
     def ssh_connect(self, args):
         ssh = self.ssh_client
         dst_addr = args[:2]
-        logging.info('Connecting to {}:{}'.format(*dst_addr))
+        logger.info('Connecting to {}:{}'.format(*dst_addr))
 
         try:
             ssh.connect(*args, timeout=options.timeout)
@@ -692,7 +694,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                 # (not an OSError) when the transport is already gone, e.g.
                 # the remote end closed the connection right after the shell
                 # was invoked.
-                logging.warning(
+                logger.warning(
                     f'Shell integration not sent: {exc}')
 
         return worker
@@ -777,8 +779,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             worker = yield future
         except (ValueError, paramiko.SSHException) as exc:
-            logging.warning(f'SSH connection failed: {exc}')
-            logging.debug(traceback.format_exc())
+            logger.warning(f'SSH connection failed: {exc}')
+            logger.debug(traceback.format_exc())
             self.result.update(status=str(exc))
         else:
             if not workers:
@@ -829,7 +831,7 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             public_key = yield future
         except Exception:
-            logging.exception('Failed to generate key pair for user %s', username)
+            logger.exception('Failed to generate key pair for user %s', username)
             self.set_status(500)
             self.write({'error': 'Failed to generate key pair.'})
             return
@@ -922,7 +924,7 @@ class UserHostsHandler(UserDataMixin, MixinHandler,
         try:
             stored = user_data.write_hosts(self.user_data_dir, username, hosts)
         except ValueError as exc:
-            logging.error(
+            logger.error(
                 f'Failed to write hosts for user {username!r}: {exc}')
             raise tornado.web.HTTPError(500, 'Failed to save hosts.')
         self.write({'user_hosts': stored})
@@ -955,7 +957,7 @@ class UserSettingsHandler(UserDataMixin, MixinHandler,
             stored = user_data.write_settings(
                 self.user_data_dir, username, settings)
         except ValueError as exc:
-            logging.error(
+            logger.error(
                 f'Failed to write settings for user {username!r}: {exc}')
             raise tornado.web.HTTPError(500, 'Failed to save settings.')
         self.write({'settings': stored})
@@ -1020,7 +1022,7 @@ class TransferMixin(MixinHandler):
 
         ip = self.get_client_addr()[0]
         if worker.src_addr[0] != ip:
-            logging.warning(
+            logger.warning(
                 f'Transfer request for worker {worker_id} from {ip}, which does not own '
                 'it')
             raise tornado.web.HTTPError(404)
@@ -1123,7 +1125,7 @@ class TransferTicketHandler(TransferMixin, tornado.web.RequestHandler):
         except worker_module.TicketPathTooLong:
             raise tornado.web.HTTPError(400, 'Path too long')
         except worker_module.TicketStoreFull:
-            logging.warning('Download ticket store full; refusing to mint')
+            logger.warning('Download ticket store full; refusing to mint')
             raise tornado.web.HTTPError(503, 'Too many pending downloads.')
 
         self.write({'ticket': ticket,
@@ -1425,7 +1427,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
 
     def open(self):
         self.src_addr = self.get_client_addr()
-        logging.info('Connected from {}:{}'.format(*self.src_addr))
+        logger.info('Connected from {}:{}'.format(*self.src_addr))
 
         workers = clients.get(self.src_addr[0])
         if not workers:
@@ -1464,20 +1466,20 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if worker and worker.transfers:
             # A transfer is in flight on this connection. Closing now would
             # kill the SSH session it rides on, so re-arm instead.
-            logging.debug('Idle timeout deferred: transfer in progress')
+            logger.debug('Idle timeout deferred: transfer in progress')
             self._reset_idle_timeout()
             return
 
-        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
+        logger.info('Idle timeout for {}:{}'.format(*self.src_addr))
         if worker:
             worker.close(reason='Idle timeout.')
 
     def on_message(self, message):
-        logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
+        logger.debug('{!r} from {}:{}'.format(message, *self.src_addr))
         worker = self.worker_ref()
         if not worker:
             # The worker has likely been closed. Do not process.
-            logging.debug(
+            logger.debug(
                 "received message to closed worker from {}:{}".format(
                     *self.src_addr
                 )
@@ -1515,7 +1517,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if self._idle_timeout:
             self.loop.remove_timeout(self._idle_timeout)
             self._idle_timeout = None
-        logging.info('Disconnected from {}:{}'.format(*self.src_addr))
+        logger.info('Disconnected from {}:{}'.format(*self.src_addr))
         if not self.close_reason:
             self.close_reason = 'client disconnected'
 

@@ -10,6 +10,8 @@ from webssh._version import __version__
 from webssh.policy import check_policy_setting, get_policy_class, load_host_keys
 from webssh.utils import is_valid_encoding, parse_origin_from_url, to_ip_address
 
+logger = logging.getLogger(__name__)
+
 
 def print_version(flag):
     if flag:
@@ -142,7 +144,7 @@ def get_host_keys_settings(options):
 
 def get_policy_setting(options, host_keys_settings):
     policy_class = get_policy_class(options.policy)
-    logging.info(policy_class.__name__)
+    logger.info(policy_class.__name__)
     check_policy_setting(policy_class, host_keys_settings)
     return policy_class()
 
@@ -426,7 +428,7 @@ def check_user_key_dir(user_key_dir, tdstream=''):
     if not user_key_dir:
         return
     if not tdstream:
-        logging.warning(
+        logger.warning(
             'SECURITY WARNING: userkeydir is set but no trusted_proxies '
             'configured. The user header can be spoofed by any client.'
         )
@@ -454,13 +456,13 @@ def get_user_data_dir_setting(options):
 
 def check_user_data_dir(user_data_dir, tdstream=''):
     if not user_data_dir:
-        logging.warning(
+        logger.warning(
             'user_hosts is enabled but no userdatadir or userkeydir '
             'is configured, so user host management is disabled.'
         )
         return
     if not tdstream:
-        logging.warning(
+        logger.warning(
             'SECURITY WARNING: user_hosts is enabled but no trusted_proxies '
             'configured. The user header can be spoofed by any client.'
         )

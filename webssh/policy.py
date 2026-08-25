@@ -4,6 +4,8 @@ import threading
 
 import paramiko
 
+logger = logging.getLogger(__name__)
+
 
 def load_host_keys(path):
     if os.path.exists(path) and os.path.isfile(path):
@@ -27,7 +29,7 @@ def get_policy_class(policy):
         policy += 'policy'
 
     dic = get_policy_dictionary()
-    logging.debug(dic)
+    logger.debug(dic)
 
     try:
         cls = dic[policy]
@@ -71,7 +73,7 @@ class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
         with self.lock:
             if self.is_missing_host_key(client, hostname, key):
                 keytype = key.get_name()
-                logging.info(
+                logger.info(
                     f'Adding {keytype} host key for {hostname}'
                 )
                 client._host_keys._entries.append(

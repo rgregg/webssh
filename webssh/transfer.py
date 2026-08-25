@@ -3,6 +3,8 @@ import logging
 import posixpath
 import stat
 
+logger = logging.getLogger(__name__)
+
 CHUNK_SIZE = 256 * 1024
 MAX_LIST_ENTRIES = 1000
 
@@ -43,7 +45,7 @@ def open_sftp(ssh):
     try:
         return ssh.open_sftp()
     except Exception as exc:
-        logging.warning(f'Could not open SFTP channel: {exc}')
+        logger.warning(f'Could not open SFTP channel: {exc}')
         raise TransferError(410, 'The terminal session ended.')
 
 
@@ -88,7 +90,7 @@ class Download:
         try:
             self.handle.prefetch()
         except Exception as exc:
-            logging.warning(
+            logger.warning(
                 f'Prefetch unavailable for {self.path}, download will be slower: '
                 f'{exc}')
 
@@ -113,7 +115,7 @@ class Download:
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
-                logging.debug(
+                logger.debug(
                     f'Ignoring error closing {self.path}: {exc}')
             self.handle = None
 
@@ -188,7 +190,7 @@ class Upload:
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
-                logging.debug(
+                logger.debug(
                     f'Ignoring error closing {self.path}: {exc}')
             self.handle = None
 
@@ -200,7 +202,7 @@ class Upload:
         try:
             self.sftp.remove(self.final_path)
         except Exception as exc:
-            logging.warning(f'Could not remove partial upload {self.final_path}: {exc}')
+            logger.warning(f'Could not remove partial upload {self.final_path}: {exc}')
 
 
 def matches_filter(name, needle):
