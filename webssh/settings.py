@@ -292,7 +292,7 @@ def _validate_host_key(host_key, hostname):
         )
     try:
         base64.b64decode(parts[1], validate=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- any decode failure means invalid input
         raise ValueError(
             f'Invalid host_key base64 data for {hostname!r}'
         )

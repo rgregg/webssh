@@ -38,9 +38,11 @@ class TestGetUserDataDir(unittest.TestCase):
         # unhandled OSError (e.g. a permission error while resolving a
         # symlink) would otherwise escape as a 500 instead.
         from unittest import mock
-        with mock.patch('os.path.realpath', side_effect=OSError('boom')):
-            with self.assertRaises(ValueError):
-                get_user_data_dir(self.base, 'alice')
+        with (
+            mock.patch('os.path.realpath', side_effect=OSError('boom')),
+            self.assertRaises(ValueError),
+        ):
+            get_user_data_dir(self.base, 'alice')
 
 
 class TestValidateHosts(unittest.TestCase):
@@ -218,9 +220,11 @@ class TestRoundTrip(unittest.TestCase):
         # (e.g. ENOSPC during rename) would otherwise escape as an
         # uncaught 500 with no useful message.
         from unittest import mock
-        with mock.patch('os.rename', side_effect=OSError('disk full')):
-            with self.assertRaises(ValueError):
-                write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
+        with (
+            mock.patch('os.rename', side_effect=OSError('disk full')),
+            self.assertRaises(ValueError),
+        ):
+            write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
         # The failed write's temp file must not be left behind either.
         entries = os.listdir(get_user_data_dir(self.base, 'alice'))
         self.assertEqual(entries, [])

@@ -159,7 +159,7 @@ def run_ssh_server(port=2200, running=True, encodings=None):
         server = Server(encodings)
         try:
             t.start_server(server=server)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- test harness, log and keep serving
             print(e)
             continue
 
@@ -211,7 +211,7 @@ def run_ssh_server(port=2200, running=True, encodings=None):
 
     try:
         sock.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 -- best-effort cleanup
         pass
 
 

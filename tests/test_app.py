@@ -1144,10 +1144,12 @@ class TestUserDataApi(UserDataTestBase):
         def boom(base_dir, username, hosts):
             raise ValueError(message)
 
-        with mock.patch('webssh.user_data.write_hosts', side_effect=boom):
-            with self.assertLogs(level='ERROR') as cm:
-                response = self.put(
-                    '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
+        with (
+            mock.patch('webssh.user_data.write_hosts', side_effect=boom),
+            self.assertLogs(level='ERROR') as cm,
+        ):
+            response = self.put(
+                '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
 
         self.assertEqual(response.code, 500)
         body = to_str(response.body)
@@ -1171,10 +1173,12 @@ class TestUserDataApi(UserDataTestBase):
         def boom(base_dir, username, settings):
             raise ValueError(message)
 
-        with mock.patch('webssh.user_data.write_settings', side_effect=boom):
-            with self.assertLogs(level='ERROR') as cm:
-                response = self.put(
-                    '/api/settings', {'settings': {'font_size': 15}})
+        with (
+            mock.patch('webssh.user_data.write_settings', side_effect=boom),
+            self.assertLogs(level='ERROR') as cm,
+        ):
+            response = self.put(
+                '/api/settings', {'settings': {'font_size': 15}})
 
         self.assertEqual(response.code, 500)
         body = to_str(response.body)

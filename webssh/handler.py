@@ -486,11 +486,11 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def lookup_hostname(self, hostname, port):
         key = hostname if port == 22 else f'[{hostname}]:{port}'
 
-        if self.ssh_client._system_host_keys.lookup(key) is None:
-            if self.ssh_client._host_keys.lookup(key) is None:
-                raise tornado.web.HTTPError(
-                        403, f'Connection to {hostname}:{port} is not allowed.'
-                    )
+        if (self.ssh_client._system_host_keys.lookup(key) is None
+                and self.ssh_client._host_keys.lookup(key) is None):
+            raise tornado.web.HTTPError(
+                    403, f'Connection to {hostname}:{port} is not allowed.'
+                )
 
     def get_user_hosts(self):
         if not self.user_hosts_enabled or not self.user_data_dir:
@@ -1414,8 +1414,8 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         if sftp is not None:
             try:
                 sftp.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- best-effort cleanup
+                logger.debug(f'Ignoring error closing sftp: {exc}')
             self.sftp = None
 
 

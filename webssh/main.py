@@ -133,7 +133,7 @@ def reload_config(config_path, live_config, host_keys_settings):
     """
     try:
         data = load_config_file(config_path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- any bad config must not crash the reload loop
         logger.error(f'Failed to reload config: {exc}')
         return
 

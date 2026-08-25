@@ -44,7 +44,7 @@ def error_from_oserror(exc, path):
 def open_sftp(ssh):
     try:
         return ssh.open_sftp()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- any failure means the session is gone
         logger.warning(f'Could not open SFTP channel: {exc}')
         raise TransferError(410, 'The terminal session ended.')
 
@@ -89,7 +89,7 @@ class Download:
         # reason.
         try:
             self.handle.prefetch()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- must not fail the transfer
             logger.warning(
                 f'Prefetch unavailable for {self.path}, download will be slower: '
                 f'{exc}')
@@ -111,7 +111,7 @@ class Download:
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- not actionable for the caller
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
@@ -186,7 +186,7 @@ class Upload:
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- not actionable for the caller
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
@@ -201,7 +201,7 @@ class Upload:
             return
         try:
             self.sftp.remove(self.final_path)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- best-effort cleanup, must not raise
             logger.warning(f'Could not remove partial upload {self.final_path}: {exc}')
 
 

@@ -72,10 +72,9 @@ class TestCheckUserHostsConfiguration(unittest.TestCase):
 class TestReloadConfig(unittest.TestCase):
 
     def _make_config(self, data):
-        f = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.yaml', delete=False)
-        yaml.dump(data, f)
-        f.close()
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(data, f)
         return f.name
 
     def _make_host_keys_settings(self):
@@ -113,10 +112,9 @@ class TestReloadConfig(unittest.TestCase):
             os.unlink(config)
 
     def test_reload_invalid_yaml_keeps_previous(self):
-        f = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.yaml', delete=False)
-        f.write(': invalid: yaml: [')
-        f.close()
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.yaml', delete=False) as f:
+            f.write(': invalid: yaml: [')
         live = {'allowed_hosts': [{'hostname': 'old'}]}
         hks = self._make_host_keys_settings()
         try:
