@@ -6,10 +6,11 @@ import unittest
 import yaml
 from tornado.options import options
 from tornado.web import Application
+
 from webssh import handler
-from webssh.main import (
-    app_listen, reload_config, check_user_hosts_configuration
-)
+from webssh.main import app_listen, check_user_hosts_configuration, reload_config
+
+logger = logging.getLogger(__name__)
 
 
 class TestMain(unittest.TestCase):
@@ -19,12 +20,12 @@ class TestMain(unittest.TestCase):
         app.listen = lambda x, y, **kwargs: 1
 
         handler.redirecting = None
-        server_settings = dict()
+        server_settings = {}
         app_listen(app, 80, '127.0.0.1', server_settings)
         self.assertFalse(handler.redirecting)
 
         handler.redirecting = None
-        server_settings = dict(ssl_options='enabled')
+        server_settings = {'ssl_options': 'enabled'}
         app_listen(app, 80, '127.0.0.1', server_settings)
         self.assertTrue(handler.redirecting)
 
@@ -33,7 +34,7 @@ class TestCheckUserHostsConfiguration(unittest.TestCase):
 
     def test_disabled_does_nothing(self):
         with self.assertLogs(level='WARNING') as cm:
-            logging.warning('sentinel')
+            logger.warning('sentinel')
             check_user_hosts_configuration(False, '')
         self.assertEqual(len(cm.output), 1)
 
@@ -71,10 +72,9 @@ class TestCheckUserHostsConfiguration(unittest.TestCase):
 class TestReloadConfig(unittest.TestCase):
 
     def _make_config(self, data):
-        f = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.yaml', delete=False)
-        yaml.dump(data, f)
-        f.close()
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(data, f)
         return f.name
 
     def _make_host_keys_settings(self):
@@ -112,10 +112,9 @@ class TestReloadConfig(unittest.TestCase):
             os.unlink(config)
 
     def test_reload_invalid_yaml_keeps_previous(self):
-        f = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.yaml', delete=False)
-        f.write(': invalid: yaml: [')
-        f.close()
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.yaml', delete=False) as f:
+            f.write(': invalid: yaml: [')
         live = {'allowed_hosts': [{'hostname': 'old'}]}
         hks = self._make_host_keys_settings()
         try:

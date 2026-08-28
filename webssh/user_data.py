@@ -10,6 +10,7 @@ from webssh.settings import parse_host_entry
 from webssh.user_keys import sanitize_username
 from webssh.utils import is_valid_encoding
 
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 MAX_HOSTS = 200
@@ -44,19 +45,24 @@ def get_user_data_dir(base_dir, username):
 
 def _check_string(value, name, allow_empty=True):
     if not isinstance(value, str):
-        raise ValueError('{} must be a string'.format(name))
+        # Deliberately ValueError, not TypeError: handler.py catches
+        # ValueError at these call sites to return a 400 for malformed
+        # request payloads; TypeError would surface as an unhandled 500.
+        raise ValueError(f'{name} must be a string')  # noqa: TRY004
     if len(value) > MAX_FIELD_LENGTH:
-        raise ValueError('{} is too long'.format(name))
+        raise ValueError(f'{name} is too long')
     if not allow_empty and not value:
-        raise ValueError('{} must not be empty'.format(name))
+        raise ValueError(f'{name} must not be empty')
     return value
 
 
 def validate_hosts(hosts):
     if not isinstance(hosts, list):
-        raise ValueError('hosts must be a list')
+        # See _check_string above: ValueError is intentional here too, for
+        # the same 400-vs-500 reason.
+        raise ValueError('hosts must be a list')  # noqa: TRY004
     if len(hosts) > MAX_HOSTS:
-        raise ValueError('Too many hosts; the limit is {}'.format(MAX_HOSTS))
+        raise ValueError(f'Too many hosts; the limit is {MAX_HOSTS}')
 
     result = []
     for entry in hosts:
@@ -71,7 +77,9 @@ def validate_hosts(hosts):
 
 def validate_settings(settings):
     if not isinstance(settings, dict):
-        raise ValueError('settings must be a mapping')
+        # See _check_string above: ValueError is intentional here too, for
+        # the same 400-vs-500 reason.
+        raise ValueError('settings must be a mapping')  # noqa: TRY004
 
     result = {}
 
@@ -87,7 +95,7 @@ def validate_settings(settings):
         if name in settings:
             value = settings[name]
             if not isinstance(value, str) or not COLOR_RE.match(value):
-                raise ValueError('Invalid color for {}'.format(name))
+                raise ValueError(f'Invalid color for {name}')
             result[name] = value
 
     if 'cursor_blink' in settings:
@@ -99,13 +107,13 @@ def validate_settings(settings):
     if 'encoding' in settings:
         value = settings['encoding']
         if not isinstance(value, str) or not is_valid_encoding(value):
-            raise ValueError('Invalid encoding {!r}'.format(value))
+            raise ValueError(f'Invalid encoding {value!r}')
         result['encoding'] = value
 
     if 'term' in settings:
         value = settings['term']
         if not isinstance(value, str) or not TERM_RE.match(value):
-            raise ValueError('Invalid term {!r}'.format(value))
+            raise ValueError(f'Invalid term {value!r}')
         result['term'] = value
 
     if 'key_source' in settings:
@@ -149,17 +157,16 @@ def quarantine_file(path):
             # os.rename would otherwise silently overwrite an existing
             # target, destroying whatever was quarantined there.
             while True:
-                target = '{}.corrupt.{}-{}'.format(
-                    path, int(time.time()), uuid.uuid4().hex[:8])
+                target = f'{path}.corrupt.{int(time.time())}-{uuid.uuid4().hex[:8]}'
                 if not os.path.exists(target):
                     break
             break
-        target = '{}.corrupt.{}'.format(path, suffix)
+        target = f'{path}.corrupt.{suffix}'
     try:
         os.rename(path, target)
     except OSError as exc:
-        logging.error(
-            'Could not quarantine unreadable file {!r}: {}'.format(path, exc))
+        logger.error(
+            f'Could not quarantine unreadable file {path!r}: {exc}')
         return None
     return target
 
@@ -175,16 +182,14 @@ def _read_json(base_dir, username, filename, payload_key, empty):
         # a later save would overwrite the file with the empty payload. Move
         # the original aside so it stays recoverable.
         target = quarantine_file(path)
-        logging.error(
-            'Unreadable {} for user {!r}: {}{}'.format(
-                filename, username, reason,
-                '; moved to {!r}'.format(target) if target else ''
-            )
+        moved = f'; moved to {target!r}' if target else ''
+        logger.error(
+            f'Unreadable {filename} for user {username!r}: {reason}{moved}'
         )
         return empty
 
     try:
-        with open(path, 'r') as f:
+        with open(path) as f:
             data = json.load(f)
     except (ValueError, OSError) as exc:
         return give_up(exc)
@@ -192,7 +197,7 @@ def _read_json(base_dir, username, filename, payload_key, empty):
         return give_up('payload is not a mapping')
     payload = data.get(payload_key, empty)
     if not isinstance(payload, type(empty)):
-        return give_up('{!r} has the wrong type'.format(payload_key))
+        return give_up(f'{payload_key!r} has the wrong type')
     return payload
 
 
@@ -202,8 +207,8 @@ def _write_json(base_dir, username, filename, payload_key, payload):
         os.makedirs(user_dir, mode=0o700, exist_ok=True)
     except PermissionError:
         raise ValueError(
-            'Cannot create data directory for user {!r}: permission denied. '
-            'Check ownership of {!r}'.format(username, base_dir)
+            f'Cannot create data directory for user {username!r}: permission denied. '
+            f'Check ownership of {base_dir!r}'
         )
 
     body = json.dumps(
@@ -231,8 +236,7 @@ def _write_json(base_dir, username, filename, payload_key, payload):
         # ValueError; an uncaught OSError here would otherwise escape as
         # an unhandled 500 with no useful message for the client.
         raise ValueError(
-            'Could not write {} for user {!r}: {}'.format(
-                filename, username, exc)
+            f'Could not write {filename} for user {username!r}: {exc}'
         )
 
 

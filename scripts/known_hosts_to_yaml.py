@@ -8,9 +8,9 @@ Defaults to ~/.ssh/known_hosts if no file is specified.
 Output is written to stdout.
 """
 
+import os
 import re
 import sys
-import os
 from collections import defaultdict
 
 VALID_KEY_TYPES = {
@@ -49,7 +49,7 @@ def parse_known_hosts(filepath):
     hosts = defaultdict(list)
     hashed_count = 0
 
-    with open(filepath, 'r') as f:
+    with open(filepath) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
@@ -71,16 +71,16 @@ def parse_known_hosts(filepath):
             if key_type not in VALID_KEY_TYPES:
                 continue
 
-            key_str = '{} {}'.format(key_type, key_data)
+            key_str = f'{key_type} {key_data}'
 
             for hostname, port in parse_host_entry(host_str):
                 hosts[(hostname, port)].append(key_str)
 
     if hashed_count:
         print(
-            'Note: Skipped {} hashed entries. Hashed hostnames cannot be '
+            f'Note: Skipped {hashed_count} hashed entries. Hashed hostnames cannot be '
             'reversed.\nUse ssh-keyscan to get keys for specific hosts, e.g.:'
-            '\n  ssh-keyscan -t ed25519,rsa hostname\n'.format(hashed_count),
+            '\n  ssh-keyscan -t ed25519,rsa hostname\n',
             file=sys.stderr
         )
 
@@ -97,15 +97,15 @@ def generate_yaml(hosts):
     ]
 
     for (hostname, port), keys in sorted(hosts.items()):
-        lines.append('  - hostname: "{}"'.format(hostname))
+        lines.append(f'  - hostname: "{hostname}"')
         if port != 22:
-            lines.append('    port: {}'.format(port))
+            lines.append(f'    port: {port}')
         if len(keys) == 1:
-            lines.append('    host_key: "{}"'.format(keys[0]))
+            lines.append(f'    host_key: "{keys[0]}"')
         elif len(keys) > 1:
             lines.append('    host_key:')
             for key in keys:
-                lines.append('      - "{}"'.format(key))
+                lines.append(f'      - "{key}"')
 
     lines.append('')
     return '\n'.join(lines)
@@ -118,12 +118,12 @@ def main():
         filepath = os.path.expanduser('~/.ssh/known_hosts')
 
     if not os.path.isfile(filepath):
-        print('Error: {} not found'.format(filepath), file=sys.stderr)
+        print(f'Error: {filepath} not found', file=sys.stderr)
         sys.exit(1)
 
     hosts = parse_known_hosts(filepath)
     if not hosts:
-        print('No hosts found in {}'.format(filepath), file=sys.stderr)
+        print(f'No hosts found in {filepath}', file=sys.stderr)
         sys.exit(1)
 
     print(generate_yaml(hosts))

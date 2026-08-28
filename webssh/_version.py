@@ -12,10 +12,9 @@ def _get_version():
             stderr=subprocess.DEVNULL
         ).decode().strip()
         # Strip leading 'v' if present (v1.7.0 -> 1.7.0)
-        if out.startswith('v'):
-            out = out[1:]
+        out = out.removeprefix('v')
         return out
-    except Exception:
+    except Exception:  # noqa: BLE001 -- version parsing must never crash startup
         return FALLBACK_VERSION
 
 

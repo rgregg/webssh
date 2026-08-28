@@ -2,9 +2,16 @@ import json
 import unittest
 
 from webssh.utils import (
-    is_valid_ip_address, is_valid_port, is_valid_hostname, to_str, to_bytes,
-    to_int, is_ip_hostname, is_same_primary_domain, parse_origin_from_url,
-    json_encode_for_script
+    is_ip_hostname,
+    is_same_primary_domain,
+    is_valid_hostname,
+    is_valid_ip_address,
+    is_valid_port,
+    json_encode_for_script,
+    parse_origin_from_url,
+    to_bytes,
+    to_int,
+    to_str,
 )
 
 
@@ -12,13 +19,13 @@ class TestUitls(unittest.TestCase):
 
     def test_to_str(self):
         b = b'hello'
-        u = u'hello'
+        u = 'hello'
         self.assertEqual(to_str(b), u)
         self.assertEqual(to_str(u), u)
 
     def test_to_bytes(self):
         b = b'hello'
-        u = u'hello'
+        u = 'hello'
         self.assertEqual(to_bytes(b), b)
         self.assertEqual(to_bytes(u), b)
 

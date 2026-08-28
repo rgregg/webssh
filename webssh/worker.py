@@ -1,15 +1,17 @@
 import logging
+
 try:
     import secrets
 except ImportError:
     secrets = None
-import tornado.websocket
-
 from uuid import uuid4
+
+import tornado.websocket
 from tornado.ioloop import IOLoop
 from tornado.iostream import _ERRNO_CONNRESET
 from tornado.util import errno_from_exception
 
+logger = logging.getLogger(__name__)
 
 BUF_SIZE = 32 * 1024
 clients = {}  # {ip: {id: worker}}
@@ -152,11 +154,11 @@ def clear_worker(worker, clients):
 def recycle_worker(worker):
     if worker.handler:
         return
-    logging.warning('Recycling worker {}'.format(worker.id))
+    logger.warning(f'Recycling worker {worker.id}')
     worker.close(reason='worker recycled')
 
 
-class Worker(object):
+class Worker:
     def __init__(self, loop, ssh, chan, dst_addr):
         self.loop = loop
         self.ssh = ssh
@@ -187,9 +189,9 @@ class Worker(object):
         break visible instead.
         """
         if self.transfers <= 0:
-            logging.error(
-                'Transfer counter underflow on worker {}; releasing a slot '
-                'that was never taken'.format(self.id))
+            logger.error(
+                f'Transfer counter underflow on worker {self.id}; releasing a slot '
+                'that was never taken')
             self.transfers = 0
             return
         self.transfers -= 1
@@ -218,37 +220,37 @@ class Worker(object):
             self.loop.call_later(0.1, self, self.fd, IOLoop.WRITE)
 
     def on_read(self):
-        logging.debug('worker {} on read'.format(self.id))
+        logger.debug(f'worker {self.id} on read')
         try:
             data = self.chan.recv(BUF_SIZE)
-        except (OSError, IOError) as e:
-            logging.error(e)
+        except OSError as e:
+            logger.error(e)
             if self.chan.closed or errno_from_exception(e) in _ERRNO_CONNRESET:
                 self.close(reason='chan error on reading')
         else:
-            logging.debug('{!r} from {}:{}'.format(data, *self.dst_addr))
+            logger.debug(f'{data!r} from {self.dst_addr[0]}:{self.dst_addr[1]}')
             if not data:
                 self.close(reason='Remote server closed the connection.')
                 return
 
-            logging.debug('{!r} to {}:{}'.format(data, *self.handler.src_addr))
+            logger.debug(f'{data!r} to {self.handler.src_addr[0]}:{self.handler.src_addr[1]}')
             try:
                 self.handler.write_message(data, binary=True)
             except tornado.websocket.WebSocketClosedError:
                 self.close(reason='websocket closed')
 
     def on_write(self):
-        logging.debug('worker {} on write'.format(self.id))
+        logger.debug(f'worker {self.id} on write')
         if not self.data_to_dst:
             return
 
         data = ''.join(self.data_to_dst)
-        logging.debug('{!r} to {}:{}'.format(data, *self.dst_addr))
+        logger.debug(f'{data!r} to {self.dst_addr[0]}:{self.dst_addr[1]}')
 
         try:
             sent = self.chan.send(data)
-        except (OSError, IOError) as e:
-            logging.error(e)
+        except OSError as e:
+            logger.error(e)
             if self.chan.closed or errno_from_exception(e) in _ERRNO_CONNRESET:
                 self.close(reason='chan error on writing')
             else:
@@ -269,15 +271,15 @@ class Worker(object):
         unregister_live_worker(self)
         drop_tickets_for(self.id)
 
-        logging.info(
-            'Closing worker {} with reason: {}'.format(self.id, reason)
+        logger.info(
+            f'Closing worker {self.id} with reason: {reason}'
         )
         if self.handler:
             self.loop.remove_handler(self.fd)
             self.handler.close(reason=reason)
         self.chan.close()
         self.ssh.close()
-        logging.info('Connection to {}:{} lost'.format(*self.dst_addr))
+        logger.info(f'Connection to {self.dst_addr[0]}:{self.dst_addr[1]} lost')
 
         clear_worker(self, clients)
-        logging.debug(clients)
+        logger.debug(clients)

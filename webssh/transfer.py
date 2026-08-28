@@ -3,6 +3,7 @@ import logging
 import posixpath
 import stat
 
+logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 256 * 1024
 MAX_LIST_ENTRIES = 1000
@@ -17,7 +18,7 @@ class TransferError(Exception):
     """
 
     def __init__(self, status, message):
-        super(TransferError, self).__init__(message)
+        super().__init__(message)
         self.status = status
         self.message = message
 
@@ -37,14 +38,14 @@ def error_from_oserror(exc, path):
     code = getattr(exc, 'errno', None)
     status = ERRNO_STATUS.get(code, 400)
     message = getattr(exc, 'strerror', None) or str(exc) or 'Transfer failed'
-    return TransferError(status, '{}: {}'.format(message, path))
+    return TransferError(status, f'{message}: {path}')
 
 
 def open_sftp(ssh):
     try:
         return ssh.open_sftp()
-    except Exception as exc:
-        logging.warning('Could not open SFTP channel: {}'.format(exc))
+    except Exception as exc:  # noqa: BLE001 -- any failure means the session is gone
+        logger.warning(f'Could not open SFTP channel: {exc}')
         raise TransferError(410, 'The terminal session ended.')
 
 
@@ -52,7 +53,7 @@ def is_dir(attr):
     return stat.S_ISDIR(attr.st_mode)
 
 
-class Download(object):
+class Download:
     """Sequential reader for one remote file.
 
     Each method is called from a thread-pool worker, never the IOLoop,
@@ -68,16 +69,16 @@ class Download(object):
     def open(self):
         try:
             attr = self.sftp.stat(self.path)
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             raise error_from_oserror(exc, self.path)
 
         if is_dir(attr):
             raise TransferError(
-                400, 'Not a regular file: {}'.format(self.path))
+                400, f'Not a regular file: {self.path}')
 
         try:
             self.handle = self.sftp.open(self.path, 'rb')
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             raise error_from_oserror(exc, self.path)
 
         # Sequential reads are several times faster with prefetch on, and
@@ -88,10 +89,10 @@ class Download(object):
         # reason.
         try:
             self.handle.prefetch()
-        except Exception as exc:
-            logging.warning(
-                'Prefetch unavailable for {}, download will be slower: '
-                '{}'.format(self.path, exc))
+        except Exception as exc:  # noqa: BLE001 -- must not fail the transfer
+            logger.warning(
+                f'Prefetch unavailable for {self.path}, download will be slower: '
+                f'{exc}')
 
         return attr.st_size
 
@@ -100,7 +101,7 @@ class Download(object):
             return b''
         try:
             return self.handle.read(CHUNK_SIZE)
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             raise error_from_oserror(exc, self.path)
 
     def cancel(self):
@@ -110,16 +111,16 @@ class Download(object):
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- not actionable for the caller
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
-                logging.debug(
-                    'Ignoring error closing {}: {}'.format(self.path, exc))
+                logger.debug(
+                    f'Ignoring error closing {self.path}: {exc}')
             self.handle = None
 
 
-class Upload(object):
+class Upload:
     """Sequential writer for one remote file.
 
     ``open`` resolves the destination and refuses an existing file unless
@@ -139,7 +140,7 @@ class Upload(object):
     def _resolve(self):
         try:
             attr = self.sftp.stat(self.path)
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             if getattr(exc, 'errno', None) == errno.ENOENT:
                 return self.path, False
             raise error_from_oserror(exc, self.path)
@@ -156,17 +157,17 @@ class Upload(object):
             try:
                 self.sftp.stat(target)
                 exists = True
-            except (OSError, IOError) as exc:
+            except OSError as exc:
                 if getattr(exc, 'errno', None) != errno.ENOENT:
                     raise error_from_oserror(exc, target)
                 exists = False
 
         if exists and not self.overwrite:
-            raise TransferError(409, 'File exists: {}'.format(target))
+            raise TransferError(409, f'File exists: {target}')
 
         try:
             self.handle = self.sftp.open(target, 'wb')
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             raise error_from_oserror(exc, target)
 
         self.final_path = target
@@ -177,7 +178,7 @@ class Upload(object):
             raise TransferError(400, 'Upload was not opened')
         try:
             self.handle.write(data)
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             raise error_from_oserror(exc, self.final_path)
         self.bytes_written += len(data)
 
@@ -185,12 +186,12 @@ class Upload(object):
         if self.handle is not None:
             try:
                 self.handle.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- not actionable for the caller
                 # Not actionable for the caller -- the request is already
                 # finishing or unwinding -- but a burst of these points at
                 # a sick connection, so leave a trace rather than nothing.
-                logging.debug(
-                    'Ignoring error closing {}: {}'.format(self.path, exc))
+                logger.debug(
+                    f'Ignoring error closing {self.path}: {exc}')
             self.handle = None
 
     def abort(self):
@@ -200,9 +201,8 @@ class Upload(object):
             return
         try:
             self.sftp.remove(self.final_path)
-        except Exception as exc:
-            logging.warning('Could not remove partial upload {}: {}'.format(
-                self.final_path, exc))
+        except Exception as exc:  # noqa: BLE001 -- best-effort cleanup, must not raise
+            logger.warning(f'Could not remove partial upload {self.final_path}: {exc}')
 
 
 def matches_filter(name, needle):
@@ -225,7 +225,7 @@ def list_directory(sftp, path, name_filter=''):
     """
     try:
         attrs = sftp.listdir_attr(path)
-    except (OSError, IOError) as exc:
+    except OSError as exc:
         raise error_from_oserror(exc, path)
 
     needle = (name_filter or '').strip()

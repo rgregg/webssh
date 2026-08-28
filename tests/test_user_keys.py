@@ -4,8 +4,12 @@ import tempfile
 import unittest
 
 from webssh.user_keys import (
-    sanitize_username, get_user_key_dir, has_stored_key,
-    read_public_key, read_private_key, generate_key_pair
+    generate_key_pair,
+    get_user_key_dir,
+    has_stored_key,
+    read_private_key,
+    read_public_key,
+    sanitize_username,
 )
 
 

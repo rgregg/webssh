@@ -1,5 +1,7 @@
 # User-Editable Host List and Roaming Settings — Implementation Plan
 
+> **Historical note (#52):** The "match existing code style" constraint below (no f-strings, `super(ClassName, self)`, `u''` prefixes, root-logger calls) described the codebase as it stood when this plan was written. The repository was modernized to current ruff defaults afterwards; new code should follow that modern style, not this plan's.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let each signed-in user maintain a private list of SSH hosts and a set of preferences, stored server-side so they roam across browsers and machines.

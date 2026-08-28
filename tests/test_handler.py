@@ -2,24 +2,27 @@ import base64
 import io
 import tempfile
 import unittest
+
 import paramiko
 import tornado.web
-
 from tornado.httputil import HTTPServerRequest
 from tornado.options import options
-from tests.utils import read_file, make_tests_data_path
-from webssh import handler
-from webssh import user_data
-from webssh import user_keys
+
+from tests.utils import make_tests_data_path, read_file
+from webssh import handler, user_data, user_keys
 from webssh.handler import (
-    IndexHandler, MixinHandler, WsockHandler, PrivateKey, InvalidValueError,
-    SSHClient
+    IndexHandler,
+    InvalidValueError,
+    MixinHandler,
+    PrivateKey,
+    SSHClient,
+    WsockHandler,
 )
 
 try:
     from unittest.mock import Mock, patch
 except ImportError:
-    from mock import Mock, patch
+    from unittest.mock import Mock, patch
 
 
 class TestMixinHandler(unittest.TestCase):
@@ -171,20 +174,20 @@ class TestPrivateKey(unittest.TestCase):
         self.assertIsInstance(pk.get_pkey_obj(), klass)
 
     def test_class_with_invalid_key_length(self):
-        key = u'a' * (PrivateKey.max_length + 1)
+        key = 'a' * (PrivateKey.max_length + 1)
 
         with self.assertRaises(InvalidValueError) as ctx:
             PrivateKey(key)
         self.assertIn('Invalid key length', str(ctx.exception))
 
     def test_get_pkey_obj_with_invalid_key(self):
-        key = u'a b c'
+        key = 'a b c'
         fname = 'abc'
 
         pk = PrivateKey(key, filename=fname)
         with self.assertRaises(InvalidValueError) as ctx:
             pk.get_pkey_obj()
-        self.assertIn('Invalid key {}'.format(fname), str(ctx.exception))
+        self.assertIn(f'Invalid key {fname}', str(ctx.exception))
 
     def test_get_pkey_obj_with_plain_rsa_key(self):
         pk = self.get_pk_obj('test_rsa.key')
@@ -215,33 +218,33 @@ class TestPrivateKey(unittest.TestCase):
             pk.get_pkey_obj()
 
     def test_parse_name(self):
-        key = u'-----BEGIN PRIVATE KEY-----'
+        key = '-----BEGIN PRIVATE KEY-----'
         pk = PrivateKey(key)
         name, _ = pk.parse_name(pk.iostr, pk.tag_to_name)
         self.assertIsNone(name)
 
-        key = u'-----BEGIN xxx PRIVATE KEY-----'
+        key = '-----BEGIN xxx PRIVATE KEY-----'
         pk = PrivateKey(key)
         name, _ = pk.parse_name(pk.iostr, pk.tag_to_name)
         self.assertIsNone(name)
 
-        key = u'-----BEGIN  RSA PRIVATE KEY-----'
+        key = '-----BEGIN  RSA PRIVATE KEY-----'
         pk = PrivateKey(key)
         name, _ = pk.parse_name(pk.iostr, pk.tag_to_name)
         self.assertIsNone(name)
 
-        key = u'-----BEGIN RSA  PRIVATE KEY-----'
+        key = '-----BEGIN RSA  PRIVATE KEY-----'
         pk = PrivateKey(key)
         name, _ = pk.parse_name(pk.iostr, pk.tag_to_name)
         self.assertIsNone(name)
 
-        key = u'-----BEGIN RSA PRIVATE  KEY-----'
+        key = '-----BEGIN RSA PRIVATE  KEY-----'
         pk = PrivateKey(key)
         name, _ = pk.parse_name(pk.iostr, pk.tag_to_name)
         self.assertIsNone(name)
 
         for tag, to_name in PrivateKey.tag_to_name.items():
-            key = u'-----BEGIN {} PRIVATE KEY----- \r\n'.format(tag)
+            key = f'-----BEGIN {tag} PRIVATE KEY----- \r\n'
             pk = PrivateKey(key)
             name, length = pk.parse_name(pk.iostr, pk.tag_to_name)
             self.assertEqual(name, to_name)
@@ -298,7 +301,6 @@ class TestWsockHandler(unittest.TestCase):
 
             def __call__(self):
                 self.count += 1
-                return None
 
         ref = FakeWeakRef()
         obj.worker_ref = ref
@@ -332,7 +334,7 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
         # a Mock would otherwise hand back a Mock for it.
         handler_obj._effective_hosts = None
         handler_obj.allowed_hosts = allowed_hosts or []
-        handler_obj.get_user_hosts = lambda: []
+        handler_obj.get_user_hosts = list
         handler_obj.get_effective_hosts = lambda: \
             IndexHandler.get_effective_hosts(handler_obj)
         handler_obj.check_allowed_hosts = lambda h, p: \
@@ -371,7 +373,7 @@ class TestIndexHandlerAllowedHosts(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
 
-class FakeHostKeys(object):
+class FakeHostKeys:
     """Records what load_configured_host_key/_add_host_key actually store,
     so tests can assert against the paramiko host key store itself rather
     than just the merged host list."""
@@ -445,7 +447,7 @@ class TestLoadConfiguredHostKey(unittest.TestCase):
 
         added = h.ssh_client._host_keys.added
         self.assertEqual(len(added), 1)
-        hostname, key_type, key = added[0]
+        hostname, _key_type, key = added[0]
         self.assertEqual(hostname, '10.0.1.5')
         self.assertEqual(key, self._key_object(self.user_key))
 
@@ -523,7 +525,7 @@ class TestIndexHandlerStoredKey(unittest.TestCase):
         handler_obj.check_allowed_hosts = lambda h, p: None
         handler_obj.ssh_client = Mock()
 
-        def get_argument(name, default=u''):
+        def get_argument(name, default=''):
             if arguments and name in arguments:
                 return arguments[name]
             return default
@@ -532,11 +534,11 @@ class TestIndexHandlerStoredKey(unittest.TestCase):
         def get_value(name):
             val = get_argument(name, None)
             if not val:
-                raise InvalidValueError('Missing value {}'.format(name))
+                raise InvalidValueError(f'Missing value {name}')
             return val
         handler_obj.get_value = get_value
 
-        handler_obj.get_privatekey = lambda: (u'', '')
+        handler_obj.get_privatekey = lambda: ('', '')
         handler_obj.get_hostname = lambda: '10.0.0.1'
         handler_obj.get_port = lambda: 22
 
@@ -553,7 +555,7 @@ class TestIndexHandlerStoredKey(unittest.TestCase):
             }
         )
         args = IndexHandler.get_args(h)
-        hostname, port, username, password, pkey = args
+        hostname, _port, _username, _password, pkey = args
         self.assertEqual(hostname, '10.0.0.1')
         self.assertIsInstance(pkey, paramiko.Ed25519Key)
 
