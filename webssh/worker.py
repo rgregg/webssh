@@ -228,12 +228,12 @@ class Worker:
             if self.chan.closed or errno_from_exception(e) in _ERRNO_CONNRESET:
                 self.close(reason='chan error on reading')
         else:
-            logger.debug('{!r} from {}:{}'.format(data, *self.dst_addr))
+            logger.debug(f'{data!r} from {self.dst_addr[0]}:{self.dst_addr[1]}')
             if not data:
                 self.close(reason='Remote server closed the connection.')
                 return
 
-            logger.debug('{!r} to {}:{}'.format(data, *self.handler.src_addr))
+            logger.debug(f'{data!r} to {self.handler.src_addr[0]}:{self.handler.src_addr[1]}')
             try:
                 self.handler.write_message(data, binary=True)
             except tornado.websocket.WebSocketClosedError:
@@ -245,7 +245,7 @@ class Worker:
             return
 
         data = ''.join(self.data_to_dst)
-        logger.debug('{!r} to {}:{}'.format(data, *self.dst_addr))
+        logger.debug(f'{data!r} to {self.dst_addr[0]}:{self.dst_addr[1]}')
 
         try:
             sent = self.chan.send(data)
@@ -279,7 +279,7 @@ class Worker:
             self.handler.close(reason=reason)
         self.chan.close()
         self.ssh.close()
-        logger.info('Connection to {}:{} lost'.format(*self.dst_addr))
+        logger.info(f'Connection to {self.dst_addr[0]}:{self.dst_addr[1]} lost')
 
         clear_worker(self, clients)
         logger.debug(clients)

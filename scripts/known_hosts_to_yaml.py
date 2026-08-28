@@ -49,7 +49,7 @@ def parse_known_hosts(filepath):
     hosts = defaultdict(list)
     hashed_count = 0
 
-    with open(filepath, 'r') as f:
+    with open(filepath) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):

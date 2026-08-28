@@ -213,7 +213,7 @@ class TestAppBasic(TestAppBase):
 
     running: ClassVar[list] = [True]
     sshserver_port = 2200
-    body = 'hostname=127.0.0.1&port={}&_xsrf=yummy&username=robey&password=foo'.format(sshserver_port) # noqa
+    body = f'hostname=127.0.0.1&port={sshserver_port}&_xsrf=yummy&username=robey&password=foo'
     headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
 
     def get_app(self):
@@ -761,7 +761,7 @@ class TestAppWithRejectPolicy(OtherTestBase):
     def test_app_with_hostname_not_in_hostkeys(self):
         response = yield self.async_post('/', self.body)
         data = json.loads(to_str(response.body))
-        message = 'Connection to {}:{} is not allowed.'.format(self.body['hostname'], self.sshserver_port)
+        message = f"Connection to {self.body['hostname']}:{self.sshserver_port} is not allowed."
         self.assertEqual(message, data['status'])
 
 
@@ -1137,8 +1137,8 @@ class TestUserDataApi(UserDataTestBase):
     def test_put_hosts_write_failure_returns_500_without_leaking_path(self):
         secret_path = '/very/secret/user/data/dir'
         message = (
-            'Cannot create data directory for user {!r}: permission '
-            'denied. Check ownership of {!r}'.format('alice', secret_path)
+            f'Cannot create data directory for user {"alice"!r}: permission '
+            f'denied. Check ownership of {secret_path!r}'
         )
 
         def boom(base_dir, username, hosts):
@@ -1166,8 +1166,8 @@ class TestUserDataApi(UserDataTestBase):
     def test_put_settings_write_failure_returns_500_without_leaking_path(self):
         secret_path = '/very/secret/user/data/dir'
         message = (
-            'Cannot create data directory for user {!r}: permission '
-            'denied. Check ownership of {!r}'.format('alice', secret_path)
+            f'Cannot create data directory for user {"alice"!r}: permission '
+            f'denied. Check ownership of {secret_path!r}'
         )
 
         def boom(base_dir, username, settings):

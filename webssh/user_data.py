@@ -182,16 +182,14 @@ def _read_json(base_dir, username, filename, payload_key, empty):
         # a later save would overwrite the file with the empty payload. Move
         # the original aside so it stays recoverable.
         target = quarantine_file(path)
+        moved = f'; moved to {target!r}' if target else ''
         logger.error(
-            'Unreadable {} for user {!r}: {}{}'.format(
-                filename, username, reason,
-                f'; moved to {target!r}' if target else ''
-            )
+            f'Unreadable {filename} for user {username!r}: {reason}{moved}'
         )
         return empty
 
     try:
-        with open(path, 'r') as f:
+        with open(path) as f:
             data = json.load(f)
     except (ValueError, OSError) as exc:
         return give_up(exc)

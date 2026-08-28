@@ -662,12 +662,12 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def ssh_connect(self, args):
         ssh = self.ssh_client
         dst_addr = args[:2]
-        logger.info('Connecting to {}:{}'.format(*dst_addr))
+        logger.info(f'Connecting to {dst_addr[0]}:{dst_addr[1]}')
 
         try:
             ssh.connect(*args, timeout=options.timeout)
         except OSError:
-            raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
+            raise ValueError(f'Unable to connect to {dst_addr[0]}:{dst_addr[1]}')
         except paramiko.BadAuthenticationType:
             raise ValueError('Bad authentication type.')
         except paramiko.AuthenticationException:
@@ -1428,7 +1428,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
 
     def open(self):
         self.src_addr = self.get_client_addr()
-        logger.info('Connected from {}:{}'.format(*self.src_addr))
+        logger.info(f'Connected from {self.src_addr[0]}:{self.src_addr[1]}')
 
         workers = clients.get(self.src_addr[0])
         if not workers:
@@ -1471,19 +1471,17 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
             self._reset_idle_timeout()
             return
 
-        logger.info('Idle timeout for {}:{}'.format(*self.src_addr))
+        logger.info(f'Idle timeout for {self.src_addr[0]}:{self.src_addr[1]}')
         if worker:
             worker.close(reason='Idle timeout.')
 
     def on_message(self, message):
-        logger.debug('{!r} from {}:{}'.format(message, *self.src_addr))
+        logger.debug(f'{message!r} from {self.src_addr[0]}:{self.src_addr[1]}')
         worker = self.worker_ref()
         if not worker:
             # The worker has likely been closed. Do not process.
             logger.debug(
-                "received message to closed worker from {}:{}".format(
-                    *self.src_addr
-                )
+                f'received message to closed worker from {self.src_addr[0]}:{self.src_addr[1]}'
             )
             self.close(reason='No worker found')
             return
@@ -1518,7 +1516,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if self._idle_timeout:
             self.loop.remove_timeout(self._idle_timeout)
             self._idle_timeout = None
-        logger.info('Disconnected from {}:{}'.format(*self.src_addr))
+        logger.info(f'Disconnected from {self.src_addr[0]}:{self.src_addr[1]}')
         if not self.close_reason:
             self.close_reason = 'client disconnected'
 

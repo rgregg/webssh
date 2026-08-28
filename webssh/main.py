@@ -162,8 +162,8 @@ def reload_config(config_path, live_config, host_keys_settings):
             new_idle_timeout = int(data['idle_timeout'])
         except (TypeError, ValueError):
             logger.error(
-                'Invalid idle_timeout in config reload: {!r}'.format(
-                    data['idle_timeout']))
+                f"Invalid idle_timeout in config reload: {data['idle_timeout']!r}"
+            )
             return
         if new_idle_timeout < 0:
             logger.error(
@@ -179,12 +179,12 @@ def reload_config(config_path, live_config, host_keys_settings):
 
     parts = []
     if 'allowed_hosts' in updates:
-        parts.append('{} hosts'.format(len(updates['allowed_hosts'])))
+        parts.append(f"{len(updates['allowed_hosts'])} hosts")
     if 'policy' in updates:
-        parts.append('policy={}'.format(data['policy']))
+        parts.append(f"policy={data['policy']}")
     if new_idle_timeout is not None:
         parts.append(f'idle_timeout={new_idle_timeout}')
-    logger.info('Config reloaded: {}'.format(', '.join(parts)))
+    logger.info(f"Config reloaded: {', '.join(parts)}")
 
 
 def start_config_watcher(config_path, live_config, host_keys_settings,

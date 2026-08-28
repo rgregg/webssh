@@ -41,14 +41,14 @@ def has_stored_key(base_dir, username):
 def read_public_key(base_dir, username):
     user_dir = get_user_key_dir(base_dir, username)
     pub_path = os.path.join(user_dir, 'id_ed25519.pub')
-    with open(pub_path, 'r') as f:
+    with open(pub_path) as f:
         return f.read().strip()
 
 
 def read_private_key(base_dir, username):
     user_dir = get_user_key_dir(base_dir, username)
     priv_path = os.path.join(user_dir, 'id_ed25519')
-    with open(priv_path, 'r') as f:
+    with open(priv_path) as f:
         return f.read()
 
 

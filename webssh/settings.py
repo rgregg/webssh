@@ -92,7 +92,7 @@ class Font:
         return filename.split('.')[0]
 
     def get_url(self, filename, dirs):
-        return '/'.join(dirs + [filename])
+        return '/'.join([*dirs, filename])
 
 
 def get_app_settings(options):
@@ -260,7 +260,7 @@ def load_config_file(filepath):
             f'Config file {filepath!r} does not exist'
         )
 
-    with open(filepath, 'r') as f:
+    with open(filepath) as f:
         data = yaml.safe_load(f)
 
     if not isinstance(data, dict):
@@ -311,8 +311,7 @@ def parse_host_entry(entry):
         raw_keys = [raw_keys] if raw_keys else []
     elif not isinstance(raw_keys, list):
         raise ValueError(  # noqa: TRY004
-            'host_key for {!r} must be a string or list'.format(
-                entry['hostname'])
+            f"host_key for {entry['hostname']!r} must be a string or list"
         )
     for k in raw_keys:
         _validate_host_key(k, entry['hostname'])
@@ -320,13 +319,11 @@ def parse_host_entry(entry):
         port = int(entry.get('port', 22))
     except (TypeError, ValueError):
         raise ValueError(
-            'Invalid port {!r} for host {!r}; must be 1-65535'.format(
-                entry.get('port'), entry['hostname'])
+            f"Invalid port {entry.get('port')!r} for host {entry['hostname']!r}; must be 1-65535"
         )
     if port < 1 or port > 65535:
         raise ValueError(
-            'Invalid port {!r} for host {!r}; must be 1-65535'.format(
-                port, entry['hostname'])
+            f"Invalid port {port!r} for host {entry['hostname']!r}; must be 1-65535"
         )
     return {
         'name': entry.get('name', entry['hostname']),
