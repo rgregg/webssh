@@ -524,3 +524,39 @@ test('HOST_ROW_KEYS stay in sync with main.js collect_host_rows', function () {
               'collect_host_rows and build_host_payload have drifted apart');
   }
 });
+
+test('key_source_update accepts only the two valid directions', function () {
+  // Regression (post-#62): the connect form's key_source radio was never
+  // persisted, so "use my stored key" was forgotten on every reload while
+  // a stale 'upload' written by an untouched settings-pane select won.
+  assert.deepStrictEqual(hosts.key_source_update('stored'),
+                         {key: 'key_source', value: 'stored'});
+  assert.deepStrictEqual(hosts.key_source_update('upload'),
+                         {key: 'key_source', value: 'upload'});
+});
+
+test('key_source_update drops anything the server would reject', function () {
+  // validate_settings 400s on any value but 'stored'/'upload', and that
+  // 400 lands in a background PUT the user never sees.
+  assert.strictEqual(hosts.key_source_update(''), null);
+  assert.strictEqual(hosts.key_source_update(undefined), null);
+  assert.strictEqual(hosts.key_source_update(null), null);
+  assert.strictEqual(hosts.key_source_update('somewhere-else'), null);
+});
+
+test('default_key_source prefers a stored preference over the fallback', function () {
+  assert.strictEqual(hosts.default_key_source('stored', true), 'stored');
+  assert.strictEqual(hosts.default_key_source('upload', true), 'upload');
+  assert.strictEqual(hosts.default_key_source('stored', false), 'stored');
+});
+
+test('default_key_source falls back to the stored key when one exists', function () {
+  // Root cause of the regression: with no preference saved, the settings
+  // pane's select sat on its first option ('upload') and any save of that
+  // pane silently persisted 'upload' for a user whose actual connect-form
+  // choice was the stored key.
+  assert.strictEqual(hosts.default_key_source(undefined, true), 'stored');
+  assert.strictEqual(hosts.default_key_source('', true), 'stored');
+  assert.strictEqual(hosts.default_key_source(undefined, false), 'upload');
+  assert.strictEqual(hosts.default_key_source('bogus', false), 'upload');
+});

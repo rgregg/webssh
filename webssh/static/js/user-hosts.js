@@ -148,6 +148,32 @@ var webssh_hosts = (function () {
     return settings;
   }
 
+  var KEY_SOURCES = ['stored', 'upload'];
+
+  // The connect form's key_source radio roams too, but deliberately not via
+  // ROAMING_FIELDS: that map is the structural guarantee that only three
+  // named form fields can ever reach the server, and key_source is not read
+  // out of the form by name-driven iteration. Anything but the two valid
+  // directions is dropped rather than sent -- validate_settings answers a
+  // bad value with a 400 that lands in a background PUT the user never sees.
+  function key_source_update(value) {
+    if (KEY_SOURCES.indexOf(value) === -1) {
+      return null;
+    }
+    return {key: 'key_source', value: value};
+  }
+
+  // The effective direction when nothing (valid) is stored. A user who has
+  // generated a stored key defaults to using it, so that a settings-pane
+  // save which never touched the select cannot silently flip them to
+  // 'upload' -- the write that caused the stored key to be forgotten.
+  function default_key_source(stored, has_stored_key) {
+    if (KEY_SOURCES.indexOf(stored) !== -1) {
+      return stored;
+    }
+    return has_stored_key ? 'stored' : 'upload';
+  }
+
   function roaming_update(name, value) {
     var roam_key = ROAMING_FIELDS[name];
     if (!roam_key) {
@@ -257,6 +283,8 @@ var webssh_hosts = (function () {
     ROAMING_FIELDS: ROAMING_FIELDS,
     merge_settings: merge_settings,
     roaming_update: roaming_update,
+    key_source_update: key_source_update,
+    default_key_source: default_key_source,
     resolve_terminal_options: resolve_terminal_options,
     save_error_text: save_error_text,
     parse_command_key: parse_command_key,

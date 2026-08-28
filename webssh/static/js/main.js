@@ -485,6 +485,21 @@ jQuery(function($){
   }
 
 
+  // Remember which key direction the user actually connected with. Before
+  // this, key_source was writable only from the settings pane's select, so
+  // choosing "Use stored key" on the connect form itself was forgotten on
+  // every reload -- and once #62 started honoring a stored 'upload', a
+  // stale 'upload' from an untouched select flipped the radio back on every
+  // page load.
+  function store_key_source(data) {
+    if (!user_hosts_enabled || !user_key_enabled) return;
+    var update = webssh_hosts.key_source_update(data.get('key_source'));
+    if (!update) return;
+    user_settings[update.key] = update.value;
+    prefs.schedule();
+  }
+
+
   function get_host_key(data) {
     var hostname = data.get ? data.get('hostname') : data.hostname;
     var port = data.get ? data.get('port') : data.port;
@@ -984,9 +999,12 @@ jQuery(function($){
     pane.find('#set-term').val(user_settings.term || '');
     pane.find('#set-cursor-blink').prop('checked',
                                         user_settings.cursor_blink !== false);
-    if (user_settings.key_source) {
-      pane.find('#set-key-source').val(user_settings.key_source);
-    }
+    // Never leave this select on its first option ('upload') just because
+    // nothing is stored yet: collect_settings writes its value on every
+    // save, so an untouched select would persist 'upload' for a user who
+    // connects with their stored key.
+    pane.find('#set-key-source').val(
+      webssh_hosts.default_key_source(user_settings.key_source, has_stored_key));
 
     // The host list PUT honors an empty "hosts" array as "clear my list".
     // Never let a save proceed from a list this pane failed to load, so
@@ -1774,6 +1792,7 @@ jQuery(function($){
         validated_form_data = result.data;
       }
       store_items(fields, result.data);
+      store_key_source(result.data);
       store_default_command(result.data);
     }
   }
@@ -2098,12 +2117,14 @@ jQuery(function($){
   }
 
   if (user_key_enabled) {
-    if (user_settings.key_source === 'stored' && has_stored_key) {
+    // Both directions are restored, not just 'stored' (issue #46). With
+    // nothing stored this resolves to the same default the template
+    // rendered, so the radio never moves under the user on load.
+    var restored_source = webssh_hosts.default_key_source(
+      user_settings.key_source, has_stored_key);
+    if (restored_source === 'stored' && has_stored_key) {
       $('#key_source_stored').prop('checked', true).trigger('change');
-    } else if (user_settings.key_source === 'upload') {
-      // Also restore the upload direction -- previously only 'stored' was
-      // ever applied, so a stored preference of 'upload' left whatever the
-      // server template defaulted to (issue #46).
+    } else {
       $('#key_source_upload').prop('checked', true).trigger('change');
     }
   }
