@@ -2109,6 +2109,31 @@ class TestShellIntegrationSnippet(unittest.TestCase):
     def test_snippet_emits_an_osc7_sequence(self):
         self.assertIn('\\033]7;file://', handler.SHELL_INTEGRATION_SNIPPET)
 
+    def test_snippet_wraps_osc7_for_tmux(self):
+        # tmux consumes OSC 7 to maintain its own pane_current_path and does
+        # not forward it, so inside tmux the sequence has to travel in a DCS
+        # passthrough (ESC P tmux; <payload with ESCs doubled> ESC backslash).
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('$TMUX', snippet)
+        self.assertIn('\\033Ptmux;\\033\\033]7;file://', snippet)
+
+    def test_snippet_enables_tmux_passthrough(self):
+        # allow-passthrough defaults to off, so a wrapped sequence would be
+        # dropped just as silently as the bare one.
+        self.assertIn('allow-passthrough on', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_exports_the_emitter_so_tmux_panes_inherit_it(self):
+        # Shells spawned by tmux never see the snippet we typed at the login
+        # shell; they only inherit the environment.
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('export', snippet)
+        self.assertRegex(snippet, r'export[^;]*PROMPT_COMMAND')
+
+    def test_snippet_reports_a_hostname_under_both_shells(self):
+        # bash sets HOSTNAME, zsh sets HOST; one expansion has to cover both
+        # now that the emitter body is shared.
+        self.assertIn('${HOSTNAME:-$HOST}', handler.SHELL_INTEGRATION_SNIPPET)
+
     def test_snippet_is_a_single_line_so_it_cannot_half_execute(self):
         # A partially delivered multi-line snippet would leave the shell in
         # a continuation prompt, wedging the session.

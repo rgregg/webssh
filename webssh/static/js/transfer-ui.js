@@ -10,7 +10,29 @@ var webssh_transfer_ui = (function () {
 
   var cwd_by_tab = {};
   var active = {};
+  var queue_by_tab = {};
+  var busy_waits_by_tab = {};
   var seq = 0;
+
+  // Mirrors TransferMixin.MAX_CONCURRENT_TRANSFERS in handler.py. The server
+  // answers a fourth concurrent transfer with 429, so the client holds the
+  // extras back instead of firing them all and failing most of them.
+  var UPLOAD_CONCURRENCY = 3;
+
+  // How long an upload the server refused with 429 waits before rejoining
+  // the queue. Downloads share the same per-session cap, so a queued upload
+  // can still reach the server while three downloads hold every slot. The
+  // pause only keeps a busy session from being re-asked in a tight loop;
+  // the upload itself waits as long as it takes, exactly like one that has
+  // not reached the front of the queue yet.
+  var BUSY_RETRY_DELAY = 1000;
+
+  function queue_for(tab_id) {
+    if (!queue_by_tab[tab_id]) {
+      queue_by_tab[tab_id] = webssh_transfer.make_queue(UPLOAD_CONCURRENCY);
+    }
+    return queue_by_tab[tab_id];
+  }
 
   // open_picker runs fresh on every button press and builds a new `state`
   // object each time, but #transfer-picker is a singleton DOM node shared
@@ -102,12 +124,32 @@ var webssh_transfer_ui = (function () {
         // Already settled; nothing to do.
       }
     }
+    var waits = busy_waits_by_tab[tab_id] || [];
+    for (var w = 0; w < waits.length; w++) {
+      // A transfer between a 429 and its return to the queue is in neither
+      // `active` nor the queue, so it needs cancelling on its own.
+      waits[w]();
+    }
+    delete busy_waits_by_tab[tab_id];
+    if (queue_by_tab[tab_id]) {
+      // Aborting the in-flight transfers above is not enough: whatever is
+      // still waiting for a slot would otherwise start against a worker
+      // the user has already closed.
+      queue_by_tab[tab_id].clear();
+      delete queue_by_tab[tab_id];
+    }
     delete active[tab_id];
     delete cwd_by_tab[tab_id];
   }
 
-  function send_upload(tab_id, worker_id, file, path, overwrite, row) {
+  function send_upload(tab_id, worker_id, file, path, overwrite, row, done,
+                       on_busy) {
     var controller = new AbortController();
+    // Set when this attempt hands the queue slot to a follow-up attempt --
+    // an overwrite confirmation. The slot must stay held across that, or
+    // the retry would run outside the cap it is waiting on.
+    var handed_off = false;
+    var busy = false;
     track(tab_id, controller);
     row.find('.transfer-cancel').off('click').on('click', function () {
       controller.abort();
@@ -121,10 +163,20 @@ var webssh_transfer_ui = (function () {
     }).then(function (response) {
       if (response.status === 409) {
         if (window.confirm(file.name + ' already exists. Overwrite?')) {
-          send_upload(tab_id, worker_id, file, path, true, row);
+          handed_off = true;
+          send_upload(tab_id, worker_id, file, path, true, row, done, on_busy);
           return null;
         }
         finish_row(row, 'cancelled');
+        return null;
+      }
+      if (response.status === 429 && on_busy) {
+        // The session's transfer slots are full of something this queue
+        // does not schedule (a download, or another tab's upload against
+        // the same worker). Release the slot and rejoin the queue rather
+        // than holding a slot to retry in, or failing a file the user
+        // asked for.
+        busy = true;
         return null;
       }
       if (!response.ok) {
@@ -144,22 +196,105 @@ var webssh_transfer_ui = (function () {
       // rejection. A .then rather than .finally so this depends on nothing
       // newer than the fetch and AbortController already in use here.
       untrack(tab_id, controller);
+      if (!handed_off && done) {
+        // Always before on_busy: the slot has to be free again before this
+        // transfer asks for another one.
+        done();
+      }
+      if (busy) {
+        on_busy();
+      }
     });
   }
 
-  function start_upload(tab_id, worker_id, file) {
-    var dir = get_cwd(tab_id);
-    var path;
-    if (dir) {
-      path = webssh_transfer.resolve_path(dir, file.name);
-    } else {
-      path = window.prompt('Upload ' + file.name + ' to:', '');
-      if (!path) {
-        return;
-      }
-    }
+  function start_upload(tab_id, worker_id, file, path) {
     var row = add_row('\u2191 ' + file.name);
-    send_upload(tab_id, worker_id, file, path, false, row);
+    var job = null;
+    var wait = null;
+
+    function cancelled() {
+      finish_row(row, 'cancelled');
+    }
+
+    function enqueue() {
+      row.find('.transfer-status').text('queued');
+      job = queue_for(tab_id).push(function (done) {
+        row.find('.transfer-status').text('0%');
+        send_upload(tab_id, worker_id, file, path, false, row, done, wait_busy);
+      }, cancelled);
+      // Until the job starts there is no request to abort, so cancelling
+      // has to drop it from the queue. send_upload rebinds this handler to
+      // its AbortController the moment the job runs.
+      row.find('.transfer-cancel').off('click').on('click', function () {
+        queue_for(tab_id).cancel(job);
+      });
+    }
+
+    // A 429 means the server was busy with transfers this queue does not
+    // schedule. Rejoin the queue after a pause: the file goes to the back
+    // and waits for a slot like any other, for as long as that takes,
+    // rather than spending a bounded number of retries and failing.
+    function wait_busy() {
+      row.find('.transfer-status').text('waiting');
+      var timer = setTimeout(function () {
+        drop_wait();
+        enqueue();
+      }, BUSY_RETRY_DELAY);
+      wait = function () {
+        clearTimeout(timer);
+        drop_wait();
+        cancelled();
+      };
+      if (!busy_waits_by_tab[tab_id]) {
+        busy_waits_by_tab[tab_id] = [];
+      }
+      busy_waits_by_tab[tab_id].push(wait);
+      row.find('.transfer-cancel').off('click').on('click', wait);
+    }
+
+    function drop_wait() {
+      var list = busy_waits_by_tab[tab_id] || [];
+      var at = list.indexOf(wait);
+      if (at !== -1) {
+        list.splice(at, 1);
+      }
+      if (!list.length) {
+        delete busy_waits_by_tab[tab_id];
+      }
+      wait = null;
+    }
+
+    enqueue();
+  }
+
+  // Every drop confirms its destination, pre-filled with the directory the
+  // shell last reported. The tracked directory can be silently stale --
+  // a shell running under tmux/screen may never report one after the first
+  // prompt -- and a file landing in the wrong directory without a word is
+  // worse than one keystroke of confirmation. An empty answer is a real
+  // answer (upload relative to the SFTP home); only Cancel aborts.
+  function start_drop(tab_id, worker_id, files) {
+    if (!files || !files.length) {
+      return;
+    }
+    var names = [];
+    var i;
+    for (i = 0; i < files.length; i++) {
+      names.push(files[i].name);
+    }
+    var label = files.length === 1
+      ? files[0].name
+      : files.length + ' files';
+    var dir = window.prompt(
+      'Upload ' + label + ' to directory:', get_cwd(tab_id) || ''
+    );
+    if (dir === null) {
+      return;
+    }
+    var paths = webssh_transfer.resolve_upload_paths(dir, names);
+    for (i = 0; i < files.length; i++) {
+      start_upload(tab_id, worker_id, files[i], paths[i]);
+    }
   }
 
   function open_picker(tab_id, worker_id) {
@@ -352,10 +487,7 @@ var webssh_transfer_ui = (function () {
     });
     el.on('drop.transfer', function (e) {
       e.preventDefault();
-      var files = e.originalEvent.dataTransfer.files;
-      for (var i = 0; i < files.length; i++) {
-        start_upload(tab_id, worker_id, files[i]);
-      }
+      start_drop(tab_id, worker_id, e.originalEvent.dataTransfer.files);
     });
   }
 
@@ -363,6 +495,7 @@ var webssh_transfer_ui = (function () {
     set_cwd: set_cwd,
     get_cwd: get_cwd,
     start_upload: start_upload,
+    start_drop: start_drop,
     open_picker: open_picker,
     bind_drop: bind_drop,
     cancel_for_tab: cancel_for_tab

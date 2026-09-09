@@ -65,12 +65,30 @@ redirecting = None
 # once when the shell starts, then scrubbed from the screen and from bash
 # history. Kept to a single line: a partially delivered multi-line snippet
 # would strand the shell at a continuation prompt.
+#
+# The emitter lives in an exported variable rather than a shell function so
+# that shells tmux spawns later -- which never see anything we typed at the
+# login shell -- still inherit it through the environment. Inside tmux the
+# OSC 7 also has to travel in a DCS passthrough (ESC P tmux; ... ESC \\) with
+# its own escapes doubled, because tmux consumes a bare OSC 7 to maintain
+# pane_current_path and never forwards it upstream. Passthrough is off by
+# default, so the emitter turns it on for its pane the first time it runs.
+# ${HOSTNAME:-$HOST} covers both shells: bash sets the former, zsh the latter.
+_OSC7_PLAIN = r'printf "\033]7;file://%s%s\033\\\\" "${HOSTNAME:-$HOST}" "$PWD"'
+_OSC7_TMUX = (
+    r'printf "\033Ptmux;\033\033]7;file://%s%s\033\033\\\\\033\\\\"'
+    r' "${HOSTNAME:-$HOST}" "$PWD"'
+)
+
 SHELL_INTEGRATION_SNIPPET = (
-    ' if [ -n "$ZSH_VERSION" ]; then '
-    'precmd() { printf "\\033]7;file://%s%s\\033\\\\" "$HOST" "$PWD"; }; '
-    'elif [ -n "$BASH_VERSION" ]; then '
-    'PROMPT_COMMAND=\'printf "\\033]7;file://%s%s\\033\\\\" "$HOSTNAME" "$PWD"\'; '
-    'fi; clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
+    " _WEBSSH_OSC7='if [ -n \"$TMUX\" ]; then "
+    '[ -n "$_WEBSSH_PT" ] || '
+    '{ tmux set -p allow-passthrough on >/dev/null 2>&1; _WEBSSH_PT=1; }; '
+    + _OSC7_TMUX + '; else ' + _OSC7_PLAIN + "; fi'; "
+    'export _WEBSSH_OSC7; '
+    'PROMPT_COMMAND=\'eval "$_WEBSSH_OSC7"\'; export PROMPT_COMMAND; '
+    'if [ -n "$ZSH_VERSION" ]; then precmd() { eval "$_WEBSSH_OSC7"; }; fi; '
+    'clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
 )
 
 
