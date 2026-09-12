@@ -2114,7 +2114,7 @@ class TestShellIntegrationSnippet(unittest.TestCase):
         # not forward it, so inside tmux the sequence has to travel in a DCS
         # passthrough (ESC P tmux; <payload with ESCs doubled> ESC backslash).
         snippet = handler.SHELL_INTEGRATION_SNIPPET
-        self.assertIn('$TMUX', snippet)
+        self.assertIn('${TMUX:-}', snippet)
         self.assertIn('\\033Ptmux;\\033\\033]7;file://', snippet)
 
     def test_snippet_enables_tmux_passthrough(self):
@@ -2132,7 +2132,18 @@ class TestShellIntegrationSnippet(unittest.TestCase):
     def test_snippet_reports_a_hostname_under_both_shells(self):
         # bash sets HOSTNAME, zsh sets HOST; one expansion has to cover both
         # now that the emitter body is shared.
-        self.assertIn('${HOSTNAME:-$HOST}', handler.SHELL_INTEGRATION_SNIPPET)
+        self.assertIn(
+            '${HOSTNAME:-${HOST:-}}', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_survives_set_u(self):
+        # A user's rc file may run `set -u`, under which a bare expansion of
+        # an unset variable aborts the emitter: no directory is ever
+        # reported, and every prompt prints "unbound variable" instead.
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        for name in ('TMUX', 'ZSH_VERSION', '_WEBSSH_PT', 'HOST', 'HOSTNAME'):
+            self.assertNotIn(
+                f'"${name}"', snippet,
+                f'${name} is expanded without a default')
 
     def test_snippet_is_a_single_line_so_it_cannot_half_execute(self):
         # A partially delivered multi-line snippet would leave the shell in

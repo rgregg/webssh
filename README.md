@@ -159,7 +159,10 @@ sequence. Inside tmux the sequence travels through tmux's DCS passthrough
 (WebSSH enables `allow-passthrough` for the pane), and the emitter is
 exported so shells tmux starts later inherit it. Attaching to a tmux session
 that was already running predates all of that, so no directory is reported
-and the prompt opens empty. Set `shell_integration: false` to disable the
+and the prompt opens empty. zsh reads neither `PROMPT_COMMAND` nor inherited
+shell functions, so a zsh pane that tmux started reports nothing until its
+`.zshrc` opts in with `precmd() { eval "$_WEBSSH_OSC7"; }` -- the emitter
+itself is exported, so the pane already has it. Set `shell_integration: false` to disable the
 reporting entirely. Uploads never overwrite an existing file without
 asking.
 

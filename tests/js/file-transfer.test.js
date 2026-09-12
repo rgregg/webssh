@@ -257,3 +257,21 @@ test('make_queue clear cancels everything still waiting', function () {
   assert.deepStrictEqual(cancelled, ['b', 'c']);
   assert.deepStrictEqual(ran, ['a']);
 });
+
+test('make_queue frees the slot when a job throws on the way out', function () {
+  // A job that throws before it can ever call done would otherwise hold its
+  // slot forever, shrinking the queue by one for the life of the tab.
+  var q = ft.make_queue(1);
+  assert.throws(function () {
+    q.push(function () {
+      throw new Error('boom');
+    });
+  }, /boom/);
+  assert.strictEqual(q.running(), 0);
+
+  var ran = [];
+  q.push(function () {
+    ran.push('next');
+  });
+  assert.deepStrictEqual(ran, ['next'], 'the freed slot admits the next job');
+});

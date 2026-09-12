@@ -124,7 +124,10 @@ var webssh_transfer_ui = (function () {
         // Already settled; nothing to do.
       }
     }
-    var waits = busy_waits_by_tab[tab_id] || [];
+    // Copied first: each wait() splices itself out of the live array as it
+    // runs, which would shift the remaining entries past the loop index and
+    // leave half of them to re-enqueue against a closed worker.
+    var waits = (busy_waits_by_tab[tab_id] || []).slice();
     for (var w = 0; w < waits.length; w++) {
       // A transfer between a 429 and its return to the queue is in neither
       // `active` nor the queue, so it needs cancelling on its own.
@@ -218,16 +221,18 @@ var webssh_transfer_ui = (function () {
 
     function enqueue() {
       row.find('.transfer-status').text('queued');
+      // Bound before push, not after: push() runs the job synchronously
+      // whenever a slot is free, and send_upload rebinds this handler to
+      // its AbortController as it starts. Binding afterwards would undo
+      // that and leave a running upload with a cancel button wired to a
+      // queue entry it has already left -- i.e. no cancel at all.
+      row.find('.transfer-cancel').off('click').on('click', function () {
+        queue_for(tab_id).cancel(job);
+      });
       job = queue_for(tab_id).push(function (done) {
         row.find('.transfer-status').text('0%');
         send_upload(tab_id, worker_id, file, path, false, row, done, wait_busy);
       }, cancelled);
-      // Until the job starts there is no request to abort, so cancelling
-      // has to drop it from the queue. send_upload rebinds this handler to
-      // its AbortController the moment the job runs.
-      row.find('.transfer-cancel').off('click').on('click', function () {
-        queue_for(tab_id).cancel(job);
-      });
     }
 
     // A 429 means the server was busy with transfers this queue does not

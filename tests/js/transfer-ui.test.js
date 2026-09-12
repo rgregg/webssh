@@ -104,19 +104,26 @@ function load_ui(fetch_impl, timers) {
     path.join(__dirname, '../../webssh/static/js/transfer-ui.js'), 'utf8'
   );
   vm.runInNewContext(src, sandbox);
-  return sandbox.webssh_transfer_ui;
+  // `tray` doubles as every row: the stub returns one node for any
+  // selector, which is enough to read back the handler a row's cancel
+  // button currently carries.
+  return {ui: sandbox.webssh_transfer_ui, row: tray};
 }
 
 // A fetch stub that never settles on its own: the test decides when each
 // upload completes, which is how concurrency is observed at all.
 function pending_fetch() {
   var calls = [];
-  var impl = function (url) {
+  var impl = function (url, opts) {
     var settle;
     var promise = new Promise(function (resolve) {
       settle = resolve;
     });
-    calls.push({url: url, settle: settle});
+    calls.push({
+      url: url,
+      settle: settle,
+      signal: opts ? opts.signal : null
+    });
     return promise;
   };
   impl.calls = calls;
@@ -187,7 +194,7 @@ test('a drop of eight files uploads only three at a time', async function () {
   // The reported bug: eight photos dropped at once, five refused with 429
   // because the server caps a session at three concurrent transfers.
   var fetch_impl = pending_fetch();
-  var ui = load_ui(fetch_impl);
+  var ui = load_ui(fetch_impl).ui;
   ui.set_cwd('tab1', '/srv/photos');
   ui.start_drop('tab1', 'worker1', files(8));
 
@@ -217,7 +224,7 @@ test('a drop of eight files uploads only three at a time', async function () {
 
 test('queued uploads are not sent against a closed session', async function () {
   var fetch_impl = pending_fetch();
-  var ui = load_ui(fetch_impl);
+  var ui = load_ui(fetch_impl).ui;
   ui.set_cwd('tab1', '/srv/photos');
   ui.start_drop('tab1', 'worker1', files(8));
   assert.strictEqual(fetch_impl.calls.length, 3);
@@ -234,7 +241,7 @@ test('queued uploads are not sent against a closed session', async function () {
 test('a 429 frees the slot for the next queued file straight away', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
-  var ui = load_ui(fetch_impl, timers);
+  var ui = load_ui(fetch_impl, timers).ui;
   ui.set_cwd('tab1', '/srv/photos');
   ui.start_drop('tab1', 'worker1', files(5));
   assert.strictEqual(fetch_impl.calls.length, 3);
@@ -251,7 +258,7 @@ test('a 429 frees the slot for the next queued file straight away', async functi
 test('a 429 rejoins the queue instead of failing the file', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
-  var ui = load_ui(fetch_impl, timers);
+  var ui = load_ui(fetch_impl, timers).ui;
   ui.set_cwd('tab1', '/srv/photos');
   ui.start_drop('tab1', 'worker1', files(1));
   assert.strictEqual(fetch_impl.calls.length, 1);
@@ -300,7 +307,7 @@ test('a 429 rejoins the queue instead of failing the file', async function () {
 test('closing the tab stops an upload waiting out a 429', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
-  var ui = load_ui(fetch_impl, timers);
+  var ui = load_ui(fetch_impl, timers).ui;
   ui.set_cwd('tab1', '/srv/photos');
   ui.start_drop('tab1', 'worker1', files(1));
 
@@ -317,4 +324,44 @@ test('closing the tab stops an upload waiting out a 429', async function () {
     setImmediate(r);
   });
   assert.strictEqual(fetch_impl.calls.length, 1);
+});
+
+test('cancelling a row that started immediately aborts its request', function () {
+  // The first three files in a drop start synchronously inside push(), so
+  // their cancel button is bound to the AbortController and must not be
+  // rebound to a queue cancellation that can no longer apply.
+  var fetch_impl = pending_fetch();
+  var loaded = load_ui(fetch_impl);
+  loaded.ui.set_cwd('tab1', '/srv/photos');
+  loaded.ui.start_drop('tab1', 'worker1', files(1));
+  assert.strictEqual(fetch_impl.calls.length, 1);
+
+  loaded.row.handlers.click();
+  assert.strictEqual(fetch_impl.calls[0].signal.aborted, true);
+});
+
+test('closing the tab stops every upload waiting out a 429', async function () {
+  var fetch_impl = pending_fetch();
+  var timers = fake_timers();
+  var loaded = load_ui(fetch_impl, timers);
+  loaded.ui.set_cwd('tab1', '/srv/photos');
+  loaded.ui.start_drop('tab1', 'worker1', files(3));
+  assert.strictEqual(fetch_impl.calls.length, 3);
+
+  var i;
+  for (i = 0; i < 3; i++) {
+    fetch_impl.calls[i].settle(busy_response());
+  }
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+
+  loaded.ui.cancel_for_tab('tab1');
+  timers.run(1000);
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  // Every waiting transfer must be dropped, not just the first: a survivor
+  // re-enqueues against a worker the user has already closed.
+  assert.strictEqual(fetch_impl.calls.length, 3);
 });

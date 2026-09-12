@@ -143,7 +143,15 @@ var webssh_transfer = (function () {
         }
         job.started = true;
         running = running + 1;
-        job.run(release(job));
+        try {
+          job.run(release(job));
+        } catch (err) {
+          // A job that throws before it can call done would hold its slot
+          // for the life of the queue. Free it, then let the error out as
+          // it would have without this guard.
+          release(job)();
+          throw err;
+        }
       }
     }
 
