@@ -119,3 +119,159 @@ test('match_entry with an empty filter matches everything', function () {
 test('match_entry rejects a non-match', function () {
   assert.strictEqual(ft.match_entry('syslog', 'zzz'), false);
 });
+
+test('resolve_upload_paths maps a whole drop onto one confirmed directory', function () {
+  assert.deepStrictEqual(
+    ft.resolve_upload_paths('/srv/app', ['a.txt', 'b.txt']),
+    ['/srv/app/a.txt', '/srv/app/b.txt']
+  );
+  assert.deepStrictEqual(
+    ft.resolve_upload_paths('/srv/app/', ['a.txt']),
+    ['/srv/app/a.txt']
+  );
+});
+
+test('resolve_upload_paths leaves names relative when no directory is known', function () {
+  // The server resolves a relative path against the SFTP home, which is the
+  // same fallback the picker uses.
+  assert.deepStrictEqual(ft.resolve_upload_paths('', ['a.txt']), ['a.txt']);
+  assert.deepStrictEqual(ft.resolve_upload_paths(null, ['a.txt']), ['a.txt']);
+});
+
+test('resolve_upload_paths tolerates an empty drop', function () {
+  assert.deepStrictEqual(ft.resolve_upload_paths('/srv', []), []);
+});
+
+test('make_queue runs no more than the limit at once', function () {
+  var q = ft.make_queue(3);
+  var running = 0;
+  var peak = 0;
+  var dones = [];
+  for (var i = 0; i < 8; i++) {
+    q.push(function (done) {
+      running = running + 1;
+      peak = Math.max(peak, running);
+      dones.push(function () {
+        running = running - 1;
+        done();
+      });
+    });
+  }
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 5);
+  // Draining one slot admits exactly one waiting job, never a burst.
+  dones.shift()();
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 4);
+  while (dones.length) {
+    dones.shift()();
+  }
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 0);
+  assert.strictEqual(q.running(), 0);
+});
+
+test('make_queue eventually runs every job', function () {
+  var q = ft.make_queue(2);
+  var ran = [];
+  var dones = [];
+  for (var i = 0; i < 5; i++) {
+    (function (n) {
+      q.push(function (done) {
+        ran.push(n);
+        dones.push(done);
+      });
+    }(i));
+  }
+  while (dones.length) {
+    dones.shift()();
+  }
+  assert.deepStrictEqual(ran, [0, 1, 2, 3, 4]);
+});
+
+test('make_queue ignores a double done instead of over-admitting', function () {
+  // A job that reports completion twice would otherwise free two slots and
+  // let a fourth upload past the server's cap.
+  var q = ft.make_queue(1);
+  var running = 0;
+  var peak = 0;
+  var first = null;
+  for (var i = 0; i < 3; i++) {
+    q.push(function (done) {
+      running = running + 1;
+      peak = Math.max(peak, running);
+      if (!first) {
+        first = function () {
+          running = running - 1;
+          done();
+        };
+      }
+    });
+  }
+  first();
+  first();
+  assert.strictEqual(peak, 1);
+});
+
+test('make_queue cancel drops a job that has not started', function () {
+  var q = ft.make_queue(1);
+  var ran = [];
+  var done_first;
+  q.push(function (done) {
+    ran.push('a');
+    done_first = done;
+  });
+  var cancelled = [];
+  var job = q.push(function () {
+    ran.push('b');
+  }, function () {
+    cancelled.push('b');
+  });
+  assert.strictEqual(q.cancel(job), true);
+  assert.deepStrictEqual(cancelled, ['b']);
+  done_first();
+  assert.deepStrictEqual(ran, ['a']);
+  // Cancelling twice, or cancelling a job already running, is a no-op.
+  assert.strictEqual(q.cancel(job), false);
+});
+
+test('make_queue clear cancels everything still waiting', function () {
+  var q = ft.make_queue(1);
+  var ran = [];
+  var cancelled = [];
+  q.push(function () {
+    ran.push('a');
+  });
+  q.push(function () {
+    ran.push('b');
+  }, function () {
+    cancelled.push('b');
+  });
+  q.push(function () {
+    ran.push('c');
+  }, function () {
+    cancelled.push('c');
+  });
+  q.clear();
+  assert.strictEqual(q.pending(), 0);
+  assert.deepStrictEqual(cancelled, ['b', 'c']);
+  assert.deepStrictEqual(ran, ['a']);
+});
+
+test('make_queue frees the slot when a job throws on the way out', function () {
+  // A job that throws before it can ever call done would otherwise hold its
+  // slot forever, shrinking the queue by one for the life of the tab.
+  var q = ft.make_queue(1);
+  assert.throws(function () {
+    q.push(function () {
+      throw new Error('boom');
+    });
+  }, /boom/);
+  assert.strictEqual(q.running(), 0);
+
+  var ran = [];
+  q.push(function () {
+    ran.push('next');
+  });
+  assert.deepStrictEqual(ran, ['next'], 'the freed slot admits the next job');
+});

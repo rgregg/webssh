@@ -153,10 +153,25 @@ connection the terminal already authenticated, so they need no extra
 credentials and carry exactly the permissions of the SSH user you connected
 as.
 
-Uploads land in the directory the shell is currently in, which WebSSH learns
-from an OSC 7 sequence. Set `shell_integration: false` to disable that; the
-destination is then requested with a prompt. Uploads never overwrite an
-existing file without asking.
+Dropping files asks for the destination directory, pre-filled with the
+directory the shell is currently in, which WebSSH learns from an OSC 7
+sequence. Inside tmux the sequence travels through tmux's DCS passthrough
+(WebSSH enables `allow-passthrough` for the pane), and the emitter is
+exported so shells tmux starts later inherit it. Attaching to a tmux session
+that was already running predates all of that, so no directory is reported
+and the prompt opens empty. zsh reads neither `PROMPT_COMMAND` nor inherited
+shell functions, so a zsh pane that tmux started reports nothing until its
+`.zshrc` opts in with `precmd() { eval "$_WEBSSH_OSC7"; }` -- the emitter
+itself is exported, so the pane already has it. Set `shell_integration: false` to disable the
+reporting entirely. Uploads never overwrite an existing file without
+asking.
+
+A session allows three transfers at once. Dropping more files than that
+queues the rest in the browser and starts each one as a slot frees up, so a
+drop of any size completes; queued rows show `queued` in the transfer tray
+and can be cancelled before they start. A transfer the server still refuses
+as busy -- downloads share the same three slots -- rejoins the queue and
+waits for a slot rather than failing.
 
 The download picker lists one directory at a time. Typing in its path box
 filters the listing to names containing what you typed, and typing or

@@ -109,9 +109,116 @@ var webssh_transfer = (function () {
     return String(name).toLowerCase().indexOf(needle.toLowerCase()) !== -1;
   }
 
+  // Destinations for one drop, all under the directory the user confirmed.
+  // Kept here rather than in the drop handler so the batch behaviour is
+  // testable without a DOM: an absolute name still wins, and an unknown
+  // directory leaves the name relative for the server to resolve against
+  // the SFTP home.
+  function resolve_upload_paths(dir, names) {
+    var out = [];
+    var list = names || [];
+    for (var i = 0; i < list.length; i++) {
+      out.push(resolve_path(dir, list[i]));
+    }
+    return out;
+  }
+
+  // A fixed-concurrency job queue. The server caps a session at
+  // MAX_CONCURRENT_TRANSFERS (3) and answers anything beyond it with 429,
+  // so dropping eight photos used to upload three and fail five. Holding
+  // the extras here instead means the drop simply takes longer.
+  //
+  // A job is `run(done)`; it must call `done` exactly once when it settles.
+  // A double `done` is ignored rather than freeing two slots, since that
+  // would push a job past the very cap this exists to respect.
+  function make_queue(limit) {
+    var running = 0;
+    var pending = [];
+
+    function pump() {
+      while (running < limit && pending.length) {
+        var job = pending.shift();
+        if (job.cancelled) {
+          continue;
+        }
+        job.started = true;
+        running = running + 1;
+        try {
+          job.run(release(job));
+        } catch (err) {
+          // A job that throws before it can call done would hold its slot
+          // for the life of the queue. Free it, then let the error out as
+          // it would have without this guard.
+          release(job)();
+          throw err;
+        }
+      }
+    }
+
+    function release(job) {
+      return function () {
+        if (job.settled) {
+          return;
+        }
+        job.settled = true;
+        running = running - 1;
+        pump();
+      };
+    }
+
+    return {
+      push: function (run, on_cancel) {
+        var job = {
+          run: run,
+          on_cancel: on_cancel,
+          cancelled: false,
+          started: false,
+          settled: false
+        };
+        pending.push(job);
+        pump();
+        return job;
+      },
+      // Only a job still waiting can be cancelled here; one already running
+      // owns an AbortController and is cancelled through that instead.
+      cancel: function (job) {
+        if (!job || job.cancelled || job.started) {
+          return false;
+        }
+        job.cancelled = true;
+        var at = pending.indexOf(job);
+        if (at !== -1) {
+          pending.splice(at, 1);
+        }
+        if (job.on_cancel) {
+          job.on_cancel();
+        }
+        return true;
+      },
+      clear: function () {
+        var waiting = pending;
+        pending = [];
+        for (var i = 0; i < waiting.length; i++) {
+          waiting[i].cancelled = true;
+          if (waiting[i].on_cancel) {
+            waiting[i].on_cancel();
+          }
+        }
+      },
+      pending: function () {
+        return pending.length;
+      },
+      running: function () {
+        return running;
+      }
+    };
+  }
+
   return {
     parse_osc7: parse_osc7,
     resolve_path: resolve_path,
+    resolve_upload_paths: resolve_upload_paths,
+    make_queue: make_queue,
     split_path: split_path,
     match_entry: match_entry,
     format_bytes: format_bytes,
