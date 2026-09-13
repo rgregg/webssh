@@ -36,8 +36,11 @@ function fake_node() {
         }
       };
     }
-    // .transfer-cancel
-    return {
+    // .transfer-cancel, and the dialog parts the uploader reaches for. One
+    // shared stub: nothing here asserts on the dialog's internals, only
+    // that opening it does not send anything.
+    var child = {
+      0: {files: []},
       off: function () {
         return this;
       },
@@ -47,13 +50,56 @@ function fake_node() {
       },
       remove: function () {
         return this;
+      },
+      empty: function () {
+        return this;
+      },
+      append: function () {
+        return this;
+      },
+      val: function () {
+        return '';
+      },
+      text: function () {
+        return this;
+      },
+      prop: function () {
+        return this;
+      },
+      addClass: function () {
+        return this;
+      },
+      trigger: function () {
+        return this;
+      },
+      find: function () {
+        return this;
       }
     };
+    return child;
   };
-  node.addClass = function () {
+  node.off = function () {
     return node;
   };
-  node.removeClass = function () {
+  node.on = function (event, fn) {
+    // bind_drop registers several events in one call, as jQuery allows.
+    event.split(' ').forEach(function (name) {
+      node.handlers[name] = fn;
+    });
+    return node;
+  };
+  node.classes = [];
+  node.addClass = function (name) {
+    if (node.classes.indexOf(name) === -1) {
+      node.classes.push(name);
+    }
+    return node;
+  };
+  node.removeClass = function (name) {
+    var at = node.classes.indexOf(name);
+    if (at !== -1) {
+      node.classes.splice(at, 1);
+    }
     return node;
   };
   node.children = function () {
@@ -80,11 +126,26 @@ function load_ui(fetch_impl, timers) {
   var jq = function () {
     return tray;
   };
+  jq.each = function (list, fn) {
+    (list || []).forEach(function (item, i) {
+      fn(i, item);
+    });
+  };
+  // The uploader lists the destination directory as it opens. Nothing here
+  // depends on what comes back, so the request simply never settles.
+  jq.ajax = function () {
+    var chain = {
+      done: function () {
+        return chain;
+      },
+      fail: function () {
+        return chain;
+      }
+    };
+    return chain;
+  };
   var sandbox = {
     window: {
-      prompt: function (message, value) {
-        return value;
-      },
       confirm: function () {
         return false;
       },
@@ -195,8 +256,7 @@ test('a drop of eight files uploads only three at a time', async function () {
   // because the server caps a session at three concurrent transfers.
   var fetch_impl = pending_fetch();
   var ui = load_ui(fetch_impl).ui;
-  ui.set_cwd('tab1', '/srv/photos');
-  ui.start_drop('tab1', 'worker1', files(8));
+  ui.start_batch('tab1', 'worker1', files(8), '/srv/photos');
 
   assert.strictEqual(fetch_impl.calls.length, 3);
 
@@ -225,8 +285,7 @@ test('a drop of eight files uploads only three at a time', async function () {
 test('queued uploads are not sent against a closed session', async function () {
   var fetch_impl = pending_fetch();
   var ui = load_ui(fetch_impl).ui;
-  ui.set_cwd('tab1', '/srv/photos');
-  ui.start_drop('tab1', 'worker1', files(8));
+  ui.start_batch('tab1', 'worker1', files(8), '/srv/photos');
   assert.strictEqual(fetch_impl.calls.length, 3);
 
   ui.cancel_for_tab('tab1');
@@ -242,8 +301,7 @@ test('a 429 frees the slot for the next queued file straight away', async functi
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
   var ui = load_ui(fetch_impl, timers).ui;
-  ui.set_cwd('tab1', '/srv/photos');
-  ui.start_drop('tab1', 'worker1', files(5));
+  ui.start_batch('tab1', 'worker1', files(5), '/srv/photos');
   assert.strictEqual(fetch_impl.calls.length, 3);
 
   // The server is busy with transfers this queue does not schedule (a
@@ -259,8 +317,7 @@ test('a 429 rejoins the queue instead of failing the file', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
   var ui = load_ui(fetch_impl, timers).ui;
-  ui.set_cwd('tab1', '/srv/photos');
-  ui.start_drop('tab1', 'worker1', files(1));
+  ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
   assert.strictEqual(fetch_impl.calls.length, 1);
 
   fetch_impl.calls[0].settle(busy_response());
@@ -308,8 +365,7 @@ test('closing the tab stops an upload waiting out a 429', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
   var ui = load_ui(fetch_impl, timers).ui;
-  ui.set_cwd('tab1', '/srv/photos');
-  ui.start_drop('tab1', 'worker1', files(1));
+  ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
 
   fetch_impl.calls[0].settle(busy_response());
   await new Promise(function (r) {
@@ -332,8 +388,7 @@ test('cancelling a row that started immediately aborts its request', function ()
   // rebound to a queue cancellation that can no longer apply.
   var fetch_impl = pending_fetch();
   var loaded = load_ui(fetch_impl);
-  loaded.ui.set_cwd('tab1', '/srv/photos');
-  loaded.ui.start_drop('tab1', 'worker1', files(1));
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
   assert.strictEqual(fetch_impl.calls.length, 1);
 
   loaded.row.handlers.click();
@@ -344,8 +399,7 @@ test('closing the tab stops every upload waiting out a 429', async function () {
   var fetch_impl = pending_fetch();
   var timers = fake_timers();
   var loaded = load_ui(fetch_impl, timers);
-  loaded.ui.set_cwd('tab1', '/srv/photos');
-  loaded.ui.start_drop('tab1', 'worker1', files(3));
+  loaded.ui.start_batch('tab1', 'worker1', files(3), '/srv/photos');
   assert.strictEqual(fetch_impl.calls.length, 3);
 
   var i;
@@ -364,4 +418,23 @@ test('closing the tab stops every upload waiting out a 429', async function () {
   // Every waiting transfer must be dropped, not just the first: a survivor
   // re-enqueues against a worker the user has already closed.
   assert.strictEqual(fetch_impl.calls.length, 3);
+});
+
+test('a drop stages the files in the uploader instead of uploading them', function () {
+  // Drops used to confirm the directory with window.prompt and upload
+  // straight away. They now open the same dialog the toolbar button does,
+  // so nothing is sent until the user confirms the destination.
+  var fetch_impl = pending_fetch();
+  var loaded = load_ui(fetch_impl);
+  var el = fake_node();
+  loaded.ui.bind_drop(el, 'tab1', 'worker1');
+
+  el.handlers['drop.transfer']({
+    preventDefault: function () {},
+    originalEvent: {dataTransfer: {files: files(2)}}
+  });
+
+  assert.strictEqual(fetch_impl.calls.length, 0);
+  // `tray` doubles as every element the stub hands out, the dialog included.
+  assert.ok(loaded.row.classes.indexOf('visible') !== -1);
 });

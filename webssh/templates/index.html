@@ -27,6 +27,7 @@
       <div id="tab-list"></div>
       <button id="new-tab-btn" type="button" title="New connection" aria-label="Open new connection tab">+</button>
       <button id="download-btn" type="button" title="Download file" aria-label="Download a file from the host">&#8595;</button>
+      <button id="upload-btn" type="button" title="Upload file" aria-label="Upload files to the host">&#8593;</button>
       {% if user_hosts_enabled and auth_username %}
       <button id="settings-btn" type="button" title="Settings" aria-label="Open settings">&#9881;&#xFE0E;</button>
       {% end %}
@@ -183,6 +184,21 @@
         <div class="picker-actions">
           <button type="button" class="picker-cancel">Cancel</button>
           <button type="button" class="picker-download">Download</button>
+        </div>
+      </div>
+    </div>
+    <div id="transfer-uploader">
+      <div class="picker-box">
+        <input type="text" class="picker-path" spellcheck="false" aria-label="Destination directory on the host">
+        <div class="picker-list"></div>
+        <div class="uploader-source">
+          <button type="button" class="uploader-browse">Browse&hellip;</button>
+          <span class="uploader-summary"></span>
+          <input type="file" class="uploader-files" multiple hidden>
+        </div>
+        <div class="picker-actions">
+          <button type="button" class="picker-cancel">Cancel</button>
+          <button type="button" class="picker-upload">Upload</button>
         </div>
       </div>
     </div>

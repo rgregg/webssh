@@ -275,3 +275,10 @@ test('make_queue frees the slot when a job throws on the way out', function () {
   });
   assert.deepStrictEqual(ran, ['next'], 'the freed slot admits the next job');
 });
+
+test('describe_selection names one file and counts a batch', function () {
+  assert.strictEqual(ft.describe_selection([]), 'No files selected');
+  assert.strictEqual(ft.describe_selection(null), 'No files selected');
+  assert.strictEqual(ft.describe_selection(['notes.txt']), 'notes.txt');
+  assert.strictEqual(ft.describe_selection(['a.jpg', 'b.jpg']), '2 files selected');
+});
