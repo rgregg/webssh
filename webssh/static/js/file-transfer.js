@@ -123,6 +123,20 @@ var webssh_transfer = (function () {
     return out;
   }
 
+  // What the uploader dialog says it is about to send. A single file is
+  // named outright -- that is the case where the name is the thing worth
+  // checking before you commit to a destination -- and a batch is counted.
+  function describe_selection(names) {
+    var list = names || [];
+    if (!list.length) {
+      return 'No files selected';
+    }
+    if (list.length === 1) {
+      return String(list[0]);
+    }
+    return list.length + ' files selected';
+  }
+
   // A fixed-concurrency job queue. The server caps a session at
   // MAX_CONCURRENT_TRANSFERS (3) and answers anything beyond it with 429,
   // so dropping eight photos used to upload three and fail five. Holding
@@ -221,6 +235,7 @@ var webssh_transfer = (function () {
     make_queue: make_queue,
     split_path: split_path,
     match_entry: match_entry,
+    describe_selection: describe_selection,
     format_bytes: format_bytes,
     upload_url: upload_url,
     download_url: download_url

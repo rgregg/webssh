@@ -1,8 +1,8 @@
 /*jslint browser:true */
 /*
- * DOM wiring for file transfer: drop target, progress tray, download
- * picker. All decisions live in file-transfer.js; this file moves elements
- * and issues requests.
+ * DOM wiring for file transfer: drop target, progress tray, and the
+ * download and upload dialogs. All decisions live in file-transfer.js;
+ * this file moves elements and issues requests.
  */
 
 var webssh_transfer_ui = (function () {
@@ -33,13 +33,6 @@ var webssh_transfer_ui = (function () {
     }
     return queue_by_tab[tab_id];
   }
-
-  // open_picker runs fresh on every button press and builds a new `state`
-  // object each time, but #transfer-picker is a singleton DOM node shared
-  // across sessions. picker_session lets a session's in-flight request (or
-  // a debounce timer that fired late) recognize that it has been
-  // superseded and refuse to paint into a dialog another session now owns.
-  var picker_session = 0;
 
   function xsrf() {
     // Reuses main.js's helper (exposed on the shared wssh object) rather
@@ -272,13 +265,11 @@ var webssh_transfer_ui = (function () {
     enqueue();
   }
 
-  // Every drop confirms its destination, pre-filled with the directory the
-  // shell last reported. The tracked directory can be silently stale --
-  // a shell running under tmux/screen may never report one after the first
-  // prompt -- and a file landing in the wrong directory without a word is
-  // worse than one keystroke of confirmation. An empty answer is a real
-  // answer (upload relative to the SFTP home); only Cancel aborts.
-  function start_drop(tab_id, worker_id, files) {
+  // The batch behind every upload: one confirmed destination directory,
+  // one row and one queue slot per file. Both entry points -- the uploader
+  // dialog's Upload button and a drop that went through it -- land here, so
+  // the queueing behaviour is identical however the files were chosen.
+  function start_batch(tab_id, worker_id, files, dir) {
     if (!files || !files.length) {
       return;
     }
@@ -287,30 +278,43 @@ var webssh_transfer_ui = (function () {
     for (i = 0; i < files.length; i++) {
       names.push(files[i].name);
     }
-    var label = files.length === 1
-      ? files[0].name
-      : files.length + ' files';
-    var dir = window.prompt(
-      'Upload ' + label + ' to directory:', get_cwd(tab_id) || ''
-    );
-    if (dir === null) {
-      return;
-    }
     var paths = webssh_transfer.resolve_upload_paths(dir, names);
     for (i = 0; i < files.length; i++) {
       start_upload(tab_id, worker_id, files[i], paths[i]);
     }
   }
 
-  function open_picker(tab_id, worker_id) {
-    var dialog = $('#transfer-picker');
+  function to_array(files) {
+    var out = [];
+    var list = files || [];
+    for (var i = 0; i < list.length; i++) {
+      out.push(list[i]);
+    }
+    return out;
+  }
+
+  // A browser opens fresh on every button press and builds a new `state`
+  // object each time, but each dialog is a singleton DOM node shared across
+  // sessions. The counter lets a session's in-flight request (or a debounce
+  // timer that fired late) recognize that it has been superseded and refuse
+  // to paint into a dialog another session now owns. Counted per dialog, so
+  // opening the uploader does not silently disown an open download picker.
+  var sessions = {};
+
+  // The remote-directory list shared by both dialogs: fetch, filter,
+  // debounce, and discard stale responses. The only difference between the
+  // two is what a click on a *file* row means, which the caller supplies as
+  // options.pick_files -- the download picker is choosing one, the uploader
+  // is choosing the directory around them.
+  function make_browser(dialog, worker_id, options) {
     var list = dialog.find('.picker-list').empty();
     var input = dialog.find('.picker-path');
+    var key = options.key;
 
-    picker_session = picker_session + 1;
-    var session_id = picker_session;
+    sessions[key] = (sessions[key] || 0) + 1;
+    var session_id = sessions[key];
 
-    // Everything the picker needs to remember for one open session.
+    // Everything the browser needs to remember for one open session.
     var state = {
       dir: null,          // directory currently listed
       entries: [],        // entries as returned by the server
@@ -319,6 +323,10 @@ var webssh_transfer_ui = (function () {
       seq: 0,             // request counter, for discarding stale responses
       timer: null         // pending re-list debounce
     };
+
+    function current() {
+      return session_id === sessions[key];
+    }
 
     function note(text) {
       return $('<div class="picker-note"></div>').text(text);
@@ -336,13 +344,20 @@ var webssh_transfer_ui = (function () {
         item.toggleClass('is-dir', entry.is_dir);
         item.text(entry.name + (entry.is_dir ? '/' : ' \u2014 ' +
           webssh_transfer.format_bytes(entry.size)));
-        item.on('click', function () {
-          var path = webssh_transfer.resolve_path(state.dir, entry.name);
-          // Clicking behaves exactly as typing the same text would, for
-          // both kinds of row, so the list always reflects the box.
-          input.val(entry.is_dir ? path + '/' : path);
-          on_input();
-        });
+        if (entry.is_dir || options.pick_files) {
+          item.on('click', function () {
+            var path = webssh_transfer.resolve_path(state.dir, entry.name);
+            // Clicking behaves exactly as typing the same text would, for
+            // both kinds of row, so the list always reflects the box.
+            input.val(entry.is_dir ? path + '/' : path);
+            on_input();
+          });
+        } else {
+          // Uploading picks a directory, so a file row is context rather
+          // than a choice: shown (it is what would be overwritten) but not
+          // clickable, and dimmed so it does not invite a click.
+          item.addClass('is-inert');
+        }
         list.append(item);
       });
 
@@ -355,6 +370,16 @@ var webssh_transfer_ui = (function () {
         list.append(note(
           'More than 1000 matches; showing the first 1000.'));
       }
+    }
+
+    function error(text) {
+      // Keep the previous entries on screen: one mistyped character
+      // should not cost the user their place. Replace only a previous
+      // error note, so repeated failures don't stack -- and so the
+      // truncation note, which still describes the entries that are
+      // still showing, survives.
+      list.find('.picker-note.is-error').remove();
+      list.append(note(text).addClass('is-error'));
     }
 
     // The server filters across the whole directory, so a match that sorts
@@ -371,9 +396,9 @@ var webssh_transfer_ui = (function () {
         headers: {'X-Worker-Id': worker_id}
       })
         .done(function (data) {
-          if (session_id !== picker_session || mine !== state.seq) {
-            // Either a newer request within this session, or the picker
-            // has been reopened (a new session owns the dialog now).
+          if (!current() || mine !== state.seq) {
+            // Either a newer request within this session, or the dialog
+            // has been reopened (a new session owns it now).
             return;
           }
           state.dir = data.path;
@@ -385,17 +410,10 @@ var webssh_transfer_ui = (function () {
           render('');
         })
         .fail(function (xhr) {
-          if (session_id !== picker_session || mine !== state.seq) {
+          if (!current() || mine !== state.seq) {
             return;
           }
-          // Keep the previous entries on screen: one mistyped character
-          // should not cost the user their place. Replace only a previous
-          // error note, so repeated failures don't stack -- and so the
-          // truncation note, which still describes the entries that are
-          // still showing, survives.
-          list.find('.picker-note.is-error').remove();
-          list.append(note('Could not list directory (' + xhr.status + ')')
-            .addClass('is-error'));
+          error('Could not list directory (' + xhr.status + ')');
         });
     }
 
@@ -425,21 +443,43 @@ var webssh_transfer_ui = (function () {
       }, 250);
     }
 
-    var start = get_cwd(tab_id) || '.';
-    input.val(start);
-    fetch_dir(start, '');
-
-    // open_picker runs on every button press; without the off() the input
+    // make_browser runs on every button press; without the off() the input
     // handlers stack, as the drop handlers once did.
     input.off('input.picker').on('input.picker', on_input);
 
+    return {
+      start: function (dir) {
+        input.val(dir);
+        fetch_dir(dir, '');
+      },
+      path: function () {
+        return input.val();
+      },
+      // A debounced re-list still pending when the dialog closes would
+      // fetch against a dialog nobody is looking at.
+      cancel_pending: function () {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
+        }
+      },
+      error: error
+    };
+  }
+
+  function open_picker(tab_id, worker_id) {
+    var dialog = $('#transfer-picker');
+    var browser = make_browser(dialog, worker_id, {
+      key: 'download',
+      pick_files: true
+    });
+
+    browser.start(get_cwd(tab_id) || '.');
     dialog.addClass('visible');
+
     dialog.find('.picker-download').off('click').on('click', function () {
-      var path = input.val();
-      if (state.timer) {
-        clearTimeout(state.timer);
-        state.timer = null;
-      }
+      var path = browser.path();
+      browser.cancel_pending();
       if (!path) {
         dialog.removeClass('visible');
         return;
@@ -460,15 +500,71 @@ var webssh_transfer_ui = (function () {
       }).fail(function (xhr) {
         // Report rather than failing silently: a dead button with no
         // explanation is worse than an error.
-        list.find('.picker-note.is-error').remove();
-        list.append(note('Could not start download (' + xhr.status + ')')
-          .addClass('is-error'));
+        browser.error('Could not start download (' + xhr.status + ')');
       });
     });
     dialog.find('.picker-cancel').off('click').on('click', function () {
-      if (state.timer) {
-        clearTimeout(state.timer);
+      browser.cancel_pending();
+      dialog.removeClass('visible');
+    });
+  }
+
+  // Every upload confirms its destination, pre-filled with the directory
+  // the shell last reported. The tracked directory can be silently stale --
+  // a shell running under tmux/screen may never report one after the first
+  // prompt -- and a file landing in the wrong directory without a word is
+  // worse than one glance of confirmation.
+  //
+  // `files` is what a drop carried, if anything; the Browse button replaces
+  // the selection rather than adding to it, matching what a file input does.
+  function open_uploader(tab_id, worker_id, files) {
+    var dialog = $('#transfer-uploader');
+    var browser = make_browser(dialog, worker_id, {
+      key: 'upload',
+      pick_files: false
+    });
+    var file_input = dialog.find('.uploader-files');
+    var summary = dialog.find('.uploader-summary');
+    var upload_btn = dialog.find('.picker-upload');
+    var chosen = to_array(files);
+
+    function refresh() {
+      var names = [];
+      for (var i = 0; i < chosen.length; i++) {
+        names.push(chosen[i].name);
       }
+      summary.text(webssh_transfer.describe_selection(names));
+      upload_btn.prop('disabled', !chosen.length);
+    }
+
+    // Cleared on open so that re-picking the same file still fires change;
+    // a browser suppresses the event when the value is unchanged.
+    file_input.val('');
+    file_input.off('change.uploader').on('change.uploader', function () {
+      chosen = to_array(file_input[0].files);
+      refresh();
+    });
+    dialog.find('.uploader-browse').off('click').on('click', function () {
+      // The native element, not jQuery's trigger: opening the file dialog
+      // has to happen inside the user gesture, and .click() on the input is
+      // the one call browsers accept for that.
+      file_input[0].click();
+    });
+
+    refresh();
+    browser.start(get_cwd(tab_id) || '.');
+    dialog.addClass('visible');
+
+    upload_btn.off('click').on('click', function () {
+      browser.cancel_pending();
+      if (!chosen.length) {
+        return;
+      }
+      dialog.removeClass('visible');
+      start_batch(tab_id, worker_id, chosen, browser.path());
+    });
+    dialog.find('.picker-cancel').off('click').on('click', function () {
+      browser.cancel_pending();
       dialog.removeClass('visible');
     });
   }
@@ -492,7 +588,10 @@ var webssh_transfer_ui = (function () {
     });
     el.on('drop.transfer', function (e) {
       e.preventDefault();
-      start_drop(tab_id, worker_id, e.originalEvent.dataTransfer.files);
+      // A drop stages the files rather than uploading them: the same dialog
+      // the toolbar button opens, so the destination is confirmed (and can
+      // be browsed to) the same way however the files arrived.
+      open_uploader(tab_id, worker_id, e.originalEvent.dataTransfer.files);
     });
   }
 
@@ -500,8 +599,9 @@ var webssh_transfer_ui = (function () {
     set_cwd: set_cwd,
     get_cwd: get_cwd,
     start_upload: start_upload,
-    start_drop: start_drop,
+    start_batch: start_batch,
     open_picker: open_picker,
+    open_uploader: open_uploader,
     bind_drop: bind_drop,
     cancel_for_tab: cancel_for_tab
   };

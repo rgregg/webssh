@@ -893,7 +893,8 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 .input-error { border-color: var(--danger) !important; background: var(--danger-dim); }
 
 /* --- File Transfer --- */
-#download-btn {
+#download-btn,
+#upload-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -911,7 +912,8 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   transition: background 0.1s;
 }
 
-#download-btn:hover { background: var(--accent-dim); }
+#download-btn:hover,
+#upload-btn:hover { background: var(--accent-dim); }
 
 #transfer-drop-overlay {
   display: none;
@@ -976,7 +978,8 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 
 .transfer-cancel:hover { color: var(--accent); }
 
-#transfer-picker {
+#transfer-picker,
+#transfer-uploader {
   display: none;
   position: absolute;
   inset: 0;
@@ -986,7 +989,8 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   background: rgba(0, 0, 0, 0.5);
 }
 
-#transfer-picker.visible { display: flex; }
+#transfer-picker.visible,
+#transfer-uploader.visible { display: flex; }
 
 .picker-box {
   width: 480px;
@@ -1029,6 +1033,19 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
    shared hover affordance and only stay dimmer than files. */
 .picker-item.is-dir { color: var(--text-muted); }
 
+/* Downloading picks a file, so directories are the way through rather than
+   the target. Uploading inverts that: the directory *is* the choice, so it
+   takes the brighter treatment and files drop back to context. */
+#transfer-uploader .picker-item.is-dir { color: var(--text-secondary); }
+
+.picker-item.is-inert {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.picker-item.is-inert:hover { background: none; color: var(--text-muted); }
+
 .picker-note { padding: 6px; color: var(--text-muted); font-size: 11px; }
 
 .picker-actions {
@@ -1042,7 +1059,44 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
    buttons, which read as light-theme chrome on a dark dialog. Follow the
    established vocabulary: accent fill for the primary action, outlined for
    the secondary one, as .btn-connect and .btn-reset do on the connect card. */
+.uploader-source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.uploader-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.uploader-browse {
+  padding: 6px 14px;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.uploader-browse:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
 .picker-download,
+.picker-upload,
 .picker-cancel {
   padding: 8px 18px;
   border-radius: 6px;
@@ -1053,19 +1107,29 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
   transition: all 0.15s;
 }
 
-.picker-download {
+.picker-download,
+.picker-upload {
   background: var(--accent);
   color: var(--bg-deep);
   border: none;
   font-weight: 600;
 }
 
-.picker-download:hover {
+.picker-download:hover,
+.picker-upload:not(:disabled):hover {
   filter: brightness(1.1);
   box-shadow: 0 0 20px rgba(45, 212, 168, 0.15);
 }
 
-.picker-download:active { transform: translateY(1px); }
+.picker-download:active,
+.picker-upload:not(:disabled):active { transform: translateY(1px); }
+
+/* Nothing chosen yet: the button stays present so the dialog's shape does
+   not shift the moment a file is picked. */
+.picker-upload:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .picker-cancel {
   background: transparent;

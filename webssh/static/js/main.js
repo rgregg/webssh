@@ -2020,6 +2020,13 @@ jQuery(function($){
     }
   });
 
+  $('#upload-btn').on('click', function() {
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED && tab.worker_id) {
+      webssh_transfer_ui.open_uploader(tab.id, tab.worker_id, null);
+    }
+  });
+
 
   // ===================== Terminal Focus on Click =====================
 
@@ -2038,6 +2045,16 @@ jQuery(function($){
     if (tab && tab.term && tab.state === CONNECTED) {
       tab.term.focus();
     }
+  });
+
+  // Double-clicking the empty stretch of the bar opens a tab, the way a
+  // browser's tab strip does. Tabs and buttons are excluded: a double-click
+  // on either is two clicks of their own action, not a request for a tab.
+  $('#tab-bar').on('dblclick', function(e) {
+    if ($(e.target).closest('.tab-item, button').length) {
+      return;
+    }
+    tabManager.createTab();
   });
 
 
