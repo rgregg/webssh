@@ -24,6 +24,7 @@ from webssh._version import __version__
 from webssh.settings import max_upload_size
 from webssh.utils import (
     UnicodeType,
+    is_ascii_encoding,
     is_ip_hostname,
     is_same_primary_domain,
     is_valid_encoding,
@@ -57,6 +58,11 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 22
+
+# Seconds allowed for each `locale charmap` probe. A login shell over SSH
+# can be slow to source its profile, and a probe that times out costs the
+# session its detected encoding.
+ENCODING_TIMEOUT = 3
 
 swallow_http_errors = True
 redirecting = None
@@ -653,6 +659,17 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         except UnicodeDecodeError:
             return
 
+        if is_ascii_encoding(encoding):
+            # A shell that reports plain ASCII has told us nothing useful:
+            # it is what an interactive-but-not-login shell reports when
+            # the locale is only exported from a login profile, which is
+            # the default on macOS. Worse, browsers treat 'us-ascii' as a
+            # label for windows-1252, so honouring it mangles every
+            # multi-byte character the terminal emits. UTF-8 is a superset
+            # of ASCII, so falling back costs a true ASCII server nothing.
+            logger.debug(f'Ignoring uninformative encoding {encoding!r}.')
+            return
+
         if is_valid_encoding(encoding):
             return encoding
 
@@ -666,19 +683,22 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             try:
                 _, stdout, _ = ssh.exec_command(command,
                                                 get_pty=True,
-                                                timeout=1)
+                                                timeout=ENCODING_TIMEOUT)
             except paramiko.SSHException as exc:
-                logger.info(str(exc))
+                logger.info(f'{command!r} failed: {exc}')
             else:
                 try:
                     data = stdout.read()
                 except TimeoutError:
-                    pass
+                    logger.info(
+                        f'{command!r} timed out after {ENCODING_TIMEOUT}s.'
+                    )
                 else:
                     logger.debug(f'{command!r} => {data!r}')
                     result = self.parse_encoding(data)
                     if result:
                         return result
+                    logger.info(f'{command!r} gave no usable encoding.')
 
         logger.warning('Could not detect the default encoding.')
         return 'utf-8'

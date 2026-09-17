@@ -495,6 +495,47 @@ class TestIndexHandler(unittest.TestCase):
         self.assertEqual("utf-8", encoding)
 
 
+class TestEncodingDetection(unittest.TestCase):
+    """Both probes are driven end to end, as get_default_encoding runs them
+    in order and the second one is what a macOS server actually answers."""
+
+    def detect(self, *outputs):
+        handler = Mock(spec=IndexHandler)
+        handler._effective_hosts = None
+        handler.parse_encoding = lambda data: IndexHandler.parse_encoding(
+            handler, data
+        )
+
+        ssh = Mock(spec=SSHClient)
+        ssh.exec_command.side_effect = [
+            (io.BytesIO(), io.BytesIO(initial_bytes=out), io.BytesIO())
+            for out in outputs
+        ]
+
+        return IndexHandler.get_default_encoding(handler, ssh)
+
+    def test_ascii_is_not_taken_as_the_server_encoding(self):
+        # A shell that reports US-ASCII has told us nothing: browsers map
+        # that label to windows-1252, so honouring it would mangle every
+        # multi-byte character the terminal emits.
+        self.assertEqual('utf-8', self.detect(b'US-ASCII\r\n',
+                                              b'US-ASCII\r\n'))
+        self.assertEqual('utf-8', self.detect(b'ANSI_X3.4-1968\r\n',
+                                              b'ANSI_X3.4-1968\r\n'))
+
+    def test_login_shell_answer_wins(self):
+        # The macOS case: the login shell sources the profile that exports
+        # LANG, the interactive one does not.
+        self.assertEqual('UTF-8', self.detect(b'UTF-8\r\n',
+                                              b'US-ASCII\r\n'))
+
+    def test_second_probe_answers_when_the_first_is_useless(self):
+        self.assertEqual('GBK', self.detect(b'US-ASCII\r\n', b'GBK\r\n'))
+
+    def test_real_encoding_is_still_honoured(self):
+        self.assertEqual('UTF-8', self.detect(b'UTF-8\r\n'))
+
+
 class TestIndexHandlerStoredKey(unittest.TestCase):
 
     def setUp(self):

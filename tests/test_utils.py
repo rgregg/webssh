@@ -2,6 +2,7 @@ import json
 import unittest
 
 from webssh.utils import (
+    is_ascii_encoding,
     is_ip_hostname,
     is_same_primary_domain,
     is_valid_hostname,
@@ -53,6 +54,18 @@ class TestUitls(unittest.TestCase):
         self.assertTrue(is_valid_port(80))
         self.assertFalse(is_valid_port(0))
         self.assertFalse(is_valid_port(65536))
+
+    def test_is_ascii_encoding(self):
+        # Every spelling the shells actually report, plus the aliases
+        # codecs resolves to the same codec.
+        self.assertTrue(is_ascii_encoding('US-ASCII'))
+        self.assertTrue(is_ascii_encoding('us-ascii'))
+        self.assertTrue(is_ascii_encoding('ANSI_X3.4-1968'))
+        self.assertTrue(is_ascii_encoding('ascii'))
+        self.assertFalse(is_ascii_encoding('UTF-8'))
+        self.assertFalse(is_ascii_encoding('GBK'))
+        self.assertFalse(is_ascii_encoding('unknown-encoding'))
+        self.assertFalse(is_ascii_encoding(''))
 
     def test_is_valid_hostname(self):
         self.assertTrue(is_valid_hostname('google.com'))
