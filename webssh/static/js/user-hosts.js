@@ -207,6 +207,16 @@ var webssh_hosts = (function () {
     return options;
   }
 
+  // Precedence for the session encoding: an explicit URL parameter, then
+  // the user's stored setting, then '' meaning "use what the server
+  // reported". The stored setting has to outrank detection, because
+  // correcting a bad detection result is the only reason the field exists
+  // (see #68, where a macOS server reports US-ASCII).
+  function resolve_encoding(url_opts, stored) {
+    return trimmed((url_opts || {}).encoding) ||
+           trimmed((stored || {}).encoding) || '';
+  }
+
   // A 400 describes the user's own input and is safe to show. Anything else
   // may describe server state, so it gets a fixed generic message.
   function save_error_text(status, body) {
@@ -286,6 +296,7 @@ var webssh_hosts = (function () {
     key_source_update: key_source_update,
     default_key_source: default_key_source,
     resolve_terminal_options: resolve_terminal_options,
+    resolve_encoding: resolve_encoding,
     save_error_text: save_error_text,
     parse_command_key: parse_command_key,
     merge_migrated_commands: merge_migrated_commands

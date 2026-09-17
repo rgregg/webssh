@@ -1343,11 +1343,12 @@ jQuery(function($){
         }
       };
 
-      if (url_opts_data.encoding) {
-        if (set_encoding(url_opts_data.encoding) === false) {
-          set_encoding(msg.encoding);
-        }
-      } else {
+      // A stored or URL encoding that xterm rejects falls through to the
+      // server's own answer rather than leaving the tab with no decoder.
+      var preferred_encoding = webssh_hosts.resolve_encoding(url_opts_data,
+                                                             user_settings);
+      if (!preferred_encoding ||
+          set_encoding(preferred_encoding) === false) {
         set_encoding(msg.encoding);
       }
 
