@@ -226,6 +226,27 @@ test('roaming_update drops an unusable port instead of sending it', function () 
   assert.strictEqual(hosts.roaming_update('port', '0'), null);
 });
 
+test('resolve_encoding prefers a URL parameter over the stored setting', function () {
+  assert.strictEqual(
+    hosts.resolve_encoding({encoding: 'gbk'}, {encoding: 'utf-8'}), 'gbk');
+});
+
+test('resolve_encoding uses the stored setting when no URL parameter is given', function () {
+  // Regression: the stored Encoding field was saved and redisplayed but
+  // never consulted at connect time, so a user correcting a bad detection
+  // result (#68: a macOS server reports US-ASCII, which browsers decode as
+  // windows-1252) saw the setting silently ignored.
+  assert.strictEqual(hosts.resolve_encoding({}, {encoding: 'utf-8'}), 'utf-8');
+  assert.strictEqual(hosts.resolve_encoding({}, {encoding: '  utf-8  '}), 'utf-8');
+});
+
+test('resolve_encoding defers to the server when nothing is configured', function () {
+  // '' is the signal to keep the detected encoding, not an encoding name.
+  assert.strictEqual(hosts.resolve_encoding({}, {}), '');
+  assert.strictEqual(hosts.resolve_encoding({encoding: '   '}, {}), '');
+  assert.strictEqual(hosts.resolve_encoding(undefined, undefined), '');
+});
+
 test('resolve_terminal_options lets a URL parameter beat a stored value', function () {
   // Existing shared links carry ?fontsize= and ?bgcolor=; a stored
   // preference must never override an explicit URL parameter.
