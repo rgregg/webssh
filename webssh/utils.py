@@ -1,3 +1,4 @@
+import codecs
 import ipaddress
 import json
 import re
@@ -80,6 +81,13 @@ def is_valid_encoding(encoding):
     except ValueError:
         return False
     return True
+
+
+def is_ascii_encoding(encoding):
+    try:
+        return codecs.lookup(encoding).name == 'ascii'
+    except (LookupError, ValueError):
+        return False
 
 
 def is_ip_hostname(hostname):
