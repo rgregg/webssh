@@ -172,6 +172,10 @@
 
     <div class="container">
       <div id="status"></div>
+      <div id="auth-prompt" role="alert">
+        <span class="auth-prompt-text"></span>
+        <button type="button" class="auth-prompt-sign-in">Sign in</button>
+      </div>
       <div id="terminals-container"></div>
     </div>
 
@@ -219,6 +223,7 @@
       var user_settings = {% raw user_settings_json %};
     </script>
     <script src="static/js/user-hosts.js"></script>
+    <script src="static/js/auth-refresh.js"></script>
     <script src="static/js/file-transfer.js"></script>
     <script src="static/js/transfer-ui.js"></script>
     <script src="static/js/main.js"></script>

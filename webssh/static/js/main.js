@@ -331,9 +331,9 @@ jQuery(function($){
     bindWssh: function(tab) {
       // Reset wssh, but keep properties that must survive across tab
       // activations/reconnects: connect (the entry point) and
-      // get_xsrf_token (needed by transfer-ui.js for uploads, which can
-      // happen at any point while a tab is connected).
-      var preserved = ['connect', 'get_xsrf_token'];
+      // get_xsrf_token and check_auth (needed by transfer-ui.js for
+      // uploads, which can happen at any point while a tab is connected).
+      var preserved = ['connect', 'get_xsrf_token', 'check_auth'];
       var name;
       for (name in wssh) {
         if (wssh.hasOwnProperty(name) && preserved.indexOf(name) === -1) {
@@ -455,13 +455,21 @@ jQuery(function($){
         headers: {'X-Xsrftoken': get_xsrf_token()},
         data: JSON.stringify({settings: user_settings})
       }).fail(function(xhr) {
-        // Silent failure here means preferences quietly revert on the next
-        // page load (the roamed value wins over localStorage), so make it
-        // visible.
         var detail = xhr && xhr.status ? String(xhr.status) : 'network error';
         var message = 'Could not save preferences (' + detail + ').';
         console.warn(message);
-        show_status_text(message);
+        auth_guard.check().then(function(expired) {
+          if (expired) {
+            // The sign-in prompt already explains this; retry once the
+            // session is back instead of dropping the change.
+            auth_guard.after_sign_in(function() { prefs.schedule(); });
+            return;
+          }
+          // Silent failure here means preferences quietly revert on the
+          // next page load (the roamed value wins over localStorage), so
+          // make it visible.
+          show_status_text(message);
+        });
       });
     }
   };
@@ -864,6 +872,64 @@ jQuery(function($){
     }
   }
 
+  // ===================== Auth proxy re-sign-in =====================
+  // See auth-refresh.js. A lapsed proxy session is recovered in a popup,
+  // never by reloading, so open terminals survive it.
+
+  var auth_prompt = $('#auth-prompt');
+
+  var auth_guard = webssh_auth.make_guard({
+    probe: function() {
+      return fetch(webssh_auth.DONE_URL, {
+        method: 'GET', redirect: 'manual', cache: 'no-store',
+        credentials: 'same-origin'
+      });
+    },
+    open_popup: function(url) {
+      return window.open(url, 'webssh-auth', 'popup,width=520,height=680');
+    },
+    show_prompt: function(state) {
+      auth_prompt.find('.auth-prompt-text').text(state.blocked ?
+        'The sign-in window was blocked. Allow popups for this site, then click Sign in again.' :
+        'Your sign-in has expired. Open terminals are still connected; sign in again to keep working.');
+      auth_prompt.addClass('visible');
+    },
+    hide_prompt: function() {
+      auth_prompt.removeClass('visible');
+    }
+  });
+
+  auth_prompt.find('.auth-prompt-sign-in').on('click', function() {
+    auth_guard.sign_in();
+  });
+
+  window.addEventListener('message', function(event) {
+    if (event.origin === window.location.origin) {
+      auth_guard.receive(event.data);
+    }
+  });
+
+  if (window.BroadcastChannel) {
+    new BroadcastChannel(webssh_auth.CHANNEL).onmessage = function(event) {
+      auth_guard.receive(event.data);
+    };
+  }
+
+  // Any request can be the first to hit the lapsed session. Status 0 is
+  // the redirect to the identity provider being blocked by CORS; the probe
+  // decides whether that, or a 401/403, really means signing in again.
+  $(document).ajaxError(function(event, xhr) {
+    if (!xhr || xhr.statusText === 'abort') return;
+    if (xhr.status === 0 || xhr.status === 401 || xhr.status === 403) {
+      auth_guard.check();
+    }
+  });
+
+  // Exposed on the shared wssh object so transfer-ui.js can report its
+  // fetch failures too; see get_xsrf_token for why load order is fine.
+  wssh.check_auth = auth_guard.check;
+
+
   function log_status(text, to_populate) {
     console.log(text);
     show_status_text(text);
@@ -1204,27 +1270,35 @@ jQuery(function($){
       // Guard against tab closed while AJAX was in flight
       if (tab.closed) return;
 
-      if (resp.status !== 200) {
-        // Auth proxy may return 401/403 when session expires
-        if (resp.status === 401 || resp.status === 403) {
-          console.warn('Auth proxy returned ' + resp.status + ', reloading to re-authenticate.');
-          window.location.reload();
-          return;
-        }
-        log_status(resp.status + ': ' + resp.statusText, true);
+      function connect_failed(text) {
+        log_status(text, true);
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
+      }
+
+      if (resp.status !== 200) {
+        // Status 0 is the auth proxy's redirect to the identity provider,
+        // blocked by CORS; a proxy may also answer 401/403.
+        if (resp.status === 0 || resp.status === 401 || resp.status === 403) {
+          auth_guard.check().then(function(expired) {
+            connect_failed(expired ?
+              'Sign-in expired. Sign in again, then connect.' :
+              resp.status + ': ' + resp.statusText);
+          });
+          return;
+        }
+        connect_failed(resp.status + ': ' + resp.statusText);
         return;
       }
 
       var msg = resp.responseJSON;
       if (!msg || !msg.id) {
         // If the response is not JSON, the auth proxy likely intercepted
-        // the request (e.g. session expired) and returned an HTML login page.
-        // Reload the page to re-authenticate through the proxy.
+        // the request and served its login page in place of ours.
         if (!msg) {
           console.warn('Non-JSON response received; auth proxy session may have expired.');
-          window.location.reload();
+          auth_guard.mark_expired();
+          connect_failed('Sign-in expired. Sign in again, then connect.');
           return;
         }
         log_status(msg.status, true);
@@ -1471,31 +1545,12 @@ jQuery(function($){
         tabManager.updateTabStatus(tab.id);
 
         // If the WebSocket closed abnormally, check whether the auth proxy
-        // session has expired. If so, reload to re-authenticate.
+        // session has expired, which raises the sign-in prompt. The other
+        // tabs' terminals are left alone either way.
         if (e.code === 1006 || (!e.wasClean && !e.reason)) {
-          fetch(window.location.href, { method: 'GET', redirect: 'manual' })
-            .then(function(resp) {
-              // With manual redirects, browsers may expose auth redirects as
-              // an 'opaqueredirect', a 3xx status, or status 0. Treat those,
-              // plus 401/403, as signals that the auth proxy wants us to
-              // re-authenticate.
-              var isAuthRedirect = resp.type === 'opaqueredirect' ||
-                resp.status === 0 ||
-                (resp.status >= 300 && resp.status < 400) ||
-                resp.status === 401 ||
-                resp.status === 403;
-
-              if (isAuthRedirect) {
-                console.warn('Auth proxy session expired, reloading to re-authenticate.');
-                window.location.reload();
-              } else {
-                handle_ws_close(e, tab);
-              }
-            })
-            .catch(function() {
-              // Network error - just handle normally
-              handle_ws_close(e, tab);
-            });
+          auth_guard.check().then(function() {
+            handle_ws_close(e, tab);
+          });
           return;
         }
 
@@ -1948,6 +2003,12 @@ jQuery(function($){
     // Browser extensions and other frames dispatch postMessage events with
     // non-string payloads; only strings are meaningful to this handler.
     if (typeof event.data !== 'string') {
+      return;
+    }
+    // The sign-in popup's completion signal is a string too, but it is
+    // auth_guard's to handle; parsed as a connect request it would open a
+    // stray tab.
+    if (event.data === webssh_auth.MESSAGE) {
       return;
     }
     console.log(event.origin);

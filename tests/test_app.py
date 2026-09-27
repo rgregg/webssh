@@ -252,6 +252,15 @@ class TestAppBasic(TestAppBase):
         cls.running.pop()
         print('='*20)
 
+    def test_auth_done_page_signals_opener_and_closes(self):
+        # The sign-in popup lands here once the auth proxy has issued a
+        # fresh session cookie; the page reports back and closes itself.
+        response = self.fetch('/auth/done')
+        self.assertEqual(response.code, 200)
+        self.assertIn(b'webssh-auth-ok', response.body)
+        self.assertIn(b'window.close()', response.body)
+        self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
+
     def test_app_with_invalid_form_for_missing_argument(self):
         response = self.fetch('/')
         self.assertEqual(response.code, 200)

@@ -10,6 +10,7 @@ from tornado.options import options
 
 from webssh import handler
 from webssh.handler import (
+    AuthDoneHandler,
     IndexHandler,
     NotFoundHandler,
     SettingsPaneHandler,
@@ -83,6 +84,7 @@ def make_handlers(loop, options, live_config=None):
 
     handlers = [
         (r'/', IndexHandler, index_kwargs),
+        (r'/auth/done', AuthDoneHandler, {'loop': loop}),
         (r'/transfer/list', TransferListHandler, transfer_kwargs),
         (r'/transfer/download', TransferDownloadHandler, transfer_kwargs),
         (r'/transfer/upload', TransferUploadHandler, transfer_kwargs),
