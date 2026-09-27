@@ -2001,14 +2001,9 @@ jQuery(function($){
   function cross_origin_connect(event)
   {
     // Browser extensions and other frames dispatch postMessage events with
-    // non-string payloads; only strings are meaningful to this handler.
-    if (typeof event.data !== 'string') {
-      return;
-    }
-    // The sign-in popup's completion signal is a string too, but it is
-    // auth_guard's to handle; parsed as a connect request it would open a
-    // stray tab.
-    if (event.data === webssh_auth.MESSAGE) {
+    // non-string payloads, and the sign-in popup posts its own string that
+    // auth_guard handles; neither is a connect request.
+    if (!webssh_auth.is_connect_request(event.data)) {
       return;
     }
     console.log(event.origin);

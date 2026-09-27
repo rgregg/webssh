@@ -18,6 +18,24 @@ test('is_auth_redirect leaves a live session alone', function () {
   assert.strictEqual(auth.is_auth_redirect({type: 'basic', status: 502}), false);
 });
 
+test('is_connect_request passes embedding-API strings through', function () {
+  assert.strictEqual(auth.is_connect_request('127.0.0.1|22|user|pass'), true);
+  assert.strictEqual(auth.is_connect_request('["127.0.0.1", 22, "user"]'), true);
+});
+
+test('is_connect_request rejects the sign-in signal', function () {
+  // Regression: the popup's completion message reached the embedding
+  // handler, which parsed it as a connect request, opened a stray tab and
+  // unbound the live terminal.
+  assert.strictEqual(auth.is_connect_request(auth.MESSAGE), false);
+});
+
+test('is_connect_request rejects non-string payloads', function () {
+  assert.strictEqual(auth.is_connect_request({type: 'extension'}), false);
+  assert.strictEqual(auth.is_connect_request(undefined), false);
+  assert.strictEqual(auth.is_connect_request(42), false);
+});
+
 function harness(probe_result) {
   var calls = {probes: 0, shown: [], hidden: 0, opened: []};
   var popup = {};

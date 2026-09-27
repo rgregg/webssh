@@ -32,6 +32,14 @@ and already cover `file-transfer.js` and the handler.
 `start-stack.sh` prints the `WEBSSH_*` environment `connect.js` reads, which is
 why it is wrapped in `eval`.
 
+- **Extra app flags:** set `WEBSSH_APP_ARGS` before starting, e.g.
+  `--user_hosts --userdatadir=/tmp/wr/data` for the settings pane and
+  `/api/settings`.
+- **Auth proxy headers:** `open({headers: {'X-Authentik-Username': 'me'}})`
+  sends them on every request, standing in for the proxy.
+- **Committed browser tests** live in `tests/e2e/` and run with
+  `npm run test:e2e`, which brings the stack up and down itself.
+
 ## Writing a driver
 
 ```js

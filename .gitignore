@@ -70,3 +70,4 @@ data/
 
 # SDD scratch workspace
 .superpowers/
+node_modules/

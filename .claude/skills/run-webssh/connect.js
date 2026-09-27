@@ -32,7 +32,12 @@ async function open(opts = {}) {
   if (!key) throw new Error('WEBSSH_KEY unset -- eval the output of start-stack.sh first');
 
   const browser = await chromium.launch({executablePath: chromePath()});
-  const page = await browser.newPage({viewport: opts.viewport || {width: 1100, height: 720}});
+  // opts.headers stands in for an auth proxy, e.g. the username header that
+  // user-hosts mode reads.
+  const page = await browser.newPage({
+    viewport: opts.viewport || {width: 1100, height: 720},
+    extraHTTPHeaders: opts.headers || {}
+  });
   page.on('pageerror', e => console.log('  [pageerror]', e.message));
   if (opts.console) page.on('console', m => console.log('  [console]', m.type(), m.text()));
 

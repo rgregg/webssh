@@ -48,8 +48,11 @@ cd "$REPO"
 # --hostfile keeps the accepted host key inside $WORKDIR. Without it webssh
 # writes ./known_hosts in the repo, and the NEXT run -- which generates a fresh
 # throwaway host key -- is refused with "Bad host key." in the status bar.
+# WEBSSH_APP_ARGS adds flags for a run that needs them, e.g. user hosts:
+#   WEBSSH_APP_ARGS="--user_hosts --userdatadir=$WORKDIR/data"
+# shellcheck disable=SC2086
 nohup .venv/bin/python run.py --port="$APP_PORT" --address=127.0.0.1 \
-  --policy=autoadd --hostfile="$WORKDIR/known_hosts" \
+  --policy=autoadd --hostfile="$WORKDIR/known_hosts" ${WEBSSH_APP_ARGS:-} \
   > "$WORKDIR/webssh.log" 2>&1 &
 echo $! > "$WORKDIR/webssh.pid"
 

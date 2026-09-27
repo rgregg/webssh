@@ -31,6 +31,14 @@ var webssh_auth = (function () {
       resp.status === 403;
   }
 
+  // Whether a postMessage payload belongs to main.js's embedding API, which
+  // treats any string as a connect request. The sign-in popup's completion
+  // signal is a string too; parsed as a connect request it opened a stray
+  // tab and unbound the live terminal.
+  function is_connect_request(data) {
+    return typeof data === 'string' && data !== MESSAGE;
+  }
+
   // deps:
   //   probe()           -> Promise of a manual-redirect fetch response
   //   open_popup(url)   -> the popup window, or null if it was blocked
@@ -125,6 +133,7 @@ var webssh_auth = (function () {
     CHANNEL: CHANNEL,
     DONE_URL: DONE_URL,
     is_auth_redirect: is_auth_redirect,
+    is_connect_request: is_connect_request,
     make_guard: make_guard
   };
 }());
