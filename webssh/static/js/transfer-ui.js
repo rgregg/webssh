@@ -186,7 +186,17 @@ var webssh_transfer_ui = (function () {
         finish_row(row, 'uploaded ' + webssh_transfer.format_bytes(data.bytes));
       });
     }).catch(function (err) {
-      finish_row(row, err && err.name === 'AbortError' ? 'cancelled' : 'failed');
+      if (err && err.name === 'AbortError') {
+        finish_row(row, 'cancelled');
+        return;
+      }
+      finish_row(row, 'failed');
+      // A lapsed auth-proxy session surfaces here as a network error: the
+      // redirect to the identity provider is blocked cross-origin. Let
+      // main.js check, and prompt for sign-in if that is what happened.
+      if (window.wssh && window.wssh.check_auth) {
+        window.wssh.check_auth();
+      }
     }).then(function () {
       // Runs on every outcome, since the catch above already absorbed any
       // rejection. A .then rather than .finally so this depends on nothing

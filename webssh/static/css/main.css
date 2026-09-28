@@ -582,6 +582,62 @@ textarea.pubkey-display:focus {
   opacity: 1;
 }
 
+/* --- Auth prompt --- */
+/* Top of the viewport so it never stacks with #status at the bottom; it
+   stays up until sign-in completes, so it has no dismiss button. Above
+   every overlay, the transfer dialogs and #waiter included: a lapsed
+   session is often discovered by the request a dialog just made. */
+#auth-prompt {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 110;
+  max-width: 520px;
+  width: calc(100% - 48px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 18px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#auth-prompt.visible {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+#auth-prompt .auth-prompt-text {
+  flex: 1;
+}
+
+#auth-prompt .auth-prompt-sign-in {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: var(--bg-deep);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#auth-prompt .auth-prompt-sign-in:hover {
+  filter: brightness(1.1);
+}
+
 /* --- Tab Bar --- */
 #tab-bar {
   display: none;

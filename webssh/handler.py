@@ -1020,6 +1020,20 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
                     admin_hosts=self.allowed_hosts)
 
 
+class AuthDoneHandler(MixinHandler, tornado.web.RequestHandler):
+    """Landing page for the re-authentication popup.
+
+    When the auth proxy's session lapses, the client opens this URL in a
+    popup instead of reloading, so open terminals survive. The proxy
+    walks the popup through sign-in and back here with a fresh cookie;
+    the page then tells the opener and closes itself.
+    """
+
+    def get(self):
+        self.set_header('Cache-Control', 'no-store')
+        self.render('auth-done.html')
+
+
 def content_disposition(filename):
     """Build an attachment header that survives a non-ASCII filename.
 

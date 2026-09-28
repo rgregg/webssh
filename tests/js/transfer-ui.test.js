@@ -168,7 +168,7 @@ function load_ui(fetch_impl, timers) {
   // `tray` doubles as every row: the stub returns one node for any
   // selector, which is enough to read back the handler a row's cancel
   // button currently carries.
-  return {ui: sandbox.webssh_transfer_ui, row: tray};
+  return {ui: sandbox.webssh_transfer_ui, row: tray, window: sandbox.window};
 }
 
 // A fetch stub that never settles on its own: the test decides when each
@@ -437,4 +437,38 @@ test('a drop stages the files in the uploader instead of uploading them', functi
   assert.strictEqual(fetch_impl.calls.length, 0);
   // `tray` doubles as every element the stub hands out, the dialog included.
   assert.ok(loaded.row.classes.indexOf('visible') !== -1);
+});
+
+test('an upload network error asks main.js to check the sign-in', async function () {
+  // A lapsed auth-proxy session looks like a network error to fetch: the
+  // redirect to the identity provider is blocked cross-origin.
+  var checks = 0;
+  var loaded = load_ui(function () {
+    return Promise.reject(new TypeError('Failed to fetch'));
+  });
+  loaded.window.wssh.check_auth = function () {
+    checks += 1;
+  };
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(checks, 1);
+});
+
+test('a cancelled upload does not check the sign-in', async function () {
+  var checks = 0;
+  var loaded = load_ui(function () {
+    var err = new Error('aborted');
+    err.name = 'AbortError';
+    return Promise.reject(err);
+  });
+  loaded.window.wssh.check_auth = function () {
+    checks += 1;
+  };
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(checks, 0);
 });

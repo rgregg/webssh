@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSSH - Signed in</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0a0e14;
+        color: #e2e8f0;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <p>Signed in. You can close this window.</p>
+    <script>
+      (function () {
+        // Both channels: the opener link is the direct route, and the
+        // BroadcastChannel still reaches the WebSSH page if something in
+        // the sign-in redirect chain severed it.
+        var message = 'webssh-auth-ok';
+        try {
+          if (window.opener) {
+            window.opener.postMessage(message, window.location.origin);
+          }
+        } catch (e) {}
+        try {
+          if (window.BroadcastChannel) {
+            var channel = new BroadcastChannel('webssh-auth');
+            channel.postMessage(message);
+            channel.close();
+          }
+        } catch (e) {}
+        window.close();
+      })();
+    </script>
+  </body>
+</html>
