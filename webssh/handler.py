@@ -407,6 +407,17 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
+    def static_url(self, path, include_host=None, **kwargs):
+        """Versioned, but relative like the rest of the page's URLs.
+
+        The ?v= content hash gives every changed asset a new URL on
+        deploy, so browsers never keep running stale JS. Tornado's own
+        URL is absolute (/static/...), which would break a deployment
+        mounted under a path prefix.
+        """
+        url = super().static_url(path, include_host=False, **kwargs)
+        return url.lstrip('/')
+
     # Per-request cache for get_effective_hosts. See its comment.
     _effective_hosts = None
 
