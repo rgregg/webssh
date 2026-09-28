@@ -282,3 +282,75 @@ test('describe_selection names one file and counts a batch', function () {
   assert.strictEqual(ft.describe_selection(['notes.txt']), 'notes.txt');
   assert.strictEqual(ft.describe_selection(['a.jpg', 'b.jpg']), '2 files selected');
 });
+
+test('parent_dir walks up one level', function () {
+  assert.strictEqual(ft.parent_dir('/var/log/nginx'), '/var/log');
+  assert.strictEqual(ft.parent_dir('/var/log/nginx/'), '/var/log');
+  assert.strictEqual(ft.parent_dir('/var'), '/');
+});
+
+test('parent_dir has nothing above the root or an unknown directory', function () {
+  assert.strictEqual(ft.parent_dir('/'), null);
+  assert.strictEqual(ft.parent_dir(''), null);
+  assert.strictEqual(ft.parent_dir(null), null);
+  // Relative paths never reach here once the server canonicalizes, but
+  // guessing a parent for one would be wrong, so do not.
+  assert.strictEqual(ft.parent_dir('.'), null);
+});
+
+test('choose_start_dir takes whichever location is more recent', function () {
+  var shell = {dir: '/srv/app', at: 100};
+  var last = {dir: '/var/log', at: 200};
+  // Browsed after the shell last reported: the shell's report is stale.
+  assert.strictEqual(ft.choose_start_dir(shell, last), '/var/log');
+  // The shell reported after the last browse: the user has moved on.
+  assert.strictEqual(ft.choose_start_dir({dir: '/srv/app', at: 300}, last),
+    '/srv/app');
+});
+
+test('choose_start_dir falls back to whatever is known, then home', function () {
+  assert.strictEqual(ft.choose_start_dir(null, {dir: '/var/log', at: 1}), '/var/log');
+  assert.strictEqual(ft.choose_start_dir({dir: '/srv', at: 1}, null), '/srv');
+  assert.strictEqual(ft.choose_start_dir(null, null), '.');
+});
+
+test('remember_dir and recall_dir keep one folder per host and dialog', function () {
+  var store = {};
+  store = ft.remember_dir(store, 'me@a:22', 'download', '/var/log', 10);
+  store = ft.remember_dir(store, 'me@a:22', 'upload', '/srv/in', 11);
+  store = ft.remember_dir(store, 'me@b:22', 'download', '/tmp', 12);
+
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@a:22', 'download'),
+    {dir: '/var/log', at: 10});
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@a:22', 'upload'),
+    {dir: '/srv/in', at: 11});
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@b:22', 'download'),
+    {dir: '/tmp', at: 12});
+  assert.strictEqual(ft.recall_dir(store, 'me@b:22', 'upload'), null);
+  assert.strictEqual(ft.recall_dir(store, 'me@c:22', 'download'), null);
+});
+
+test('remember_dir forgets the least recently used hosts past the cap', function () {
+  var store = {};
+  for (var i = 0; i < ft.MAX_REMEMBERED_HOSTS + 5; i++) {
+    store = ft.remember_dir(store, 'h' + i, 'download', '/d', i);
+  }
+  assert.strictEqual(Object.keys(store).length, ft.MAX_REMEMBERED_HOSTS);
+  assert.strictEqual(ft.recall_dir(store, 'h0', 'download'), null);
+  assert.notStrictEqual(
+    ft.recall_dir(store, 'h' + (ft.MAX_REMEMBERED_HOSTS + 4), 'download'), null);
+});
+
+test('recall_dir tolerates a corrupt or missing store', function () {
+  assert.strictEqual(ft.recall_dir(null, 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir('garbage', 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir({h: {download: {dir: 5}}}, 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir({h: 'x'}, 'h', 'download'), null);
+});
+
+test('host_key identifies a connection by user, host and port', function () {
+  assert.strictEqual(ft.host_key('ryan', 'nas.lan', '2222'), 'ryan@nas.lan:2222');
+  // A blank port is the server default, so it must share memory with 22.
+  assert.strictEqual(ft.host_key('ryan', 'nas.lan', ''), 'ryan@nas.lan:22');
+  assert.strictEqual(ft.host_key('ryan', 'NAS.lan', 22), 'ryan@nas.lan:22');
+});

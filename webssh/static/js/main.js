@@ -1843,6 +1843,10 @@ jQuery(function($){
     if (result) {
       tab.state = CONNECTING;
       tab.title = result.title;
+      // The transfer dialogs remember their last folder per connection.
+      webssh_transfer_ui.set_host(tab.id, webssh_transfer.host_key(
+        result.data.get('username'), result.data.get('hostname'),
+        result.data.get('port')));
       tabManager.updateTabStatus(tab.id);
       if (hostname) {
         validated_form_data = result.data;

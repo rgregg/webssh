@@ -19,4 +19,9 @@ export WEBSSH_APP_ARGS="--user_hosts --userdatadir=$WORKDIR/data"
 eval "$("$SKILL/start-stack.sh" "$WORKDIR")"
 
 cd "$REPO"
-node --test --test-concurrency=1 tests/e2e/*.test.js
+# Pass test files to run a subset: scripts/run_e2e.sh tests/e2e/foo.test.js
+if [ "$#" -gt 0 ]; then
+  node --test --test-concurrency=1 "$@"
+else
+  node --test --test-concurrency=1 tests/e2e/*.test.js
+fi

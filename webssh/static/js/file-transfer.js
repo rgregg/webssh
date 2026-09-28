@@ -100,6 +100,113 @@ var webssh_transfer = (function () {
     return {dir: dir === '' ? '/' : dir, filter: text.slice(cut + 1)};
   }
 
+  // The directory above an absolute path, or null at the root -- and for
+  // anything not absolute, whose parent cannot be known here.
+  function parent_dir(path) {
+    var text = (path === undefined || path === null) ? '' : String(path);
+    if (text.charAt(0) !== '/') {
+      return null;
+    }
+    var trimmed = text.replace(/\/+$/, '');
+    if (!trimmed) {
+      return null;
+    }
+    var cut = trimmed.lastIndexOf('/');
+    return cut === 0 ? '/' : trimmed.slice(0, cut);
+  }
+
+  // Where a transfer dialog opens. Both inputs are {dir, at} or null: the
+  // directory the shell last reported, and the one last browsed to in this
+  // dialog. The more recent is the better guess at where the user is --
+  // a shell that stopped reporting (tmux, screen) leaves a stale cwd that
+  // the last browse outdates, and a shell that reports at every prompt
+  // outdates the last browse as soon as the user runs a command. '.' is
+  // the SFTP home, for when neither is known.
+  function choose_start_dir(cwd, last) {
+    if (cwd && last) {
+      return last.at > cwd.at ? last.dir : cwd.dir;
+    }
+    if (last) {
+      return last.dir;
+    }
+    if (cwd) {
+      return cwd.dir;
+    }
+    return '.';
+  }
+
+  // Per-host memory of the last folder each dialog was in. Hosts differ in
+  // layout, so memory is keyed by connection; download and upload are kept
+  // apart, since where files come from and where they go often differ.
+  var MAX_REMEMBERED_HOSTS = 50;
+
+  function host_key(username, hostname, port) {
+    return String(username) + '@' + String(hostname).toLowerCase() + ':' +
+      String(port || 22);
+  }
+
+  function valid_entry(entry) {
+    return !!entry && typeof entry === 'object' &&
+      typeof entry.dir === 'string' && typeof entry.at === 'number';
+  }
+
+  function recall_dir(store, host, kind) {
+    if (!store || typeof store !== 'object') {
+      return null;
+    }
+    var slot = store[host];
+    if (!slot || typeof slot !== 'object' || !valid_entry(slot[kind])) {
+      return null;
+    }
+    return {dir: slot[kind].dir, at: slot[kind].at};
+  }
+
+  function newest(slot) {
+    var at = -Infinity;
+    for (var kind in slot) {
+      if (Object.prototype.hasOwnProperty.call(slot, kind) &&
+          valid_entry(slot[kind]) && slot[kind].at > at) {
+        at = slot[kind].at;
+      }
+    }
+    return at;
+  }
+
+  // Returns a new store; the caller persists it. Past the cap, the host
+  // used least recently is forgotten, so the store cannot grow unbounded.
+  function remember_dir(store, host, kind, dir, now) {
+    var out = {};
+    var source = (store && typeof store === 'object') ? store : {};
+    var name;
+    for (name in source) {
+      if (Object.prototype.hasOwnProperty.call(source, name) &&
+          source[name] && typeof source[name] === 'object') {
+        out[name] = source[name];
+      }
+    }
+    var slot = {};
+    for (name in out[host] || {}) {
+      if (Object.prototype.hasOwnProperty.call(out[host], name)) {
+        slot[name] = out[host][name];
+      }
+    }
+    slot[kind] = {dir: dir, at: now};
+    out[host] = slot;
+
+    var hosts = Object.keys(out);
+    while (hosts.length > MAX_REMEMBERED_HOSTS) {
+      var oldest = hosts[0];
+      for (var i = 1; i < hosts.length; i++) {
+        if (newest(out[hosts[i]]) < newest(out[oldest])) {
+          oldest = hosts[i];
+        }
+      }
+      delete out[oldest];
+      hosts = Object.keys(out);
+    }
+    return out;
+  }
+
   function match_entry(name, filter) {
     var needle = (filter === undefined || filter === null)
       ? '' : String(filter).trim();
@@ -234,6 +341,12 @@ var webssh_transfer = (function () {
     resolve_upload_paths: resolve_upload_paths,
     make_queue: make_queue,
     split_path: split_path,
+    parent_dir: parent_dir,
+    choose_start_dir: choose_start_dir,
+    host_key: host_key,
+    recall_dir: recall_dir,
+    remember_dir: remember_dir,
+    MAX_REMEMBERED_HOSTS: MAX_REMEMBERED_HOSTS,
     match_entry: match_entry,
     describe_selection: describe_selection,
     format_bytes: format_bytes,

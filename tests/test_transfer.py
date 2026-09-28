@@ -1,4 +1,5 @@
 import errno
+import posixpath
 import stat
 import unittest
 
@@ -67,6 +68,17 @@ class FakeSFTP:
         handle = FakeFile(b'', self, path)
         self.files[path] = b''
         return handle
+
+    home = '/home/fake'
+
+    def normalize(self, path):
+        # paramiko's normalize is the server's realpath: absolute, with
+        # '.' and '..' resolved, relative paths taken from the SFTP home.
+        full = posixpath.join(self.home, path) if path else self.home
+        full = posixpath.normpath(full)
+        # normpath keeps a leading '//' (POSIX allows it to mean something
+        # else); a real realpath does not.
+        return '/' + full.lstrip('/')
 
     def listdir_attr(self, path):
         if path not in self.dirs:
@@ -250,6 +262,29 @@ class TestListDirectory(unittest.TestCase):
     def test_missing_directory_raises_404(self):
         with self.assertRaises(transfer.TransferError) as caught:
             transfer.list_directory(FakeSFTP(), '/nope')
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_reports_the_canonical_absolute_path(self):
+        # The client builds its '..' row and its remembered folder from the
+        # path it is told it listed, so '.' and '..' must not survive.
+        sftp = FakeSFTP(dirs={
+            '/var/log': [FakeAttr('syslog')],
+            '/home/fake': [FakeAttr('notes.txt')],
+        })
+        self.assertEqual(
+            transfer.list_directory(sftp, '/var/log/nginx/..')['path'],
+            '/var/log')
+        home = transfer.list_directory(sftp, '.')
+        self.assertEqual(home['path'], '/home/fake')
+        self.assertEqual([e['name'] for e in home['entries']], ['notes.txt'])
+
+    def test_unresolvable_path_raises_404(self):
+        class NoSuchPath(FakeSFTP):
+            def normalize(self, path):
+                raise OSError(errno.ENOENT, 'No such file')
+
+        with self.assertRaises(transfer.TransferError) as caught:
+            transfer.list_directory(NoSuchPath(), '/gone')
         self.assertEqual(caught.exception.status, 404)
 
 
