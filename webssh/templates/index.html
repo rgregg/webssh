@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebSSH</title>
-    <link href="static/img/favicon.png" rel="icon" type="image/png">
-    <link href="static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
-    <link href="static/css/fullscreen.min.css" rel="stylesheet" type="text/css"/>
-    <link href="static/css/main.css" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('img/favicon.png') }}" rel="icon" type="image/png">
+    <link href="{{ static_url('css/xterm.min.css') }}" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('css/fullscreen.min.css') }}" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('css/main.css') }}" rel="stylesheet" type="text/css"/>
     {% if font.family %}
     <style>
       @font-face {
@@ -207,14 +207,14 @@
       </div>
     </div>
 
-    <script src="static/js/jquery.min.js"></script>
-    <script src="static/js/popper.min.js"></script>
-    <script src="static/js/bootstrap.min.js"></script>
-    <script src="static/js/xterm.min.js"></script>
-    <script src="static/js/xterm-addon-fit.min.js"></script>
-    <script src="static/js/xterm-addon-web-links.min.js"></script>
-    <script src="static/js/xterm-addon-clipboard.min.js"></script>
-    <script src="static/js/xterm-addon-webgl.min.js"></script>
+    <script src="{{ static_url('js/jquery.min.js') }}"></script>
+    <script src="{{ static_url('js/popper.min.js') }}"></script>
+    <script src="{{ static_url('js/bootstrap.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-fit.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-web-links.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-clipboard.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-webgl.min.js') }}"></script>
     <script>
       var allowed_hosts_configured = {% if allowed_hosts or user_hosts %}true{% else %}false{% end %};
       var user_key_enabled = {% if user_key_enabled %}true{% else %}false{% end %};
@@ -222,10 +222,10 @@
       var user_hosts_enabled = {% if user_hosts_enabled %}true{% else %}false{% end %};
       var user_settings = {% raw user_settings_json %};
     </script>
-    <script src="static/js/user-hosts.js"></script>
-    <script src="static/js/auth-refresh.js"></script>
-    <script src="static/js/file-transfer.js"></script>
-    <script src="static/js/transfer-ui.js"></script>
-    <script src="static/js/main.js"></script>
+    <script src="{{ static_url('js/user-hosts.js') }}"></script>
+    <script src="{{ static_url('js/auth-refresh.js') }}"></script>
+    <script src="{{ static_url('js/file-transfer.js') }}"></script>
+    <script src="{{ static_url('js/transfer-ui.js') }}"></script>
+    <script src="{{ static_url('js/main.js') }}"></script>
   </body>
 </html>

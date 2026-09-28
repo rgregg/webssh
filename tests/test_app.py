@@ -2,6 +2,7 @@ import errno
 import json
 import os
 import random
+import re
 import shutil
 import tempfile
 import threading
@@ -251,6 +252,27 @@ class TestAppBasic(TestAppBase):
     def tearDownClass(cls):
         cls.running.pop()
         print('='*20)
+
+    def test_index_versions_static_urls(self):
+        # Every deploy must change the URL of any asset whose content
+        # changed; otherwise browsers keep running stale JS after an
+        # upgrade until someone hard-reloads.
+        response = self.fetch('/')
+        body = to_str(response.body)
+        for asset in ('js/main.js', 'js/auth-refresh.js', 'css/main.css',
+                      'js/jquery.min.js'):
+            self.assertRegex(body, rf'"static/{asset}\?v=[0-9a-f]+"')
+        # Relative, not /static/..., so a deployment under a path prefix
+        # still resolves them.
+        self.assertNotIn('"/static/', body)
+
+    def test_versioned_static_url_is_cached_long_term(self):
+        response = self.fetch('/')
+        url = re.search(r'"(static/js/main\.js\?v=[0-9a-f]+)"',
+                        to_str(response.body)).group(1)
+        response = self.fetch('/' + url)
+        self.assertEqual(response.code, 200)
+        self.assertIn('max-age=', response.headers.get('Cache-Control', ''))
 
     def test_auth_done_page_signals_opener_and_closes(self):
         # The sign-in popup lands here once the auth proxy has issued a
