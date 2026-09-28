@@ -224,6 +224,9 @@ def list_directory(sftp, path, name_filter=''):
     reads the entire directory over SFTP.
     """
     try:
+        # Canonical and absolute, since the client builds its '..' row and
+        # its remembered folder from the path reported back here.
+        path = sftp.normalize(path)
         attrs = sftp.listdir_attr(path)
     except OSError as exc:
         raise error_from_oserror(exc, path)

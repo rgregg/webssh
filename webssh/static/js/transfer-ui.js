@@ -9,6 +9,7 @@ var webssh_transfer_ui = (function () {
   'use strict';
 
   var cwd_by_tab = {};
+  var host_by_tab = {};
   var active = {};
   var queue_by_tab = {};
   var busy_waits_by_tab = {};
@@ -44,12 +45,62 @@ var webssh_transfer_ui = (function () {
       window.wssh.get_xsrf_token() : '';
   }
 
+  // Timestamped, so a dialog can tell a fresh report from a stale one; see
+  // webssh_transfer.choose_start_dir.
   function set_cwd(tab_id, path) {
-    cwd_by_tab[tab_id] = path;
+    cwd_by_tab[tab_id] = {dir: path, at: Date.now()};
   }
 
   function get_cwd(tab_id) {
-    return cwd_by_tab[tab_id] || null;
+    return cwd_by_tab[tab_id] ? cwd_by_tab[tab_id].dir : null;
+  }
+
+  // Which connection a tab is on (webssh_transfer.host_key), so the folder
+  // a dialog was last in can be remembered per host.
+  function set_host(tab_id, key) {
+    host_by_tab[tab_id] = key;
+  }
+
+  var DIRS_STORAGE_KEY = 'webssh_transfer_dirs';
+
+  // Storage can be unavailable (private windows, blocked site data) or hold
+  // something unparseable; either way the dialogs just lose their memory.
+  function load_dirs() {
+    try {
+      return JSON.parse(window.localStorage.getItem(DIRS_STORAGE_KEY)) || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function remember_dir(tab_id, kind, dir) {
+    var host = host_by_tab[tab_id];
+    if (!host || !dir) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(DIRS_STORAGE_KEY, JSON.stringify(
+        webssh_transfer.remember_dir(load_dirs(), host, kind, dir, Date.now())));
+    } catch (e) {
+      // Quota or blocked storage: nothing to remember it in.
+    }
+  }
+
+  // The directories a dialog tries, in order, until one lists: the better
+  // of the last-browsed and shell-reported folders, then the shell's, then
+  // the SFTP home. A remembered folder can have been deleted since.
+  function start_dirs(tab_id, kind) {
+    var cwd = cwd_by_tab[tab_id] || null;
+    var host = host_by_tab[tab_id];
+    var last = host ? webssh_transfer.recall_dir(load_dirs(), host, kind) : null;
+    var dirs = [webssh_transfer.choose_start_dir(cwd, last)];
+    if (cwd && dirs.indexOf(cwd.dir) === -1) {
+      dirs.push(cwd.dir);
+    }
+    if (dirs.indexOf('.') === -1) {
+      dirs.push('.');
+    }
+    return dirs;
   }
 
   function tray() {
@@ -331,7 +382,8 @@ var webssh_transfer_ui = (function () {
       truncated: false,   // whether the server capped the matches
       filtered_by: '',    // the filter those entries were fetched under
       seq: 0,             // request counter, for discarding stale responses
-      timer: null         // pending re-list debounce
+      timer: null,        // pending re-list debounce
+      fallbacks: []       // start directories still to try if one fails
     };
 
     function current() {
@@ -342,9 +394,29 @@ var webssh_transfer_ui = (function () {
       return $('<div class="picker-note"></div>').text(text);
     }
 
+    function go_to_dir(path) {
+      // Same as clicking a directory row: the box shows the path, and the
+      // list follows the box.
+      input.val(path === '/' ? '/' : path + '/');
+      on_input();
+    }
+
     function render(filter) {
       list.empty();
       var shown = 0;
+      var parent = webssh_transfer.parent_dir(state.dir);
+      // Up a level, unless there is none or the user is filtering -- a
+      // filter is a search of this directory, and '..' is not a match.
+      // Checks both: a server-filtered listing is rendered with no local
+      // filter, since the server has already applied it.
+      if (parent !== null && !(filter || '').trim() && !state.filtered_by) {
+        list.append($('<div class="picker-item is-dir is-parent"></div>')
+          .text('../')
+          .attr('title', parent)
+          .on('click', function () {
+            go_to_dir(parent);
+          }));
+      }
       $.each(state.entries, function (i, entry) {
         if (!webssh_transfer.match_entry(entry.name, filter)) {
           return;
@@ -412,6 +484,10 @@ var webssh_transfer_ui = (function () {
             return;
           }
           state.dir = data.path;
+          state.fallbacks = [];
+          if (options.on_listed) {
+            options.on_listed(data.path);
+          }
           state.entries = data.entries;
           state.truncated = !!data.truncated;
           state.filtered_by = data.filter || '';
@@ -421,6 +497,14 @@ var webssh_transfer_ui = (function () {
         })
         .fail(function (xhr) {
           if (!current() || mine !== state.seq) {
+            return;
+          }
+          if (state.dir === null && state.fallbacks.length) {
+            // Nothing listed yet, so this was a start directory -- a
+            // remembered folder may be gone. Try the next candidate.
+            var next = state.fallbacks.shift();
+            input.val(next);
+            fetch_dir(next, '');
             return;
           }
           error('Could not list directory (' + xhr.status + ')');
@@ -458,9 +542,11 @@ var webssh_transfer_ui = (function () {
     input.off('input.picker').on('input.picker', on_input);
 
     return {
-      start: function (dir) {
-        input.val(dir);
-        fetch_dir(dir, '');
+      // dirs: candidates in order; the first that lists wins.
+      start: function (dirs) {
+        state.fallbacks = dirs.slice(1);
+        input.val(dirs[0]);
+        fetch_dir(dirs[0], '');
       },
       path: function () {
         return input.val();
@@ -481,10 +567,13 @@ var webssh_transfer_ui = (function () {
     var dialog = $('#transfer-picker');
     var browser = make_browser(dialog, worker_id, {
       key: 'download',
-      pick_files: true
+      pick_files: true,
+      on_listed: function (dir) {
+        remember_dir(tab_id, 'download', dir);
+      }
     });
 
-    browser.start(get_cwd(tab_id) || '.');
+    browser.start(start_dirs(tab_id, 'download'));
     dialog.addClass('visible');
 
     dialog.find('.picker-download').off('click').on('click', function () {
@@ -531,7 +620,10 @@ var webssh_transfer_ui = (function () {
     var dialog = $('#transfer-uploader');
     var browser = make_browser(dialog, worker_id, {
       key: 'upload',
-      pick_files: false
+      pick_files: false,
+      on_listed: function (dir) {
+        remember_dir(tab_id, 'upload', dir);
+      }
     });
     var file_input = dialog.find('.uploader-files');
     var summary = dialog.find('.uploader-summary');
@@ -562,7 +654,7 @@ var webssh_transfer_ui = (function () {
     });
 
     refresh();
-    browser.start(get_cwd(tab_id) || '.');
+    browser.start(start_dirs(tab_id, 'upload'));
     dialog.addClass('visible');
 
     upload_btn.off('click').on('click', function () {
@@ -608,6 +700,7 @@ var webssh_transfer_ui = (function () {
   return {
     set_cwd: set_cwd,
     get_cwd: get_cwd,
+    set_host: set_host,
     start_upload: start_upload,
     start_batch: start_batch,
     open_picker: open_picker,
