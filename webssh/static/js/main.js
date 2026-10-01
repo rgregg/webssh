@@ -173,10 +173,10 @@ jQuery(function($){
         form_container.hide();
         // Fit after a brief delay so layout settles, then focus
         setTimeout(function() {
-          if (tab.fitAddon) {
-            tab.fitAddon.fit();
-          }
+          // Tell the host too: a fit that changes the size here and not
+          // there leaves it drawing for the wrong number of columns.
           if (tab.term) {
+            resize_terminal(tab.term);
             setTimeout(function() { tab.term.focus(); }, 50);
           }
         }, 10);
@@ -2056,10 +2056,16 @@ jQuery(function($){
 
   // ===================== Window Resize (registered once) =====================
 
+  // Every connected tab, not only the active one: a hidden pane is still
+  // laid out, so a terminal left at the old size overflows the page, and its
+  // host goes on drawing for a window that no longer exists.
   $(window).resize(function(){
-    var tab = tabManager.getActiveTab();
-    if (tab && tab.term && tab.state === CONNECTED) {
-      resize_terminal(tab.term);
+    var ids = tabManager.getTabIds();
+    for (var i = 0; i < ids.length; i++) {
+      var tab = tabManager.tabs[ids[i]];
+      if (tab.term && tab.state === CONNECTED) {
+        resize_terminal(tab.term);
+      }
     }
   });
 
