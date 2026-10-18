@@ -1367,6 +1367,33 @@ jQuery(function($){
       // that we know which live worker session uploads should target.
       webssh_transfer_ui.bind_drop($(tab.containerEl), tab.id, tab.worker_id);
 
+      // Pasting an image (a screenshot) uploads it to the remote host and
+      // pastes its path, which is how Claude Code running there can attach
+      // it: its own Ctrl+V only sees the remote machine's clipboard.
+      // Capture phase, so this runs before xterm's own paste handler on
+      // its textarea. Anything that is not an image-only paste falls
+      // through untouched, so text paste is exactly what it was.
+      if (tab._paste_handler) {
+        tab.containerEl.removeEventListener('paste', tab._paste_handler, true);
+      }
+      tab._paste_handler = function (e) {
+        var image = webssh_transfer.pasted_image(e.clipboardData);
+        if (!image || !tab.term || !tab.worker_id) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        var worker_id = tab.worker_id;
+        webssh_transfer_ui.paste_image(tab.id, worker_id, image, function (p) {
+          // Skip it if the tab reconnected while the upload ran: the path
+          // belongs to a session that is gone.
+          if (tab.term && tab.worker_id === worker_id) {
+            tab.term.paste(webssh_transfer.terminal_path(p));
+          }
+        });
+      };
+      tab.containerEl.addEventListener('paste', tab._paste_handler, true);
+
       console.log(url);
       if (!msg.encoding) {
         console.log('Unable to detect the default encoding of your server');

@@ -354,3 +354,85 @@ test('host_key identifies a connection by user, host and port', function () {
   assert.strictEqual(ft.host_key('ryan', 'nas.lan', ''), 'ryan@nas.lan:22');
   assert.strictEqual(ft.host_key('ryan', 'NAS.lan', 22), 'ryan@nas.lan:22');
 });
+
+// --- Pasted images -------------------------------------------------------
+
+function clip(entries) {
+  // A stand-in for a paste event's clipboardData: entries are
+  // {type, file?}. 'file' entries carry a File-like object.
+  return {
+    types: entries.map(function (e) { return e.kind === 'file' ? 'Files' : e.type; }),
+    items: entries.map(function (e) {
+      return {
+        kind: e.kind || 'string',
+        type: e.type,
+        getAsFile: function () { return e.file || null; }
+      };
+    })
+  };
+}
+
+test('pasted_image returns the image from an image-only clipboard', function () {
+  var png = {type: 'image/png', size: 10};
+  assert.strictEqual(
+    ft.pasted_image(clip([{kind: 'file', type: 'image/png', file: png}])), png);
+});
+
+test('pasted_image leaves any paste with text to the terminal', function () {
+  // Copying an image from a web page also puts its URL or HTML on the
+  // clipboard. Text must win, so text paste never changes behaviour.
+  var png = {type: 'image/png', size: 10};
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'image/png', file: png},
+    {type: 'text/html'}
+  ])), null);
+  assert.strictEqual(ft.pasted_image(clip([{type: 'text/plain'}])), null);
+});
+
+test('pasted_image ignores non-image files and missing data', function () {
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'application/pdf', file: {type: 'application/pdf'}}
+  ])), null);
+  assert.strictEqual(ft.pasted_image(null), null);
+  assert.strictEqual(ft.pasted_image({types: [], items: []}), null);
+});
+
+test('pasted_image uses only the first image', function () {
+  var a = {type: 'image/png'};
+  var b = {type: 'image/jpeg'};
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'image/png', file: a},
+    {kind: 'file', type: 'image/jpeg', file: b}
+  ])), a);
+});
+
+test('pasted_image falls back to clipboardData.files', function () {
+  var png = {type: 'image/png'};
+  assert.strictEqual(ft.pasted_image({types: ['Files'], files: [png]}), png);
+});
+
+test('paste_filename stamps local time and keeps the image type', function () {
+  var when = new Date(2026, 9, 18, 9, 5, 7, 42);
+  assert.strictEqual(ft.paste_filename('image/png', when),
+                     'paste-20261018-090507-042.png');
+  assert.strictEqual(ft.paste_filename('image/jpeg', when),
+                     'paste-20261018-090507-042.jpg');
+  assert.strictEqual(ft.paste_filename('image/svg+xml', when),
+                     'paste-20261018-090507-042.svg');
+  assert.strictEqual(ft.paste_filename('', when),
+                     'paste-20261018-090507-042.png');
+});
+
+test('terminal_path escapes characters a shell would split on', function () {
+  assert.strictEqual(ft.terminal_path('/home/ryan/.cache/webssh-paste/p.png'),
+                     '/home/ryan/.cache/webssh-paste/p.png');
+  assert.strictEqual(ft.terminal_path('/Users/A B/x.png'), '/Users/A\\ B/x.png');
+  assert.strictEqual(ft.terminal_path("/h/it's.png"), "/h/it\\'s.png");
+});
+
+test('upload_url asks for the folder to be created only when told to', function () {
+  assert.strictEqual(ft.upload_url('d', 'f.png', false, true),
+                     '/transfer/upload?path=d&filename=f.png&mkdir=true');
+  assert.strictEqual(ft.upload_url('d', 'f.png', false),
+                     '/transfer/upload?path=d&filename=f.png');
+});

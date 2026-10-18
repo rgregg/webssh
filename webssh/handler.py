@@ -1358,6 +1358,9 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
             path = self.get_path()
             filename = self.get_argument('filename', '') or posixpath.basename(path)
             overwrite = self.get_argument('overwrite', '') == 'true'
+            # mkdir=true: ``path`` is a directory to create if missing (a
+            # pasted image's folder); the file goes inside it.
+            makedirs = self.get_argument('mkdir', '') == 'true'
 
             # Blocking paramiko calls (SFTP channel open, then stat/open of
             # the destination) must run on the executor, never the IOLoop.
@@ -1374,7 +1377,8 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
                 return
 
             self.upload = transfer.Upload(self.sftp, path, filename,
-                                          overwrite=overwrite)
+                                          overwrite=overwrite,
+                                          makedirs=makedirs)
             try:
                 yield self.executor.submit(self.upload.open)
             except transfer.TransferError as exc:
