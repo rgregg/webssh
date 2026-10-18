@@ -1775,6 +1775,21 @@ class TestTransferUpload(TransferTestBase):
         data = json.loads(to_str(response.body))
         self.assertEqual(data['path'], '/home/ryan/fresh.txt')
 
+    def test_mkdir_creates_the_destination_directory(self):
+        # The pasted-image upload names a folder that may not exist yet.
+        self.sftp.dirs['/'] = []
+        self.sftp.dirs['/home'] = []
+        response = self.upload(
+            'path=/home/ryan/pastes&filename=shot.png&mkdir=true', b'png')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/pastes/shot.png')
+        self.assertEqual(self.sftp.files['/home/ryan/pastes/shot.png'], b'png')
+
+    def test_without_mkdir_a_missing_directory_is_not_created(self):
+        self.upload('path=/home/ryan/pastes/shot.png&filename=shot.png', b'x')
+        self.assertNotIn('/home/ryan/pastes', self.sftp.dirs)
+
     def test_wrong_client_ip_is_404(self):
         self.worker.src_addr = ('203.0.113.7', 1234)
         response = self.upload(

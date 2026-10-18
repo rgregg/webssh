@@ -189,8 +189,11 @@ var webssh_transfer_ui = (function () {
     delete cwd_by_tab[tab_id];
   }
 
+  // opts (optional): mkdir -- create the destination folder if missing;
+  // on_uploaded(path) -- called with the remote path once the file landed.
   function send_upload(tab_id, worker_id, file, path, overwrite, row, done,
-                       on_busy) {
+                       on_busy, opts) {
+    opts = opts || {};
     var controller = new AbortController();
     // Set when this attempt hands the queue slot to a follow-up attempt --
     // an overwrite confirmation. The slot must stay held across that, or
@@ -202,7 +205,7 @@ var webssh_transfer_ui = (function () {
       controller.abort();
     });
 
-    fetch(webssh_transfer.upload_url(path, file.name, overwrite), {
+    fetch(webssh_transfer.upload_url(path, file.name, overwrite, opts.mkdir), {
       method: 'POST',
       body: file,
       headers: {'X-Xsrftoken': xsrf(), 'X-Worker-Id': worker_id},
@@ -211,7 +214,8 @@ var webssh_transfer_ui = (function () {
       if (response.status === 409) {
         if (window.confirm(file.name + ' already exists. Overwrite?')) {
           handed_off = true;
-          send_upload(tab_id, worker_id, file, path, true, row, done, on_busy);
+          send_upload(tab_id, worker_id, file, path, true, row, done, on_busy,
+                      opts);
           return null;
         }
         finish_row(row, 'cancelled');
@@ -235,6 +239,9 @@ var webssh_transfer_ui = (function () {
       }
       return response.json().then(function (data) {
         finish_row(row, 'uploaded ' + webssh_transfer.format_bytes(data.bytes));
+        if (opts.on_uploaded && data.path) {
+          opts.on_uploaded(data.path);
+        }
       });
     }).catch(function (err) {
       if (err && err.name === 'AbortError') {
@@ -264,7 +271,7 @@ var webssh_transfer_ui = (function () {
     });
   }
 
-  function start_upload(tab_id, worker_id, file, path) {
+  function start_upload(tab_id, worker_id, file, path, opts) {
     var row = add_row('\u2191 ' + file.name);
     var job = null;
     var wait = null;
@@ -285,7 +292,8 @@ var webssh_transfer_ui = (function () {
       });
       job = queue_for(tab_id).push(function (done) {
         row.find('.transfer-status').text('0%');
-        send_upload(tab_id, worker_id, file, path, false, row, done, wait_busy);
+        send_upload(tab_id, worker_id, file, path, false, row, done, wait_busy,
+                    opts);
       }, cancelled);
     }
 
@@ -343,6 +351,17 @@ var webssh_transfer_ui = (function () {
     for (i = 0; i < files.length; i++) {
       start_upload(tab_id, worker_id, files[i], paths[i]);
     }
+  }
+
+  // A pasted image goes to the paste folder in the remote home, which the
+  // server creates on first use, and its path comes back through
+  // on_uploaded so the caller can paste it into the terminal.
+  function paste_image(tab_id, worker_id, image, on_uploaded) {
+    var name = webssh_transfer.paste_filename(image.type, new Date());
+    // A clipboard image arrives named "image.png" or unnamed; rename it.
+    var file = new window.File([image], name, {type: image.type});
+    start_upload(tab_id, worker_id, file, webssh_transfer.PASTE_DIR,
+                 {mkdir: true, on_uploaded: on_uploaded});
   }
 
   function to_array(files) {
@@ -703,6 +722,7 @@ var webssh_transfer_ui = (function () {
     set_host: set_host,
     start_upload: start_upload,
     start_batch: start_batch,
+    paste_image: paste_image,
     open_picker: open_picker,
     open_uploader: open_uploader,
     bind_drop: bind_drop,

@@ -52,6 +52,7 @@ class FakeSFTP:
         self.dirs = dict(dirs or {})
         self.removed = []
         self.closed = False
+        self.made = []
 
     def stat(self, path):
         if path in self.dirs:
@@ -84,6 +85,16 @@ class FakeSFTP:
         if path not in self.dirs:
             raise OSError(errno.ENOENT, 'No such file')
         return list(self.dirs[path])
+
+    def mkdir(self, path, mode=0o777):
+        if path in self.dirs or path in self.files:
+            # paramiko reports an existing path as a bare SFTP failure.
+            raise OSError('Failure')
+        parent = posixpath.dirname(path)
+        if parent and parent != '/' and parent not in self.dirs:
+            raise OSError(errno.ENOENT, 'No such file')
+        self.dirs[path] = []
+        self.made.append((path, mode))
 
     def remove(self, path):
         self.removed.append(path)
@@ -223,6 +234,53 @@ class TestUpload(unittest.TestCase):
         with self.assertRaises(transfer.TransferError) as caught:
             up.open()
         self.assertEqual(caught.exception.status, 403)
+
+
+class TestUploadMakedirs(unittest.TestCase):
+
+    def test_creates_the_missing_directory_chain_privately(self):
+        # Pasted screenshots can be private, so every directory this makes
+        # is owner-only.
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': []})
+        up = transfer.Upload(sftp, '.cache/webssh-paste', 'shot.png',
+                             makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/.cache/webssh-paste/shot.png')
+        self.assertEqual(sftp.made, [('/home/fake/.cache', 0o700),
+                                     ('/home/fake/.cache/webssh-paste', 0o700)])
+
+    def test_leaves_an_existing_directory_alone(self):
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': [], '/home/fake/.cache': []})
+        up = transfer.Upload(sftp, '.cache', 'shot.png', makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/.cache/shot.png')
+        self.assertEqual(sftp.made, [])
+
+    def test_a_directory_created_concurrently_is_not_an_error(self):
+        class Racing(FakeSFTP):
+            def stat(self, path):
+                if path == '/home/fake/new' and path not in self.dirs:
+                    # Appears between our stat and our mkdir.
+                    self.dirs[path] = []
+                    raise OSError(errno.ENOENT, 'No such file')
+                return super().stat(path)
+
+        sftp = Racing(dirs={'/home': [], '/home/fake': []})
+        up = transfer.Upload(sftp, 'new', 'shot.png', makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/new/shot.png')
+
+    def test_a_file_in_the_way_is_a_400(self):
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': []},
+                        files={'/home/fake/.cache': b''})
+        up = transfer.Upload(sftp, '.cache/webssh-paste', 'shot.png',
+                             makedirs=True)
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.open()
+        self.assertEqual(caught.exception.status, 400)
+
+    def test_without_makedirs_a_relative_path_is_untouched(self):
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, 'out.txt', 'out.txt')
+        self.assertEqual(up.open(), 'out.txt')
+        self.assertEqual(sftp.made, [])
 
 
 class TestListDirectory(unittest.TestCase):

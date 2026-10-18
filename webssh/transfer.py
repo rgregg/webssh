@@ -53,6 +53,45 @@ def is_dir(attr):
     return stat.S_ISDIR(attr.st_mode)
 
 
+def ensure_dir(sftp, path, mode=0o700):
+    """Create ``path`` and any missing parents, like ``mkdir -p``.
+
+    Returns the directory as an absolute path. A relative path is taken
+    from the SFTP home, which is the login directory. The path is joined
+    by hand rather than passed to ``normalize``, because the server's
+    realpath refuses a path that does not exist yet.
+    """
+    if not posixpath.isabs(path):
+        path = posixpath.join(sftp.normalize('.'), path)
+    path = posixpath.normpath(path)
+
+    current = '/'
+    for part in path.split('/'):
+        if not part:
+            continue
+        current = posixpath.join(current, part)
+        try:
+            attr = sftp.stat(current)
+        except OSError as exc:
+            if getattr(exc, 'errno', None) != errno.ENOENT:
+                raise error_from_oserror(exc, current)
+            try:
+                sftp.mkdir(current, mode)
+            except OSError as mkdir_exc:
+                # Someone else may have made it in the meantime; paramiko
+                # reports that as a bare failure with no errno.
+                try:
+                    attr = sftp.stat(current)
+                except OSError:
+                    raise error_from_oserror(mkdir_exc, current)
+                if not is_dir(attr):
+                    raise TransferError(400, f'Not a directory: {current}')
+            continue
+        if not is_dir(attr):
+            raise TransferError(400, f'Not a directory: {current}')
+    return path
+
+
 class Download:
     """Sequential reader for one remote file.
 
@@ -128,9 +167,11 @@ class Upload:
     the user before anything is truncated.
     """
 
-    def __init__(self, sftp, path, filename, overwrite=False):
+    def __init__(self, sftp, path, filename, overwrite=False,
+                 makedirs=False):
         self.sftp = sftp
         self.path = path
+        self.makedirs = makedirs
         self.filename = filename
         self.overwrite = overwrite
         self.handle = None
@@ -150,6 +191,10 @@ class Upload:
         return self.path, True
 
     def open(self):
+        if self.makedirs:
+            # ``path`` names the directory to create; the file lands inside
+            # it under ``filename``.
+            self.path = ensure_dir(self.sftp, self.path)
         target, exists = self._resolve()
 
         if exists is None:

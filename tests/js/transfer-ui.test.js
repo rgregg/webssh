@@ -149,6 +149,7 @@ function load_ui(fetch_impl, timers) {
       confirm: function () {
         return false;
       },
+      File: File,
       wssh: {get_xsrf_token: function () {
         return 'x';
       }}
@@ -471,4 +472,59 @@ test('a cancelled upload does not check the sign-in', async function () {
     setImmediate(r);
   });
   assert.strictEqual(checks, 0);
+});
+
+function flush() {
+  return new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+}
+
+test('a pasted image uploads into the paste folder and reports its path', async function () {
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  var pasted = [];
+  var image = new Blob(['png'], {type: 'image/png'});
+
+  ui.paste_image('t1', 'w1', image, function (p) {
+    pasted.push(p);
+  });
+
+  assert.strictEqual(fetch_impl.calls.length, 1);
+  var url = fetch_impl.calls[0].url;
+  assert.ok(url.indexOf('path=.cache%2Fwebssh-paste') !== -1, url);
+  assert.ok(url.indexOf('mkdir=true') !== -1, url);
+  assert.ok(/filename=paste-\d{8}-\d{6}-\d{3}\.png/.test(url), url);
+
+  fetch_impl.calls[0].settle({
+    ok: true,
+    status: 200,
+    json: function () {
+      return Promise.resolve({bytes: 3, path: '/home/r/.cache/webssh-paste/p.png'});
+    }
+  });
+  await flush();
+  await flush();
+  assert.deepStrictEqual(pasted, ['/home/r/.cache/webssh-paste/p.png']);
+});
+
+test('a failed image paste types nothing', async function () {
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  var pasted = [];
+
+  ui.paste_image('t1', 'w1', new Blob(['png'], {type: 'image/png'}),
+                 function (p) {
+                   pasted.push(p);
+                 });
+  fetch_impl.calls[0].settle({
+    ok: false,
+    status: 403,
+    json: function () {
+      return Promise.resolve({status: 'Permission denied'});
+    }
+  });
+  await flush();
+  await flush();
+  assert.deepStrictEqual(pasted, []);
 });

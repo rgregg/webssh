@@ -70,13 +70,82 @@ var webssh_transfer = (function () {
   // Neither builder takes a worker id: the token travels in the
   // X-Worker-Id header for upload, and the download is authorised by a
   // single-use ticket instead.
-  function upload_url(path, filename, overwrite) {
+  // mkdir: path is a directory the server should create if missing, with
+  // the file landing inside it.
+  function upload_url(path, filename, overwrite, mkdir) {
     var url = '/transfer/upload?path=' + encodeURIComponent(path) +
       '&filename=' + encodeURIComponent(filename);
     if (overwrite) {
       url = url + '&overwrite=true';
     }
+    if (mkdir) {
+      url = url + '&mkdir=true';
+    }
     return url;
+  }
+
+  // Where pasted images go, relative to the remote home directory. Not a
+  // shared /tmp: screenshots can be private.
+  var PASTE_DIR = '.cache/webssh-paste';
+
+  // The image a paste event carries, or null to leave the paste to xterm.
+  // Any text on the clipboard wins, so text paste behaves exactly as it
+  // did before this existed -- even when an image rides along with it, as
+  // it does when copying an image from a web page.
+  function pasted_image(data) {
+    if (!data) {
+      return null;
+    }
+    var types = data.types || [];
+    var i;
+    for (i = 0; i < types.length; i++) {
+      if (String(types[i]).indexOf('text/') === 0) {
+        return null;
+      }
+    }
+    var items = data.items || [];
+    for (i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' &&
+          String(items[i].type).indexOf('image/') === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          return file;
+        }
+      }
+    }
+    var files = data.files || [];
+    for (i = 0; i < files.length; i++) {
+      if (String(files[i].type).indexOf('image/') === 0) {
+        return files[i];
+      }
+    }
+    return null;
+  }
+
+  function pad(n, width) {
+    var s = String(n);
+    while (s.length < width) {
+      s = '0' + s;
+    }
+    return s;
+  }
+
+  // paste-YYYYMMDD-HHMMSS-mmm.<ext>, in local time. The milliseconds keep
+  // two quick pastes from colliding and asking to overwrite.
+  function paste_filename(mime, when) {
+    var sub = String(mime || '').split('/')[1] || '';
+    sub = sub.split('+')[0].replace(/[^a-z0-9]/gi, '').toLowerCase();
+    var ext = sub === 'jpeg' ? 'jpg' : (sub || 'png');
+    return 'paste-' + when.getFullYear() + pad(when.getMonth() + 1, 2) +
+      pad(when.getDate(), 2) + '-' + pad(when.getHours(), 2) +
+      pad(when.getMinutes(), 2) + pad(when.getSeconds(), 2) + '-' +
+      pad(when.getMilliseconds(), 3) + '.' + ext;
+  }
+
+  // The path as a terminal would paste a dropped file: anything a shell
+  // would split on is backslash-escaped.
+  function terminal_path(path) {
+    return String(path).replace(/[^A-Za-z0-9_.\/\-~+,:@%=]/g, '\\$&');
   }
 
   function download_url(ticket) {
@@ -351,6 +420,10 @@ var webssh_transfer = (function () {
     describe_selection: describe_selection,
     format_bytes: format_bytes,
     upload_url: upload_url,
+    PASTE_DIR: PASTE_DIR,
+    pasted_image: pasted_image,
+    paste_filename: paste_filename,
+    terminal_path: terminal_path,
     download_url: download_url
   };
 }());
