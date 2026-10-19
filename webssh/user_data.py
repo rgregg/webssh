@@ -104,6 +104,12 @@ def validate_settings(settings):
             raise ValueError('cursor_blink must be a boolean')
         result['cursor_blink'] = value
 
+    if 'suppress_browser_menu' in settings:
+        value = settings['suppress_browser_menu']
+        if not isinstance(value, bool):
+            raise ValueError('suppress_browser_menu must be a boolean')
+        result['suppress_browser_menu'] = value
+
     if 'encoding' in settings:
         value = settings['encoding']
         if not isinstance(value, str) or not is_valid_encoding(value):

@@ -581,3 +581,31 @@ test('default_key_source falls back to the stored key when one exists', function
   assert.strictEqual(hosts.default_key_source(undefined, false), 'upload');
   assert.strictEqual(hosts.default_key_source('bogus', false), 'upload');
 });
+
+test('merge_settings always includes suppress_browser_menu as a boolean', function () {
+  assert.strictEqual(
+    hosts.merge_settings({}, ui({suppress_browser_menu: true})).suppress_browser_menu,
+    true);
+  assert.strictEqual(
+    hosts.merge_settings({}, ui({})).suppress_browser_menu, false);
+});
+
+test('blocks_browser_menu only when the setting is on', function () {
+  assert.strictEqual(hosts.blocks_browser_menu({}, {shiftKey: false}), false);
+  assert.strictEqual(
+    hosts.blocks_browser_menu({suppress_browser_menu: false}, {shiftKey: false}),
+    false);
+  assert.strictEqual(
+    hosts.blocks_browser_menu({suppress_browser_menu: true}, {shiftKey: false}),
+    true);
+});
+
+test('blocks_browser_menu lets Shift+right-click through to the browser', function () {
+  assert.strictEqual(
+    hosts.blocks_browser_menu({suppress_browser_menu: true}, {shiftKey: true}),
+    false);
+});
+
+test('blocks_browser_menu survives missing settings', function () {
+  assert.strictEqual(hosts.blocks_browser_menu(null, {shiftKey: false}), false);
+});

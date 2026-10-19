@@ -118,6 +118,17 @@ class TestValidateSettings(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_settings(['font_size', 12])
 
+    def test_keeps_the_browser_menu_setting(self):
+        for value in (True, False):
+            self.assertEqual(
+                validate_settings({'suppress_browser_menu': value}),
+                {'suppress_browser_menu': value})
+
+    def test_rejects_a_non_boolean_browser_menu_setting(self):
+        for value in ('true', 1, None):
+            with self.assertRaises(ValueError):
+                validate_settings({'suppress_browser_menu': value})
+
     def test_rejects_out_of_range_font_size(self):
         for size in [0, 5, 200]:
             with self.assertRaises(ValueError):
