@@ -173,10 +173,10 @@ jQuery(function($){
         form_container.hide();
         // Fit after a brief delay so layout settles, then focus
         setTimeout(function() {
-          if (tab.fitAddon) {
-            tab.fitAddon.fit();
-          }
+          // Tell the host too: a fit that changes the size here and not
+          // there leaves it drawing for the wrong number of columns.
           if (tab.term) {
+            resize_terminal(tab.term);
             setTimeout(function() { tab.term.focus(); }, 50);
           }
         }, 10);
@@ -267,15 +267,25 @@ jQuery(function($){
       }
       var tab = this.createTab('settings');
       var pane = $(tab.containerEl);
-      pane.html('<div class="settings-loading">Loading settings...</div>');
-      $.get('/settings-pane')
-        .done(function(html) {
-          pane.html(html);
-          init_settings_pane(pane);
-        })
-        .fail(function() {
-          pane.html('<div class="settings-loading">Failed to load settings.</div>');
-        });
+      var load_settings_pane = function() {
+        pane.html('<div class="settings-loading">Loading settings...</div>');
+        $.get('/settings-pane')
+          .done(function(html) {
+            pane.html(html);
+            init_settings_pane(pane);
+          })
+          .fail(function() {
+            pane.html(
+              '<div class="settings-loading">Failed to load settings. ' +
+              '<a href="#" class="settings-retry">Retry</a></div>'
+            );
+            pane.find('.settings-retry').on('click', function(e) {
+              e.preventDefault();
+              load_settings_pane();
+            });
+          });
+      };
+      load_settings_pane();
       return tab;
     },
 
@@ -321,9 +331,9 @@ jQuery(function($){
     bindWssh: function(tab) {
       // Reset wssh, but keep properties that must survive across tab
       // activations/reconnects: connect (the entry point) and
-      // get_xsrf_token (needed by transfer-ui.js for uploads, which can
-      // happen at any point while a tab is connected).
-      var preserved = ['connect', 'get_xsrf_token'];
+      // get_xsrf_token and check_auth (needed by transfer-ui.js for
+      // uploads, which can happen at any point while a tab is connected).
+      var preserved = ['connect', 'get_xsrf_token', 'check_auth'];
       var name;
       for (name in wssh) {
         if (wssh.hasOwnProperty(name) && preserved.indexOf(name) === -1) {
@@ -414,8 +424,18 @@ jQuery(function($){
 
   var prefs = {
     timer: null,
+    // Set while the settings pane's own /api/settings PUT is in flight (see
+    // the #settings-save handler). A connect() in this window still calls
+    // schedule(), so flush() must not run concurrently with that PUT: it
+    // would send the pre-save user_settings object and could land at the
+    // server after the pane's PUT, silently reverting whatever was just
+    // saved (issue #45).
+    blocked: false,
 
     schedule: function() {
+      // Arming a 1s timer whose flush() immediately no-ops is pointless
+      // when the feature is disabled.
+      if (!user_hosts_enabled) return;
       var self = this;
       if (this.timer) window.clearTimeout(this.timer);
       this.timer = window.setTimeout(function() { self.flush(); }, 1000);
@@ -424,18 +444,32 @@ jQuery(function($){
     flush: function() {
       if (!user_hosts_enabled) return;
       this.timer = null;
+      if (this.blocked) {
+        // Don't drop the pending roamed values -- re-arm for once the
+        // in-flight settings-pane save has finished.
+        this.schedule();
+        return;
+      }
       $.ajax({
         url: '/api/settings', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},
         data: JSON.stringify({settings: user_settings})
       }).fail(function(xhr) {
-        // Silent failure here means preferences quietly revert on the next
-        // page load (the roamed value wins over localStorage), so make it
-        // visible.
         var detail = xhr && xhr.status ? String(xhr.status) : 'network error';
         var message = 'Could not save preferences (' + detail + ').';
         console.warn(message);
-        show_status_text(message);
+        auth_guard.check().then(function(expired) {
+          if (expired) {
+            // The sign-in prompt already explains this; retry once the
+            // session is back instead of dropping the change.
+            auth_guard.after_sign_in(function() { prefs.schedule(); });
+            return;
+          }
+          // Silent failure here means preferences quietly revert on the
+          // next page load (the roamed value wins over localStorage), so
+          // make it visible.
+          show_status_text(message);
+        });
       });
     }
   };
@@ -455,6 +489,21 @@ jQuery(function($){
         }
       }
     }
+    prefs.schedule();
+  }
+
+
+  // Remember which key direction the user actually connected with. Before
+  // this, key_source was writable only from the settings pane's select, so
+  // choosing "Use stored key" on the connect form itself was forgotten on
+  // every reload -- and once #62 started honoring a stored 'upload', a
+  // stale 'upload' from an untouched select flipped the radio back on every
+  // page load.
+  function store_key_source(data) {
+    if (!user_hosts_enabled || !user_key_enabled) return;
+    var update = webssh_hosts.key_source_update(data.get('key_source'));
+    if (!update) return;
+    user_settings[update.key] = update.value;
     prefs.schedule();
   }
 
@@ -823,6 +872,64 @@ jQuery(function($){
     }
   }
 
+  // ===================== Auth proxy re-sign-in =====================
+  // See auth-refresh.js. A lapsed proxy session is recovered in a popup,
+  // never by reloading, so open terminals survive it.
+
+  var auth_prompt = $('#auth-prompt');
+
+  var auth_guard = webssh_auth.make_guard({
+    probe: function() {
+      return fetch(webssh_auth.DONE_URL, {
+        method: 'GET', redirect: 'manual', cache: 'no-store',
+        credentials: 'same-origin'
+      });
+    },
+    open_popup: function(url) {
+      return window.open(url, 'webssh-auth', 'popup,width=520,height=680');
+    },
+    show_prompt: function(state) {
+      auth_prompt.find('.auth-prompt-text').text(state.blocked ?
+        'The sign-in window was blocked. Allow popups for this site, then click Sign in again.' :
+        'Your sign-in has expired. Open terminals are still connected; sign in again to keep working.');
+      auth_prompt.addClass('visible');
+    },
+    hide_prompt: function() {
+      auth_prompt.removeClass('visible');
+    }
+  });
+
+  auth_prompt.find('.auth-prompt-sign-in').on('click', function() {
+    auth_guard.sign_in();
+  });
+
+  window.addEventListener('message', function(event) {
+    if (event.origin === window.location.origin) {
+      auth_guard.receive(event.data);
+    }
+  });
+
+  if (window.BroadcastChannel) {
+    new BroadcastChannel(webssh_auth.CHANNEL).onmessage = function(event) {
+      auth_guard.receive(event.data);
+    };
+  }
+
+  // Any request can be the first to hit the lapsed session. Status 0 is
+  // the redirect to the identity provider being blocked by CORS; the probe
+  // decides whether that, or a 401/403, really means signing in again.
+  $(document).ajaxError(function(event, xhr) {
+    if (!xhr || xhr.statusText === 'abort') return;
+    if (xhr.status === 0 || xhr.status === 401 || xhr.status === 403) {
+      auth_guard.check();
+    }
+  });
+
+  // Exposed on the shared wssh object so transfer-ui.js can report its
+  // fetch failures too; see get_xsrf_token for why load order is fine.
+  wssh.check_auth = auth_guard.check;
+
+
   function log_status(text, to_populate) {
     console.log(text);
     show_status_text(text);
@@ -872,10 +979,23 @@ jQuery(function($){
   function collect_host_rows(pane) {
     var rows = [];
     var row_els = [];
-    pane.find('#user-host-rows .host-port').removeClass('input-error');
+    var bad_port_input_index = -1;
+    pane.find('#user-host-rows .host-port, #user-host-rows .host-hostname')
+      .removeClass('input-error');
     pane.find('#user-host-rows tr.user-host').each(function() {
       var row = $(this);
+      var index = row_els.length;
       row_els.push(row);
+      var port_el = row.find('.host-port')[0];
+      // A non-numeric port typo (e.g. "abc") is sanitised to "" by the
+      // browser's type=number input before this code ever sees it, so a
+      // blank port_text is otherwise indistinguishable from an
+      // intentionally-empty port (which defaults to 22). validity.badInput
+      // is the only place that distinction still exists.
+      if (bad_port_input_index === -1 && port_el && port_el.validity &&
+          port_el.validity.badInput) {
+        bad_port_input_index = index;
+      }
       rows.push({
         name: row.find('.host-name').val(),
         hostname: row.find('.host-hostname').val(),
@@ -886,9 +1006,21 @@ jQuery(function($){
       });
     });
 
+    if (bad_port_input_index !== -1) {
+      row_els[bad_port_input_index].find('.host-port').addClass('input-error');
+      var bad_row = rows[bad_port_input_index];
+      return {
+        hosts: [],
+        error: 'Invalid port for host "' +
+               (bad_row.name || bad_row.hostname || '(row ' + (bad_port_input_index + 1) + ')') +
+               '" (must be numeric, 1-65535).'
+      };
+    }
+
     var built = webssh_hosts.build_host_payload(rows);
     if (built.error && built.error_index >= 0) {
-      row_els[built.error_index].find('.host-port').addClass('input-error');
+      row_els[built.error_index].find('.' + (built.error_field || 'host-port'))
+        .addClass('input-error');
     }
     return {hosts: built.hosts, error: built.error};
   }
@@ -933,9 +1065,12 @@ jQuery(function($){
     pane.find('#set-term').val(user_settings.term || '');
     pane.find('#set-cursor-blink').prop('checked',
                                         user_settings.cursor_blink !== false);
-    if (user_settings.key_source) {
-      pane.find('#set-key-source').val(user_settings.key_source);
-    }
+    // Never leave this select on its first option ('upload') just because
+    // nothing is stored yet: collect_settings writes its value on every
+    // save, so an untouched select would persist 'upload' for a user who
+    // connects with their stored key.
+    pane.find('#set-key-source').val(
+      webssh_hosts.default_key_source(user_settings.key_source, has_stored_key));
 
     // The host list PUT honors an empty "hosts" array as "clear my list".
     // Never let a save proceed from a list this pane failed to load, so
@@ -973,6 +1108,10 @@ jQuery(function($){
         window.clearTimeout(prefs.timer);
         prefs.timer = null;
       }
+      // Also block any flush armed by a connect() *during* the PUTs below
+      // (a narrow window of a few hundred ms) until they finish, for the
+      // same reason.
+      prefs.blocked = true;
       settings_status(pane, 'Saving...');
       var hosts = collected.hosts;
       var settings = collect_settings(pane);
@@ -999,9 +1138,12 @@ jQuery(function($){
             'Hosts saved, but settings failed to save: ' + save_error_text(xhr),
             true
           );
+        }).always(function() {
+          prefs.blocked = false;
         });
       }).fail(function(xhr) {
         settings_status(pane, 'Hosts failed to save: ' + save_error_text(xhr), true);
+        prefs.blocked = false;
       });
     });
   }
@@ -1014,8 +1156,10 @@ jQuery(function($){
 
 
   function get_xsrf_token() {
-    var match = document.cookie.match(/\b_xsrf=([^;]+)/);
-    return match ? decodeURIComponent(match[1]) : '';
+    // Reuses the same hidden <input name="_xsrf"> idiom already used
+    // elsewhere in this file, rather than parsing document.cookie with a
+    // regex (issue #44).
+    return $('input[name="_xsrf"]').val() || '';
   }
   // Exposed on the shared wssh object so transfer-ui.js can reuse it
   // instead of keeping its own copy. index.html loads transfer-ui.js
@@ -1097,8 +1241,22 @@ jQuery(function($){
           el.append(option);
         }
       }
-      if (current) el.val(current);
-      el.trigger('change');
+      if (current) {
+        el.val(current);
+        // Only cascade into the rest of the form (username/port/command)
+        // when the previous selection no longer exists in the refreshed
+        // list -- val() then silently falls back to another option. A
+        // selection that still exists keeps whatever the user has typed.
+        if (el.val() !== current) {
+          el.trigger('change');
+        }
+      } else {
+        el.trigger('change');
+      }
+    }).fail(function() {
+      // The hostname field keeps showing whatever it last had -- that's
+      // still coherent, but silent, so let the user know it may be stale.
+      log_status('Failed to refresh host list; showing the last known hosts.');
     });
   }
 
@@ -1112,27 +1270,35 @@ jQuery(function($){
       // Guard against tab closed while AJAX was in flight
       if (tab.closed) return;
 
-      if (resp.status !== 200) {
-        // Auth proxy may return 401/403 when session expires
-        if (resp.status === 401 || resp.status === 403) {
-          console.warn('Auth proxy returned ' + resp.status + ', reloading to re-authenticate.');
-          window.location.reload();
-          return;
-        }
-        log_status(resp.status + ': ' + resp.statusText, true);
+      function connect_failed(text) {
+        log_status(text, true);
         tab.state = DISCONNECTED;
         tabManager.updateTabStatus(tab.id);
+      }
+
+      if (resp.status !== 200) {
+        // Status 0 is the auth proxy's redirect to the identity provider,
+        // blocked by CORS; a proxy may also answer 401/403.
+        if (resp.status === 0 || resp.status === 401 || resp.status === 403) {
+          auth_guard.check().then(function(expired) {
+            connect_failed(expired ?
+              'Sign-in expired. Sign in again, then connect.' :
+              resp.status + ': ' + resp.statusText);
+          });
+          return;
+        }
+        connect_failed(resp.status + ': ' + resp.statusText);
         return;
       }
 
       var msg = resp.responseJSON;
       if (!msg || !msg.id) {
         // If the response is not JSON, the auth proxy likely intercepted
-        // the request (e.g. session expired) and returned an HTML login page.
-        // Reload the page to re-authenticate through the proxy.
+        // the request and served its login page in place of ours.
         if (!msg) {
           console.warn('Non-JSON response received; auth proxy session may have expired.');
-          window.location.reload();
+          auth_guard.mark_expired();
+          connect_failed('Sign-in expired. Sign in again, then connect.');
           return;
         }
         log_status(msg.status, true);
@@ -1201,6 +1367,33 @@ jQuery(function($){
       // that we know which live worker session uploads should target.
       webssh_transfer_ui.bind_drop($(tab.containerEl), tab.id, tab.worker_id);
 
+      // Pasting an image (a screenshot) uploads it to the remote host and
+      // pastes its path, which is how Claude Code running there can attach
+      // it: its own Ctrl+V only sees the remote machine's clipboard.
+      // Capture phase, so this runs before xterm's own paste handler on
+      // its textarea. Anything that is not an image-only paste falls
+      // through untouched, so text paste is exactly what it was.
+      if (tab._paste_handler) {
+        tab.containerEl.removeEventListener('paste', tab._paste_handler, true);
+      }
+      tab._paste_handler = function (e) {
+        var image = webssh_transfer.pasted_image(e.clipboardData);
+        if (!image || !tab.term || !tab.worker_id) {
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        var worker_id = tab.worker_id;
+        webssh_transfer_ui.paste_image(tab.id, worker_id, image, function (p) {
+          // Skip it if the tab reconnected while the upload ran: the path
+          // belongs to a session that is gone.
+          if (tab.term && tab.worker_id === worker_id) {
+            tab.term.paste(webssh_transfer.terminal_path(p));
+          }
+        });
+      };
+      tab.containerEl.addEventListener('paste', tab._paste_handler, true);
+
       console.log(url);
       if (!msg.encoding) {
         console.log('Unable to detect the default encoding of your server');
@@ -1251,11 +1444,12 @@ jQuery(function($){
         }
       };
 
-      if (url_opts_data.encoding) {
-        if (set_encoding(url_opts_data.encoding) === false) {
-          set_encoding(msg.encoding);
-        }
-      } else {
+      // A stored or URL encoding that xterm rejects falls through to the
+      // server's own answer rather than leaving the tab with no decoder.
+      var preferred_encoding = webssh_hosts.resolve_encoding(url_opts_data,
+                                                             user_settings);
+      if (!preferred_encoding ||
+          set_encoding(preferred_encoding) === false) {
         set_encoding(msg.encoding);
       }
 
@@ -1379,31 +1573,12 @@ jQuery(function($){
         tabManager.updateTabStatus(tab.id);
 
         // If the WebSocket closed abnormally, check whether the auth proxy
-        // session has expired. If so, reload to re-authenticate.
+        // session has expired, which raises the sign-in prompt. The other
+        // tabs' terminals are left alone either way.
         if (e.code === 1006 || (!e.wasClean && !e.reason)) {
-          fetch(window.location.href, { method: 'GET', redirect: 'manual' })
-            .then(function(resp) {
-              // With manual redirects, browsers may expose auth redirects as
-              // an 'opaqueredirect', a 3xx status, or status 0. Treat those,
-              // plus 401/403, as signals that the auth proxy wants us to
-              // re-authenticate.
-              var isAuthRedirect = resp.type === 'opaqueredirect' ||
-                resp.status === 0 ||
-                (resp.status >= 300 && resp.status < 400) ||
-                resp.status === 401 ||
-                resp.status === 403;
-
-              if (isAuthRedirect) {
-                console.warn('Auth proxy session expired, reloading to re-authenticate.');
-                window.location.reload();
-              } else {
-                handle_ws_close(e, tab);
-              }
-            })
-            .catch(function() {
-              // Network error - just handle normally
-              handle_ws_close(e, tab);
-            });
+          auth_guard.check().then(function() {
+            handle_ws_close(e, tab);
+          });
           return;
         }
 
@@ -1646,14 +1821,9 @@ jQuery(function($){
     // for console use
     var result, opts;
     var tab = tabManager.getActiveTab();
+    var from_settings_tab = tab && tab.kind === 'settings';
 
-    // A settings tab is never a valid connect target; open a new terminal
-    // tab and connect there instead.
-    if (tab && tab.kind === 'settings') {
-      tab = tabManager.createTab('terminal');
-    }
-
-    if (!tab || tab.state !== DISCONNECTED) {
+    if (!from_settings_tab && (!tab || tab.state !== DISCONNECTED)) {
       if (tab) {
         console.log(messages[tab.state]);
       }
@@ -1661,33 +1831,55 @@ jQuery(function($){
     }
 
     if (hostname === undefined) {
+      opts = null;
+    } else if (typeof hostname === 'string') {
+      opts = {
+        hostname: hostname,
+        port: port,
+        username: username,
+        password: password,
+        privatekey: privatekey,
+        passphrase: passphrase,
+        totp: totp
+      };
+    } else {
+      opts = hostname;
+    }
+
+    // A settings tab is never a valid connect target; open a new terminal
+    // tab and connect there instead. Validate first so that a connect
+    // which fails validation does not leave an empty terminal tab behind
+    // for the user to close (issue #43).
+    if (from_settings_tab) {
+      var precheck = opts ?
+        validate_form_data(wrap_object(opts)) :
+        validate_form_data(new FormData(document.querySelector(form_id)));
+      if (!precheck.valid) {
+        log_status(precheck.errors.join('\n'));
+        return;
+      }
+      tab = tabManager.createTab('terminal');
+    }
+
+    if (!opts) {
       result = connect_without_options();
     } else {
-      if (typeof hostname === 'string') {
-        opts = {
-          hostname: hostname,
-          port: port,
-          username: username,
-          password: password,
-          privatekey: privatekey,
-          passphrase: passphrase,
-          totp: totp
-        };
-      } else {
-        opts = hostname;
-      }
-
       result = connect_with_options(opts);
     }
 
     if (result) {
       tab.state = CONNECTING;
       tab.title = result.title;
+      // The transfer dialogs remember their last folder per connection.
+      webssh_transfer_ui.set_host(tab.id, webssh_transfer.host_key(
+        result.data.get('username'), result.data.get('hostname'),
+        result.data.get('port')));
       tabManager.updateTabStatus(tab.id);
       if (hostname) {
         validated_form_data = result.data;
       }
       store_items(fields, result.data);
+      store_key_source(result.data);
       store_default_command(result.data);
     }
   }
@@ -1841,8 +2033,9 @@ jQuery(function($){
   function cross_origin_connect(event)
   {
     // Browser extensions and other frames dispatch postMessage events with
-    // non-string payloads; only strings are meaningful to this handler.
-    if (typeof event.data !== 'string') {
+    // non-string payloads, and the sign-in popup posts its own string that
+    // auth_guard handles; neither is a connect request.
+    if (!webssh_auth.is_connect_request(event.data)) {
       return;
     }
     console.log(event.origin);
@@ -1890,10 +2083,16 @@ jQuery(function($){
 
   // ===================== Window Resize (registered once) =====================
 
+  // Every connected tab, not only the active one: a hidden pane is still
+  // laid out, so a terminal left at the old size overflows the page, and its
+  // host goes on drawing for a window that no longer exists.
   $(window).resize(function(){
-    var tab = tabManager.getActiveTab();
-    if (tab && tab.term && tab.state === CONNECTED) {
-      resize_terminal(tab.term);
+    var ids = tabManager.getTabIds();
+    for (var i = 0; i < ids.length; i++) {
+      var tab = tabManager.tabs[ids[i]];
+      if (tab.term && tab.state === CONNECTED) {
+        resize_terminal(tab.term);
+      }
     }
   });
 
@@ -1915,6 +2114,13 @@ jQuery(function($){
     }
   });
 
+  $('#upload-btn').on('click', function() {
+    var tab = tabManager.getActiveTab();
+    if (tab && tab.term && tab.state === CONNECTED && tab.worker_id) {
+      webssh_transfer_ui.open_uploader(tab.id, tab.worker_id, null);
+    }
+  });
+
 
   // ===================== Terminal Focus on Click =====================
 
@@ -1933,6 +2139,16 @@ jQuery(function($){
     if (tab && tab.term && tab.state === CONNECTED) {
       tab.term.focus();
     }
+  });
+
+  // Double-clicking the empty stretch of the bar opens a tab, the way a
+  // browser's tab strip does. Tabs and buttons are excluded: a double-click
+  // on either is two clicks of their own action, not a request for a tab.
+  $('#tab-bar').on('dblclick', function(e) {
+    if ($(e.target).closest('.tab-item, button').length) {
+      return;
+    }
+    tabManager.createTab();
   });
 
 
@@ -2011,8 +2227,17 @@ jQuery(function($){
     term_type.val(user_settings.term);
   }
 
-  if (user_settings.key_source === 'stored' && user_key_enabled) {
-    $('#key_source_stored').prop('checked', true).trigger('change');
+  if (user_key_enabled) {
+    // Both directions are restored, not just 'stored' (issue #46). With
+    // nothing stored this resolves to the same default the template
+    // rendered, so the radio never moves under the user on load.
+    var restored_source = webssh_hosts.default_key_source(
+      user_settings.key_source, has_stored_key);
+    if (restored_source === 'stored' && has_stored_key) {
+      $('#key_source_stored').prop('checked', true).trigger('change');
+    } else {
+      $('#key_source_upload').prop('checked', true).trigger('change');
+    }
   }
 
   // One-time upgrade of any locally-stored per-host default commands onto

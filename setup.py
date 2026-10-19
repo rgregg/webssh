@@ -1,7 +1,8 @@
 import codecs
-from setuptools import setup
-from webssh._version import __version__ as version
 
+from setuptools import setup
+
+from webssh._version import __version__ as version
 
 with codecs.open('README.rst', encoding='utf-8') as f:
     long_description = f.read()

@@ -5,10 +5,15 @@ import tempfile
 import unittest
 
 from webssh.user_data import (
-    SCHEMA_VERSION, get_user_data_dir, read_hosts, write_hosts,
-    read_settings, write_settings, validate_hosts, validate_settings
+    SCHEMA_VERSION,
+    get_user_data_dir,
+    read_hosts,
+    read_settings,
+    validate_hosts,
+    validate_settings,
+    write_hosts,
+    write_settings,
 )
-
 
 VALID_KEY = ('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrAb7GEqLHlbAF9gMdvDZzd'
              'Knd2MlrZ2sAs5qF7XMRF')
@@ -27,6 +32,17 @@ class TestGetUserDataDir(unittest.TestCase):
         for name in ['../etc', 'foo/bar', '..', '.hidden', '']:
             with self.assertRaises(ValueError):
                 get_user_data_dir(self.base, name)
+
+    def test_oserror_from_realpath_becomes_value_error(self):
+        # Callers only ever catch ValueError from this function; an
+        # unhandled OSError (e.g. a permission error while resolving a
+        # symlink) would otherwise escape as a 500 instead.
+        from unittest import mock
+        with (
+            mock.patch('os.path.realpath', side_effect=OSError('boom')),
+            self.assertRaises(ValueError),
+        ):
+            get_user_data_dir(self.base, 'alice')
 
 
 class TestValidateHosts(unittest.TestCase):
@@ -70,7 +86,7 @@ class TestValidateHosts(unittest.TestCase):
 
     def test_rejects_too_many_hosts(self):
         with self.assertRaises(ValueError):
-            validate_hosts([{'hostname': 'h{}.com'.format(i)}
+            validate_hosts([{'hostname': f'h{i}.com'}
                             for i in range(201)])
 
     def test_empty_list_is_valid(self):
@@ -158,6 +174,23 @@ class TestRoundTrip(unittest.TestCase):
             json.dump({'version': 1, 'hosts': 'not-a-list'}, f)
         self.assertEqual(read_hosts(self.base, 'alice'), [])
 
+    def test_read_corrupt_settings_returns_empty(self):
+        # hosts.json and settings.json both go through the same
+        # _read_json helper; this is the settings.json half of
+        # test_read_corrupt_returns_empty above.
+        user_dir = get_user_data_dir(self.base, 'alice')
+        os.makedirs(user_dir, mode=0o700)
+        with open(os.path.join(user_dir, 'settings.json'), 'w') as f:
+            f.write('{not json at all')
+        self.assertEqual(read_settings(self.base, 'alice'), {})
+
+    def test_read_wrong_shape_settings_returns_empty(self):
+        user_dir = get_user_data_dir(self.base, 'alice')
+        os.makedirs(user_dir, mode=0o700)
+        with open(os.path.join(user_dir, 'settings.json'), 'w') as f:
+            json.dump({'version': 1, 'settings': 'not-a-dict'}, f)
+        self.assertEqual(read_settings(self.base, 'alice'), {})
+
     def test_written_file_has_version_and_mode(self):
         write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
         path = os.path.join(get_user_data_dir(self.base, 'alice'), 'hosts.json')
@@ -180,6 +213,21 @@ class TestRoundTrip(unittest.TestCase):
         write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
         entries = os.listdir(get_user_data_dir(self.base, 'alice'))
         self.assertEqual(sorted(entries), ['hosts.json'])
+
+    def test_oserror_during_write_becomes_value_error(self):
+        # Every caller of write_hosts/write_settings only catches
+        # ValueError (see handler.py's PUT handlers); an unhandled OSError
+        # (e.g. ENOSPC during rename) would otherwise escape as an
+        # uncaught 500 with no useful message.
+        from unittest import mock
+        with (
+            mock.patch('os.rename', side_effect=OSError('disk full')),
+            self.assertRaises(ValueError),
+        ):
+            write_hosts(self.base, 'alice', [{'hostname': 'nas.lan'}])
+        # The failed write's temp file must not be left behind either.
+        entries = os.listdir(get_user_data_dir(self.base, 'alice'))
+        self.assertEqual(entries, [])
 
     def _write_raw(self, filename, text):
         user_dir = get_user_data_dir(self.base, 'alice')
@@ -224,3 +272,26 @@ class TestRoundTrip(unittest.TestCase):
         path = self._write_raw('settings.json', 'nope')
         self.assertEqual(read_settings(self.base, 'alice'), {})
         self.assertTrue(os.path.exists(path + '.corrupt'))
+
+    def test_quarantine_does_not_give_up_past_max_corrupt_copies(self):
+        # Giving up and leaving the unreadable file in place would reopen
+        # the exact data-loss path quarantining exists to prevent -- a
+        # later save would still destroy it. Simulate every sequential
+        # slot already being taken and confirm a fresh corruption is
+        # still moved aside rather than left behind.
+        from webssh.user_data import MAX_CORRUPT_COPIES, quarantine_file
+        path = self._write_raw('hosts.json', 'original')
+        with open(path + '.corrupt', 'w') as f:
+            f.write('taken')
+        for i in range(1, MAX_CORRUPT_COPIES + 1):
+            with open(f'{path}.corrupt.{i}', 'w') as f:
+                f.write(f'taken-{i}')
+
+        target = quarantine_file(path)
+
+        self.assertIsNotNone(target)
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(os.path.exists(target))
+        with open(target) as f:
+            self.assertEqual(f.read(), 'original')
+

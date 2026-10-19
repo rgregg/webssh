@@ -70,13 +70,82 @@ var webssh_transfer = (function () {
   // Neither builder takes a worker id: the token travels in the
   // X-Worker-Id header for upload, and the download is authorised by a
   // single-use ticket instead.
-  function upload_url(path, filename, overwrite) {
+  // mkdir: path is a directory the server should create if missing, with
+  // the file landing inside it.
+  function upload_url(path, filename, overwrite, mkdir) {
     var url = '/transfer/upload?path=' + encodeURIComponent(path) +
       '&filename=' + encodeURIComponent(filename);
     if (overwrite) {
       url = url + '&overwrite=true';
     }
+    if (mkdir) {
+      url = url + '&mkdir=true';
+    }
     return url;
+  }
+
+  // Where pasted images go, relative to the remote home directory. Not a
+  // shared /tmp: screenshots can be private.
+  var PASTE_DIR = '.cache/webssh-paste';
+
+  // The image a paste event carries, or null to leave the paste to xterm.
+  // Any text on the clipboard wins, so text paste behaves exactly as it
+  // did before this existed -- even when an image rides along with it, as
+  // it does when copying an image from a web page.
+  function pasted_image(data) {
+    if (!data) {
+      return null;
+    }
+    var types = data.types || [];
+    var i;
+    for (i = 0; i < types.length; i++) {
+      if (String(types[i]).indexOf('text/') === 0) {
+        return null;
+      }
+    }
+    var items = data.items || [];
+    for (i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' &&
+          String(items[i].type).indexOf('image/') === 0) {
+        var file = items[i].getAsFile();
+        if (file) {
+          return file;
+        }
+      }
+    }
+    var files = data.files || [];
+    for (i = 0; i < files.length; i++) {
+      if (String(files[i].type).indexOf('image/') === 0) {
+        return files[i];
+      }
+    }
+    return null;
+  }
+
+  function pad(n, width) {
+    var s = String(n);
+    while (s.length < width) {
+      s = '0' + s;
+    }
+    return s;
+  }
+
+  // paste-YYYYMMDD-HHMMSS-mmm.<ext>, in local time. The milliseconds keep
+  // two quick pastes from colliding and asking to overwrite.
+  function paste_filename(mime, when) {
+    var sub = String(mime || '').split('/')[1] || '';
+    sub = sub.split('+')[0].replace(/[^a-z0-9]/gi, '').toLowerCase();
+    var ext = sub === 'jpeg' ? 'jpg' : (sub || 'png');
+    return 'paste-' + when.getFullYear() + pad(when.getMonth() + 1, 2) +
+      pad(when.getDate(), 2) + '-' + pad(when.getHours(), 2) +
+      pad(when.getMinutes(), 2) + pad(when.getSeconds(), 2) + '-' +
+      pad(when.getMilliseconds(), 3) + '.' + ext;
+  }
+
+  // The path as a terminal would paste a dropped file: anything a shell
+  // would split on is backslash-escaped.
+  function terminal_path(path) {
+    return String(path).replace(/[^A-Za-z0-9_.\/\-~+,:@%=]/g, '\\$&');
   }
 
   function download_url(ticket) {
@@ -100,6 +169,113 @@ var webssh_transfer = (function () {
     return {dir: dir === '' ? '/' : dir, filter: text.slice(cut + 1)};
   }
 
+  // The directory above an absolute path, or null at the root -- and for
+  // anything not absolute, whose parent cannot be known here.
+  function parent_dir(path) {
+    var text = (path === undefined || path === null) ? '' : String(path);
+    if (text.charAt(0) !== '/') {
+      return null;
+    }
+    var trimmed = text.replace(/\/+$/, '');
+    if (!trimmed) {
+      return null;
+    }
+    var cut = trimmed.lastIndexOf('/');
+    return cut === 0 ? '/' : trimmed.slice(0, cut);
+  }
+
+  // Where a transfer dialog opens. Both inputs are {dir, at} or null: the
+  // directory the shell last reported, and the one last browsed to in this
+  // dialog. The more recent is the better guess at where the user is --
+  // a shell that stopped reporting (tmux, screen) leaves a stale cwd that
+  // the last browse outdates, and a shell that reports at every prompt
+  // outdates the last browse as soon as the user runs a command. '.' is
+  // the SFTP home, for when neither is known.
+  function choose_start_dir(cwd, last) {
+    if (cwd && last) {
+      return last.at > cwd.at ? last.dir : cwd.dir;
+    }
+    if (last) {
+      return last.dir;
+    }
+    if (cwd) {
+      return cwd.dir;
+    }
+    return '.';
+  }
+
+  // Per-host memory of the last folder each dialog was in. Hosts differ in
+  // layout, so memory is keyed by connection; download and upload are kept
+  // apart, since where files come from and where they go often differ.
+  var MAX_REMEMBERED_HOSTS = 50;
+
+  function host_key(username, hostname, port) {
+    return String(username) + '@' + String(hostname).toLowerCase() + ':' +
+      String(port || 22);
+  }
+
+  function valid_entry(entry) {
+    return !!entry && typeof entry === 'object' &&
+      typeof entry.dir === 'string' && typeof entry.at === 'number';
+  }
+
+  function recall_dir(store, host, kind) {
+    if (!store || typeof store !== 'object') {
+      return null;
+    }
+    var slot = store[host];
+    if (!slot || typeof slot !== 'object' || !valid_entry(slot[kind])) {
+      return null;
+    }
+    return {dir: slot[kind].dir, at: slot[kind].at};
+  }
+
+  function newest(slot) {
+    var at = -Infinity;
+    for (var kind in slot) {
+      if (Object.prototype.hasOwnProperty.call(slot, kind) &&
+          valid_entry(slot[kind]) && slot[kind].at > at) {
+        at = slot[kind].at;
+      }
+    }
+    return at;
+  }
+
+  // Returns a new store; the caller persists it. Past the cap, the host
+  // used least recently is forgotten, so the store cannot grow unbounded.
+  function remember_dir(store, host, kind, dir, now) {
+    var out = {};
+    var source = (store && typeof store === 'object') ? store : {};
+    var name;
+    for (name in source) {
+      if (Object.prototype.hasOwnProperty.call(source, name) &&
+          source[name] && typeof source[name] === 'object') {
+        out[name] = source[name];
+      }
+    }
+    var slot = {};
+    for (name in out[host] || {}) {
+      if (Object.prototype.hasOwnProperty.call(out[host], name)) {
+        slot[name] = out[host][name];
+      }
+    }
+    slot[kind] = {dir: dir, at: now};
+    out[host] = slot;
+
+    var hosts = Object.keys(out);
+    while (hosts.length > MAX_REMEMBERED_HOSTS) {
+      var oldest = hosts[0];
+      for (var i = 1; i < hosts.length; i++) {
+        if (newest(out[hosts[i]]) < newest(out[oldest])) {
+          oldest = hosts[i];
+        }
+      }
+      delete out[oldest];
+      hosts = Object.keys(out);
+    }
+    return out;
+  }
+
   function match_entry(name, filter) {
     var needle = (filter === undefined || filter === null)
       ? '' : String(filter).trim();
@@ -109,13 +285,145 @@ var webssh_transfer = (function () {
     return String(name).toLowerCase().indexOf(needle.toLowerCase()) !== -1;
   }
 
+  // Destinations for one drop, all under the directory the user confirmed.
+  // Kept here rather than in the drop handler so the batch behaviour is
+  // testable without a DOM: an absolute name still wins, and an unknown
+  // directory leaves the name relative for the server to resolve against
+  // the SFTP home.
+  function resolve_upload_paths(dir, names) {
+    var out = [];
+    var list = names || [];
+    for (var i = 0; i < list.length; i++) {
+      out.push(resolve_path(dir, list[i]));
+    }
+    return out;
+  }
+
+  // What the uploader dialog says it is about to send. A single file is
+  // named outright -- that is the case where the name is the thing worth
+  // checking before you commit to a destination -- and a batch is counted.
+  function describe_selection(names) {
+    var list = names || [];
+    if (!list.length) {
+      return 'No files selected';
+    }
+    if (list.length === 1) {
+      return String(list[0]);
+    }
+    return list.length + ' files selected';
+  }
+
+  // A fixed-concurrency job queue. The server caps a session at
+  // MAX_CONCURRENT_TRANSFERS (3) and answers anything beyond it with 429,
+  // so dropping eight photos used to upload three and fail five. Holding
+  // the extras here instead means the drop simply takes longer.
+  //
+  // A job is `run(done)`; it must call `done` exactly once when it settles.
+  // A double `done` is ignored rather than freeing two slots, since that
+  // would push a job past the very cap this exists to respect.
+  function make_queue(limit) {
+    var running = 0;
+    var pending = [];
+
+    function pump() {
+      while (running < limit && pending.length) {
+        var job = pending.shift();
+        if (job.cancelled) {
+          continue;
+        }
+        job.started = true;
+        running = running + 1;
+        try {
+          job.run(release(job));
+        } catch (err) {
+          // A job that throws before it can call done would hold its slot
+          // for the life of the queue. Free it, then let the error out as
+          // it would have without this guard.
+          release(job)();
+          throw err;
+        }
+      }
+    }
+
+    function release(job) {
+      return function () {
+        if (job.settled) {
+          return;
+        }
+        job.settled = true;
+        running = running - 1;
+        pump();
+      };
+    }
+
+    return {
+      push: function (run, on_cancel) {
+        var job = {
+          run: run,
+          on_cancel: on_cancel,
+          cancelled: false,
+          started: false,
+          settled: false
+        };
+        pending.push(job);
+        pump();
+        return job;
+      },
+      // Only a job still waiting can be cancelled here; one already running
+      // owns an AbortController and is cancelled through that instead.
+      cancel: function (job) {
+        if (!job || job.cancelled || job.started) {
+          return false;
+        }
+        job.cancelled = true;
+        var at = pending.indexOf(job);
+        if (at !== -1) {
+          pending.splice(at, 1);
+        }
+        if (job.on_cancel) {
+          job.on_cancel();
+        }
+        return true;
+      },
+      clear: function () {
+        var waiting = pending;
+        pending = [];
+        for (var i = 0; i < waiting.length; i++) {
+          waiting[i].cancelled = true;
+          if (waiting[i].on_cancel) {
+            waiting[i].on_cancel();
+          }
+        }
+      },
+      pending: function () {
+        return pending.length;
+      },
+      running: function () {
+        return running;
+      }
+    };
+  }
+
   return {
     parse_osc7: parse_osc7,
     resolve_path: resolve_path,
+    resolve_upload_paths: resolve_upload_paths,
+    make_queue: make_queue,
     split_path: split_path,
+    parent_dir: parent_dir,
+    choose_start_dir: choose_start_dir,
+    host_key: host_key,
+    recall_dir: recall_dir,
+    remember_dir: remember_dir,
+    MAX_REMEMBERED_HOSTS: MAX_REMEMBERED_HOSTS,
     match_entry: match_entry,
+    describe_selection: describe_selection,
     format_bytes: format_bytes,
     upload_url: upload_url,
+    PASTE_DIR: PASTE_DIR,
+    pasted_image: pasted_image,
+    paste_filename: paste_filename,
+    terminal_path: terminal_path,
     download_url: download_url
   };
 }());

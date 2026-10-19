@@ -1,24 +1,35 @@
 import io
+import os
+import os.path
 import random
 import ssl
 import sys
-import os
-import os.path
 import tempfile
 import unittest
+
 import paramiko
-import tornado.options as options
+from tornado import options
 
 from tests.utils import make_tests_data_path
+from webssh._version import __version__
 from webssh.policy import load_host_keys
 from webssh.settings import (
-    get_host_keys_settings, get_policy_setting, base_dir, get_font_filename,
-    get_ssl_context, get_trusted_downstream, get_origin_setting, print_version,
-    check_encoding_setting, load_allowed_hosts, get_allowed_hosts_setting,
-    apply_config_settings, parse_allowed_hosts, check_user_key_dir
+    apply_config_settings,
+    base_dir,
+    check_encoding_setting,
+    check_user_key_dir,
+    get_allowed_hosts_setting,
+    get_font_filename,
+    get_host_keys_settings,
+    get_origin_setting,
+    get_policy_setting,
+    get_ssl_context,
+    get_trusted_downstream,
+    load_allowed_hosts,
+    parse_allowed_hosts,
+    print_version,
 )
 from webssh.utils import UnicodeType
-from webssh._version import __version__
 
 
 class TestSettings(unittest.TestCase):
@@ -504,6 +515,17 @@ class TestParseHostEntry(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_host_entry({'hostname': 'a.com', 'port': port})
 
+    def test_non_numeric_port_raises_value_error(self):
+        # Distinct from test_invalid_port above: 0/70000/-1 all pass
+        # int() fine and are rejected by the range check below it. This
+        # covers the try/except (TypeError, ValueError) branch around
+        # int(...) itself -- the one behaviour change made when this
+        # parsing was pulled out into its own function.
+        from webssh.settings import parse_host_entry
+        for port in ['abc', '22abc', [1, 2], {}]:
+            with self.assertRaises(ValueError):
+                parse_host_entry({'hostname': 'a.com', 'port': port})
+
     def test_invalid_host_key_type(self):
         from webssh.settings import parse_host_entry
         with self.assertRaises(ValueError):
@@ -522,7 +544,7 @@ class TestUserDataSettings(unittest.TestCase):
     def test_userdatadir_falls_back_to_userkeydir(self):
         from webssh.settings import get_user_data_dir_setting
 
-        class Opts(object):
+        class Opts:
             userdatadir = ''
             userkeydir = '/var/lib/webssh/keys'
 
@@ -532,7 +554,7 @@ class TestUserDataSettings(unittest.TestCase):
     def test_userdatadir_wins_when_set(self):
         from webssh.settings import get_user_data_dir_setting
 
-        class Opts(object):
+        class Opts:
             userdatadir = '/var/lib/webssh/data'
             userkeydir = '/var/lib/webssh/keys'
 
@@ -542,7 +564,7 @@ class TestUserDataSettings(unittest.TestCase):
     def test_userdatadir_empty_when_neither_set(self):
         from webssh.settings import get_user_data_dir_setting
 
-        class Opts(object):
+        class Opts:
             userdatadir = ''
             userkeydir = ''
 
@@ -550,6 +572,7 @@ class TestUserDataSettings(unittest.TestCase):
 
     def test_check_user_data_dir_creates_directory(self):
         import tempfile
+
         from webssh.settings import check_user_data_dir
         base = tempfile.mkdtemp()
         target = os.path.join(base, 'data')
@@ -558,10 +581,16 @@ class TestUserDataSettings(unittest.TestCase):
 
     def test_check_user_data_dir_noop_when_empty(self):
         from webssh.settings import check_user_data_dir
-        self.assertIsNone(check_user_data_dir(''))
+        with self.assertLogs(level='WARNING') as cm:
+            self.assertIsNone(check_user_data_dir(''))
+        self.assertTrue(any(
+            'user_hosts is enabled but no userdatadir or userkeydir' in msg
+            for msg in cm.output
+        ))
 
     def test_check_user_data_dir_rejects_file(self):
         import tempfile
+
         from webssh.settings import check_user_data_dir
         fd, path = tempfile.mkstemp()
         os.close(fd)
@@ -573,8 +602,10 @@ class TestApplyUserHostsConfig(unittest.TestCase):
 
     def test_user_hosts_and_userdatadir_from_config(self):
         import tempfile
+
         import yaml
         from tornado.options import options as opts
+
         from webssh.settings import apply_config_settings
 
         fd, path = tempfile.mkstemp(suffix='.yaml')

@@ -56,14 +56,27 @@ var webssh_hosts = (function () {
 
   // rows: [{name, hostname, port_text, keys_text, username, default_command}]
   // (see HOST_ROW_KEYS above)
-  // Rows with a blank hostname are skipped, matching the pane's behaviour of
-  // ignoring a half-filled row rather than submitting it.
+  // A row that is entirely blank (a fresh, untouched "Add host" row) is
+  // silently skipped. A row with a blank hostname but *some* other field
+  // filled in is a half-filled row the user is actively editing, so it is
+  // reported as an error rather than being dropped without feedback.
   function build_host_payload(rows) {
     var result = [];
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var hostname = trimmed(r.hostname);
       if (!hostname) {
+        var has_other_data = trimmed(r.name) || trimmed(r.port_text) ||
+          trimmed(r.keys_text) || trimmed(r.username) || trimmed(r.default_command);
+        if (has_other_data) {
+          return {
+            hosts: result,
+            error: 'Host name is required for row ' + (i + 1) +
+                   ' (fill it in or delete the row).',
+            error_index: i,
+            error_field: 'host-hostname'
+          };
+        }
         continue;
       }
       var name = trimmed(r.name) || hostname;
@@ -85,7 +98,8 @@ var webssh_hosts = (function () {
           hosts: result,
           error: 'Invalid port "' + trimmed(r.port_text) +
                  '" for host "' + name + '" (must be 1-65535).',
-          error_index: i
+          error_index: i,
+          error_field: 'host-port'
         };
       }
       if (port_result.port) {
@@ -134,6 +148,32 @@ var webssh_hosts = (function () {
     return settings;
   }
 
+  var KEY_SOURCES = ['stored', 'upload'];
+
+  // The connect form's key_source radio roams too, but deliberately not via
+  // ROAMING_FIELDS: that map is the structural guarantee that only three
+  // named form fields can ever reach the server, and key_source is not read
+  // out of the form by name-driven iteration. Anything but the two valid
+  // directions is dropped rather than sent -- validate_settings answers a
+  // bad value with a 400 that lands in a background PUT the user never sees.
+  function key_source_update(value) {
+    if (KEY_SOURCES.indexOf(value) === -1) {
+      return null;
+    }
+    return {key: 'key_source', value: value};
+  }
+
+  // The effective direction when nothing (valid) is stored. A user who has
+  // generated a stored key defaults to using it, so that a settings-pane
+  // save which never touched the select cannot silently flip them to
+  // 'upload' -- the write that caused the stored key to be forgotten.
+  function default_key_source(stored, has_stored_key) {
+    if (KEY_SOURCES.indexOf(stored) !== -1) {
+      return stored;
+    }
+    return has_stored_key ? 'stored' : 'upload';
+  }
+
   function roaming_update(name, value) {
     var roam_key = ROAMING_FIELDS[name];
     if (!roam_key) {
@@ -167,6 +207,16 @@ var webssh_hosts = (function () {
     return options;
   }
 
+  // Precedence for the session encoding: an explicit URL parameter, then
+  // the user's stored setting, then '' meaning "use what the server
+  // reported". The stored setting has to outrank detection, because
+  // correcting a bad detection result is the only reason the field exists
+  // (see #68, where a macOS server reports US-ASCII).
+  function resolve_encoding(url_opts, stored) {
+    return trimmed((url_opts || {}).encoding) ||
+           trimmed((stored || {}).encoding) || '';
+  }
+
   // A 400 describes the user's own input and is safe to show. Anything else
   // may describe server state, so it gets a fixed generic message.
   function save_error_text(status, body) {
@@ -180,14 +230,24 @@ var webssh_hosts = (function () {
   }
 
   // Legacy per-host default commands were stored under 'command:<host>:<port>'.
+  // IPv6 hostnames contain colons of their own, so splitting on every ':'
+  // would chop the address apart. Instead, only the final ':' is treated as
+  // the host/port separator; everything before it (colons included) is the
+  // hostname.
   function parse_command_key(key) {
     if (!key || String(key).indexOf('command:') !== 0) {
       return null;
     }
-    var parts = String(key).split(':');
+    var rest = String(key).slice('command:'.length);
+    var sep = rest.lastIndexOf(':');
+    var hostname = sep === -1 ? rest : rest.slice(0, sep);
+    var port_str = sep === -1 ? '' : rest.slice(sep + 1);
+    if (!hostname) {
+      return null;
+    }
     return {
-      hostname: parts[1],
-      port: parseInt(parts[2], 10) || 22
+      hostname: hostname,
+      port: parseInt(port_str, 10) || 22
     };
   }
 
@@ -233,7 +293,10 @@ var webssh_hosts = (function () {
     ROAMING_FIELDS: ROAMING_FIELDS,
     merge_settings: merge_settings,
     roaming_update: roaming_update,
+    key_source_update: key_source_update,
+    default_key_source: default_key_source,
     resolve_terminal_options: resolve_terminal_options,
+    resolve_encoding: resolve_encoding,
     save_error_text: save_error_text,
     parse_command_key: parse_command_key,
     merge_migrated_commands: merge_migrated_commands

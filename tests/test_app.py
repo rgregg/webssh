@@ -2,29 +2,33 @@ import errno
 import json
 import os
 import random
+import re
+import shutil
 import tempfile
 import threading
 import time
 import unittest
 from concurrent.futures import Future
+from typing import ClassVar
 from unittest import mock
-import tornado.websocket
-import tornado.gen
 
-from tornado.testing import AsyncHTTPTestCase
+import tornado.gen
+import tornado.websocket
 from tornado.httpclient import HTTPError
 from tornado.options import options
-from tests.sshserver import run_ssh_server, banner, Server
-from tests.test_transfer import FakeSFTP, FakeAttr, FakeFile
-from tests.utils import encode_multipart_formdata, read_file, make_tests_data_path  # noqa
-from webssh import handler
-from webssh import transfer
-from webssh.main import make_app, make_handlers
-from webssh.settings import (
-    get_app_settings, get_server_settings, max_body_size
+from tornado.testing import AsyncHTTPTestCase
+
+from tests.sshserver import Server, banner, run_ssh_server
+from tests.test_transfer import FakeAttr, FakeFile, FakeSFTP
+from tests.utils import (
+    encode_multipart_formdata,
+    make_tests_data_path,
+    read_file,
 )
+from webssh import handler, transfer, worker
+from webssh.main import make_app, make_handlers
+from webssh.settings import get_app_settings, get_server_settings, max_body_size
 from webssh.utils import to_bytes, to_str
-from webssh import worker
 from webssh.worker import clients
 
 try:
@@ -37,7 +41,7 @@ swallow_http_errors = handler.swallow_http_errors
 server_encodings = {e.strip() for e in Server.encodings}
 
 
-class OptionsRestoreMixin(object):
+class OptionsRestoreMixin:
     """Restore tornado's global options after a test mutates them.
 
     ``options`` is process-global, so a test class that sets an option
@@ -65,7 +69,7 @@ class OptionsRestoreMixin(object):
 class TestOptionsRestoreMixin(unittest.TestCase):
 
     class Case(OptionsRestoreMixin, unittest.TestCase):
-        overrides = {}
+        overrides: ClassVar[dict] = {}
         raises = False
 
         def runTest(self):
@@ -119,7 +123,7 @@ class TestSuiteLeavesOptionsClean(unittest.TestCase):
 
     watched = ('debug', 'xsrf', 'policy', 'hostfile', 'syshostfile',
                'tdstream', 'origin', 'user_hosts', 'userdatadir',
-               'userheader', 'config', 'maxconn')
+               'userheader', 'config', 'maxconn', 'shell_integration')
 
     def assert_no_leak(self, cls):
         before = {}
@@ -138,6 +142,13 @@ class TestSuiteLeavesOptionsClean(unittest.TestCase):
 
     def test_user_host_key_isolation_leaves_options_clean(self):
         self.assert_no_leak(TestUserHostKeyIsolation)
+
+    def test_other_test_base_leaves_options_clean(self):
+        # OtherTestBase is the widest mutator in the suite -- ten globals,
+        # including a randomised policy -- and every connection test class
+        # derives from it. A leak here is what made the rest of the suite
+        # pass by execution order rather than construction.
+        self.assert_no_leak(TestAppInDebugMode)
 
     def test_user_data_api_leaves_options_clean(self):
         self.assert_no_leak(TestUserDataApi)
@@ -171,7 +182,9 @@ class TestAppBase(OptionsRestoreMixin, AsyncHTTPTestCase):
         self.assertIsNotNone(data['id'])
         self.assertIsNone(data['status'])
 
-    def fetch_request(self, url, method='GET', body='', headers={}, sync=True):
+    def fetch_request(self, url, method='GET', body='', headers=None, sync=True):
+        if headers is None:
+            headers = {}
         if not sync and url.startswith('/'):
             url = self.get_url(url)
 
@@ -186,19 +199,23 @@ class TestAppBase(OptionsRestoreMixin, AsyncHTTPTestCase):
         client = self if sync else self.get_http_client()
         return client.fetch(url, method=method, body=body, headers=headers)
 
-    def sync_post(self, url, body, headers={}):
+    def sync_post(self, url, body, headers=None):
+        if headers is None:
+            headers = {}
         return self.fetch_request(url, 'POST', body, headers)
 
-    def async_post(self, url, body, headers={}):
+    def async_post(self, url, body, headers=None):
+        if headers is None:
+            headers = {}
         return self.fetch_request(url, 'POST', body, headers, sync=False)
 
 
 class TestAppBasic(TestAppBase):
 
-    running = [True]
+    running: ClassVar[list] = [True]
     sshserver_port = 2200
-    body = 'hostname=127.0.0.1&port={}&_xsrf=yummy&username=robey&password=foo'.format(sshserver_port) # noqa
-    headers = {'Cookie': '_xsrf=yummy'}
+    body = f'hostname=127.0.0.1&port={sshserver_port}&_xsrf=yummy&username=robey&password=foo'
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
 
     def get_app(self):
         self.body_dict = {
@@ -236,6 +253,36 @@ class TestAppBasic(TestAppBase):
         cls.running.pop()
         print('='*20)
 
+    def test_index_versions_static_urls(self):
+        # Every deploy must change the URL of any asset whose content
+        # changed; otherwise browsers keep running stale JS after an
+        # upgrade until someone hard-reloads.
+        response = self.fetch('/')
+        body = to_str(response.body)
+        for asset in ('js/main.js', 'js/auth-refresh.js', 'css/main.css',
+                      'js/jquery.min.js'):
+            self.assertRegex(body, rf'"static/{asset}\?v=[0-9a-f]+"')
+        # Relative, not /static/..., so a deployment under a path prefix
+        # still resolves them.
+        self.assertNotIn('"/static/', body)
+
+    def test_versioned_static_url_is_cached_long_term(self):
+        response = self.fetch('/')
+        url = re.search(r'"(static/js/main\.js\?v=[0-9a-f]+)"',
+                        to_str(response.body)).group(1)
+        response = self.fetch('/' + url)
+        self.assertEqual(response.code, 200)
+        self.assertIn('max-age=', response.headers.get('Cache-Control', ''))
+
+    def test_auth_done_page_signals_opener_and_closes(self):
+        # The sign-in popup lands here once the auth proxy has issued a
+        # fresh session cookie; the page reports back and closes itself.
+        response = self.fetch('/auth/done')
+        self.assertEqual(response.code, 200)
+        self.assertIn(b'webssh-auth-ok', response.body)
+        self.assertIn(b'window.close()', response.body)
+        self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
+
     def test_app_with_invalid_form_for_missing_argument(self):
         response = self.fetch('/')
         self.assertEqual(response.code, 200)
@@ -261,7 +308,7 @@ class TestAppBasic(TestAppBase):
         response = self.sync_post('/', body)
         self.assert_response(b'Invalid hostname', response)
 
-        body = 'hostname=http://www.googe.com&port=22&username=&password&_xsrf=yummy'  # noqa
+        body = 'hostname=http://www.googe.com&port=22&username=&password&_xsrf=yummy'
         response = self.sync_post('/', body)
         self.assert_response(b'Invalid hostname', response)
 
@@ -293,7 +340,7 @@ class TestAppBasic(TestAppBase):
 
     def test_app_with_wrong_credentials(self):
         response = self.sync_post('/', self.body + 's')
-        self.assert_status_in('Authentication failed.', json.loads(to_str(response.body))) # noqa
+        self.assert_status_in('Authentication failed.', json.loads(to_str(response.body)))
 
     def test_app_with_correct_credentials(self):
         response = self.sync_post('/', self.body)
@@ -563,7 +610,7 @@ class TestAppBasic(TestAppBase):
         self.body_dict.update(username='keyonly', password='foo')
         response = yield self.async_post('/', self.body_dict)
         self.assertEqual(response.code, 200)
-        self.assert_status_in('Bad authentication type', json.loads(to_str(response.body))) # noqa
+        self.assert_status_in('Bad authentication type', json.loads(to_str(response.body)))
 
     @tornado.testing.gen_test
     def test_app_with_user_pass2fa_with_correct_passwords(self):
@@ -627,7 +674,7 @@ class TestAppBasic(TestAppBase):
 
 class OtherTestBase(TestAppBase):
     sshserver_port = 3300
-    headers = {'Cookie': '_xsrf=yummy'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
     debug = False
     policy = None
     xsrf = True
@@ -636,8 +683,8 @@ class OtherTestBase(TestAppBase):
     tdstream = ''
     maxconn = 20
     origin = 'same'
-    encodings = []
-    body = {
+    encodings: ClassVar[list] = []
+    body: ClassVar[dict] = {
         'hostname': '127.0.0.1',
         'port': '',
         'username': 'robey',
@@ -648,18 +695,22 @@ class OtherTestBase(TestAppBase):
     def get_app(self):
         self.body.update(port=str(self.sshserver_port))
         loop = self.io_loop
-        options.debug = self.debug
-        options.xsrf = self.xsrf
-        options.policy = self.policy if self.policy else random.choice(['warning', 'autoadd'])  # noqa
-        options.hostfile = self.hostfile
-        options.syshostfile = self.syshostfile
-        options.tdstream = self.tdstream
-        options.maxconn = self.maxconn
-        options.origin = self.origin
-        # The fake SSH server echoes raw bytes rather than behaving like a
-        # real shell, so the injected snippet would show up as regular
-        # channel data and desync these protocol-level assertions.
-        options.shell_integration = False
+        self.override_options(
+            debug=self.debug,
+            xsrf=self.xsrf,
+            policy=(self.policy if self.policy
+                    else random.choice(['warning', 'autoadd'])),
+            hostfile=self.hostfile,
+            syshostfile=self.syshostfile,
+            tdstream=self.tdstream,
+            maxconn=self.maxconn,
+            origin=self.origin,
+            # The fake SSH server echoes raw bytes rather than behaving
+            # like a real shell, so the injected snippet would show up as
+            # regular channel data and desync these protocol-level
+            # assertions.
+            shell_integration=False,
+        )
         app = make_app(make_handlers(loop, options), get_app_settings(options))
         return app
 
@@ -674,12 +725,12 @@ class OtherTestBase(TestAppBase):
         )
         t.setDaemon(True)
         t.start()
-        super(OtherTestBase, self).setUp()
+        super().setUp()
 
     def tearDown(self):
         self.running = False
         print('='*20)
-        super(OtherTestBase, self).tearDown()
+        super().tearDown()
 
 
 class TestAppInDebugMode(OtherTestBase):
@@ -741,7 +792,7 @@ class TestAppWithRejectPolicy(OtherTestBase):
     def test_app_with_hostname_not_in_hostkeys(self):
         response = yield self.async_post('/', self.body)
         data = json.loads(to_str(response.body))
-        message = 'Connection to {}:{} is not allowed.'.format(self.body['hostname'], self.sshserver_port) # noqa
+        message = f"Connection to {self.body['hostname']}:{self.sshserver_port} is not allowed."
         self.assertEqual(message, data['status'])
 
 
@@ -752,7 +803,7 @@ class TestAppWithBadHostKey(OtherTestBase):
 
     def setUp(self):
         self.sshserver_port = 2222
-        super(TestAppWithBadHostKey, self).setUp()
+        super().setUp()
 
     @tornado.testing.gen_test
     def test_app_with_bad_host_key(self):
@@ -842,7 +893,7 @@ class TestAppWithTooManyConnections(OtherTestBase):
 
     def setUp(self):
         clients.clear()
-        super(TestAppWithTooManyConnections, self).setUp()
+        super().setUp()
 
     @tornado.testing.gen_test
     def test_app_with_too_many_connections(self):
@@ -866,13 +917,13 @@ class TestAppWithCrossOriginOperation(OtherTestBase):
     def test_app_with_wrong_event_origin(self):
         body = dict(self.body, _origin='localhost')
         response = yield self.async_post('/', body)
-        self.assert_status_equal('Cross origin operation is not allowed.', json.loads(to_str(response.body))) # noqa
+        self.assert_status_equal('Cross origin operation is not allowed.', json.loads(to_str(response.body)))
 
     @tornado.testing.gen_test
     def test_app_with_wrong_header_origin(self):
-        headers = dict(Origin='localhost')
+        headers = {'Origin': 'localhost'}
         response = yield self.async_post('/', self.body, headers=headers)
-        self.assert_status_equal('Cross origin operation is not allowed.', json.loads(to_str(response.body)), ) # noqa
+        self.assert_status_equal('Cross origin operation is not allowed.', json.loads(to_str(response.body)), )
 
     @tornado.testing.gen_test
     def test_app_with_correct_event_origin(self):
@@ -883,7 +934,7 @@ class TestAppWithCrossOriginOperation(OtherTestBase):
 
     @tornado.testing.gen_test
     def test_app_with_correct_header_origin(self):
-        headers = dict(Origin=self.origin)
+        headers = {'Origin': self.origin}
         response = yield self.async_post('/', self.body, headers=headers)
         self.assert_status_none(json.loads(to_str(response.body)))
         self.assertEqual(
@@ -893,7 +944,7 @@ class TestAppWithCrossOriginOperation(OtherTestBase):
 
 class TestAppWithBadEncoding(OtherTestBase):
 
-    encodings = [u'\u7f16\u7801']
+    encodings: ClassVar[list] = ['\u7f16\u7801']
 
     @tornado.testing.gen_test
     def test_app_with_a_bad_encoding(self):
@@ -905,7 +956,7 @@ class TestAppWithBadEncoding(OtherTestBase):
 
 class TestAppWithUnknownEncoding(OtherTestBase):
 
-    encodings = [u'\u7f16\u7801', u'UnknownEncoding']
+    encodings: ClassVar[list] = ['\u7f16\u7801', 'UnknownEncoding']
 
     @tornado.testing.gen_test
     def test_app_with_a_unknown_encoding(self):
@@ -918,12 +969,13 @@ class TestAppWithUnknownEncoding(OtherTestBase):
 
 class UserDataTestBase(TestAppBase):
 
-    headers = {'Cookie': '_xsrf=yummy',
-               'X-Authentik-Username': 'alice'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy',
+                                'X-Authentik-Username': 'alice'}
     user_hosts = True
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.data_dir, ignore_errors=True)
         self.override_options(
             debug=False,
             xsrf=True,
@@ -1003,12 +1055,53 @@ class TestUserDataApi(UserDataTestBase):
         data = json.loads(to_str(response.body))
         self.assertIn('error', data)
 
+    def test_put_settings_without_xsrf_returns_403(self):
+        response = self.fetch(
+            '/api/settings', method='PUT',
+            body=json.dumps({'settings': {}}), headers=self.headers)
+        self.assertEqual(response.code, 403)
+        self.assertIn(
+            'application/json', response.headers.get('Content-Type', ''))
+        data = json.loads(to_str(response.body))
+        self.assertIn('error', data)
+
+    def test_hosts_unsupported_method_returns_405(self):
+        response = self.fetch(
+            '/api/hosts', method='DELETE',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy'}))
+        self.assertEqual(response.code, 405)
+
+    def test_settings_unsupported_method_returns_405(self):
+        response = self.fetch(
+            '/api/settings', method='DELETE',
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy'}))
+        self.assertEqual(response.code, 405)
+
     def test_settings_round_trip(self):
         response = self.put('/api/settings', {'settings': {'font_size': 15}})
         self.assertEqual(response.code, 200)
         response = self.fetch('/api/settings', headers=self.headers)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['settings']['font_size'], 15)
+
+    def test_stored_settings_are_safely_inlined_into_index_page(self):
+        # Stored settings are echoed back inline in a <script> block on
+        # the index page (see the user_settings_json render arg). A
+        # "<!--<script" sequence confuses the HTML tokenizer's script-data
+        # state even without a literal "</script>" closing the block.
+        payload = '<!--<script>alert(1)</script>-->'
+        self.put('/api/settings', {'settings': {'last_hostname': payload}})
+        response = self.fetch('/', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        body = to_str(response.body)
+        self.assertNotIn('<!--<script', body)
+        self.assertNotIn('</script>alert', body)
+        # The escaped payload still round-trips to the original string.
+        marker = 'var user_settings = '
+        start = body.index(marker) + len(marker)
+        end = body.index(';', start)
+        self.assertEqual(
+            json.loads(body[start:end])['last_hostname'], payload)
 
     def test_settings_drops_secrets(self):
         self.put('/api/settings',
@@ -1075,17 +1168,19 @@ class TestUserDataApi(UserDataTestBase):
     def test_put_hosts_write_failure_returns_500_without_leaking_path(self):
         secret_path = '/very/secret/user/data/dir'
         message = (
-            'Cannot create data directory for user {!r}: permission '
-            'denied. Check ownership of {!r}'.format('alice', secret_path)
+            f'Cannot create data directory for user {"alice"!r}: permission '
+            f'denied. Check ownership of {secret_path!r}'
         )
 
         def boom(base_dir, username, hosts):
             raise ValueError(message)
 
-        with mock.patch('webssh.user_data.write_hosts', side_effect=boom):
-            with self.assertLogs(level='ERROR') as cm:
-                response = self.put(
-                    '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
+        with (
+            mock.patch('webssh.user_data.write_hosts', side_effect=boom),
+            self.assertLogs(level='ERROR') as cm,
+        ):
+            response = self.put(
+                '/api/hosts', {'hosts': [{'hostname': 'ok.lan'}]})
 
         self.assertEqual(response.code, 500)
         body = to_str(response.body)
@@ -1102,17 +1197,19 @@ class TestUserDataApi(UserDataTestBase):
     def test_put_settings_write_failure_returns_500_without_leaking_path(self):
         secret_path = '/very/secret/user/data/dir'
         message = (
-            'Cannot create data directory for user {!r}: permission '
-            'denied. Check ownership of {!r}'.format('alice', secret_path)
+            f'Cannot create data directory for user {"alice"!r}: permission '
+            f'denied. Check ownership of {secret_path!r}'
         )
 
         def boom(base_dir, username, settings):
             raise ValueError(message)
 
-        with mock.patch('webssh.user_data.write_settings', side_effect=boom):
-            with self.assertLogs(level='ERROR') as cm:
-                response = self.put(
-                    '/api/settings', {'settings': {'font_size': 15}})
+        with (
+            mock.patch('webssh.user_data.write_settings', side_effect=boom),
+            self.assertLogs(level='ERROR') as cm,
+        ):
+            response = self.put(
+                '/api/settings', {'settings': {'font_size': 15}})
 
         self.assertEqual(response.code, 500)
         body = to_str(response.body)
@@ -1143,9 +1240,52 @@ class TestUserDataApiDisabled(UserDataTestBase):
         response = self.fetch('/api/settings', headers=self.headers)
         self.assertEqual(response.code, 403)
 
+    def test_put_hosts_returns_403(self):
+        response = self.fetch(
+            '/api/hosts', method='PUT', body=json.dumps({'hosts': []}),
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 403)
+
+    def test_put_settings_returns_403(self):
+        response = self.fetch(
+            '/api/settings', method='PUT', body=json.dumps({'settings': {}}),
+            headers=dict(self.headers, **{'X-Xsrftoken': 'yummy',
+                                          'Content-Type': 'application/json'}))
+        self.assertEqual(response.code, 403)
+
     def test_settings_pane_returns_404(self):
         response = self.fetch('/settings-pane', headers=self.headers)
         self.assertEqual(response.code, 404)
+
+
+class TestUserDataApiAdminHosts(UserDataTestBase):
+    """admin_hosts in the /api/hosts response reflects the configured
+    allowlist, not just its presence."""
+
+    def setUp(self):
+        import yaml
+        fd, self.config_path = tempfile.mkstemp(suffix='.yaml')
+        with os.fdopen(fd, 'w') as f:
+            yaml.safe_dump({'hosts': [
+                {'name': 'prod-db', 'hostname': 'db.example.com',
+                 'port': 5432}]}, f)
+        self.override_options(config=self.config_path)
+        super().setUp()
+
+    def tearDown(self):
+        os.unlink(self.config_path)
+        super().tearDown()
+
+    def test_admin_hosts_reflects_configured_allowlist(self):
+        response = self.fetch('/api/hosts', headers=self.headers)
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(len(data['admin_hosts']), 1)
+        admin_host = data['admin_hosts'][0]
+        self.assertEqual(admin_host['name'], 'prod-db')
+        self.assertEqual(admin_host['hostname'], 'db.example.com')
+        self.assertEqual(admin_host['port'], 5432)
 
 
 class TestEffectiveHosts(unittest.TestCase):
@@ -1202,18 +1342,18 @@ class ConnectHostsTestBase(UserDataTestBase):
                 {'name': 'other', 'hostname': self.admin_hostname,
                  'port': 22}]}, f)
         self.override_options(config=self.config_path)
-        super(ConnectHostsTestBase, self).setUp()
+        super().setUp()
         from webssh.user_data import write_hosts
         write_hosts(self.data_dir, 'alice',
                     [{'hostname': '127.0.0.1', 'port': 7000}])
 
     def tearDown(self):
         os.unlink(self.config_path)
-        super(ConnectHostsTestBase, self).tearDown()
+        super().tearDown()
 
     def post_hostname(self, hostname):
-        body = ('hostname={}&port=7000&username=robey&password=foo'
-                '&_xsrf=yummy').format(hostname)
+        body = (f'hostname={hostname}&port=7000&username=robey&password=foo'
+                '&_xsrf=yummy')
         return self.fetch('/', method='POST', body=body,
                           headers=self.headers)
 
@@ -1265,6 +1405,7 @@ class TestUserHostKeyIsolation(TestAppBase):
 
     def get_app(self):
         self.data_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.data_dir, ignore_errors=True)
         self.override_options(
             debug=False,
             xsrf=True,
@@ -1284,7 +1425,7 @@ class TestUserHostKeyIsolation(TestAppBase):
                         get_app_settings(options))
 
     def setUp(self):
-        super(TestUserHostKeyIsolation, self).setUp()
+        super().setUp()
         from webssh.user_data import write_hosts
         write_hosts(self.data_dir, 'alice',
                     [{'hostname': self.hostname, 'port': self.port,
@@ -1294,8 +1435,8 @@ class TestUserHostKeyIsolation(TestAppBase):
         headers = {'Cookie': '_xsrf=yummy'}
         if username:
             headers['X-Authentik-Username'] = username
-        body = ('hostname={}&port={}&username=robey&password=foo'
-                '&_xsrf=yummy').format(self.hostname, self.port)
+        body = (f'hostname={self.hostname}&port={self.port}&username=robey&password=foo'
+                '&_xsrf=yummy')
         return self.fetch('/', method='POST', body=body, headers=headers)
 
     def test_alice_reaches_her_own_host(self):
@@ -1314,14 +1455,14 @@ class TestUserHostKeyIsolation(TestAppBase):
 class TestLiveWorkerRegistry(unittest.TestCase):
 
     def make_worker(self, worker_id='wid'):
-        class FakeChan(object):
+        class FakeChan:
             def fileno(self):
                 return 0
 
             def close(self):
                 pass
 
-        class FakeSSH(object):
+        class FakeSSH:
             def close(self):
                 pass
 
@@ -1368,7 +1509,7 @@ class TransferTestBase(TestAppBase):
     the code we actually control.
     """
 
-    headers = {'Cookie': '_xsrf=yummy'}
+    headers: ClassVar[dict] = {'Cookie': '_xsrf=yummy'}
 
     def hdrs(self, worker_id='tid', extra=None):
         h = dict(self.headers)
@@ -1386,7 +1527,7 @@ class TransferTestBase(TestAppBase):
                         get_app_settings(options))
 
     def setUp(self):
-        super(TransferTestBase, self).setUp()
+        super().setUp()
         worker.live_workers.clear()
         self.addCleanup(worker.live_workers.clear)
         self.sftp = FakeSFTP(files={'/home/ryan/a.txt': b'hello'},
@@ -1396,14 +1537,14 @@ class TransferTestBase(TestAppBase):
     def make_live_worker(self, worker_id='tid', client_ip='127.0.0.1'):
         test_sftp = self.sftp
 
-        class FakeChan(object):
+        class FakeChan:
             def fileno(self):
                 return 0
 
             def close(self):
                 pass
 
-        class FakeSSH(object):
+        class FakeSSH:
             def open_sftp(self):
                 return test_sftp
 
@@ -1545,7 +1686,7 @@ class TestTransferDownloadCancellation(unittest.TestCase):
     assigned afterward there is no further callback to cancel it.
     """
 
-    class FakeDownload(object):
+    class FakeDownload:
         def __init__(self):
             self.cancelled = False
 
@@ -1633,6 +1774,21 @@ class TestTransferUpload(TransferTestBase):
         self.assertEqual(response.code, 200)
         data = json.loads(to_str(response.body))
         self.assertEqual(data['path'], '/home/ryan/fresh.txt')
+
+    def test_mkdir_creates_the_destination_directory(self):
+        # The pasted-image upload names a folder that may not exist yet.
+        self.sftp.dirs['/'] = []
+        self.sftp.dirs['/home'] = []
+        response = self.upload(
+            'path=/home/ryan/pastes&filename=shot.png&mkdir=true', b'png')
+        self.assertEqual(response.code, 200)
+        data = json.loads(to_str(response.body))
+        self.assertEqual(data['path'], '/home/ryan/pastes/shot.png')
+        self.assertEqual(self.sftp.files['/home/ryan/pastes/shot.png'], b'png')
+
+    def test_without_mkdir_a_missing_directory_is_not_created(self):
+        self.upload('path=/home/ryan/pastes/shot.png&filename=shot.png', b'x')
+        self.assertNotIn('/home/ryan/pastes', self.sftp.dirs)
 
     def test_wrong_client_ip_is_404(self):
         self.worker.src_addr = ('203.0.113.7', 1234)
@@ -1751,8 +1907,8 @@ class TestTransferUploadConcurrencyCap(TransferTestBase):
             response_futures = [
                 self.http_client.fetch(
                     self.get_url(
-                        '/transfer/upload?path=/home/ryan/f{}.txt'
-                        '&filename=f{}.txt'.format(i, i)),
+                        f'/transfer/upload?path=/home/ryan/f{i}.txt'
+                        f'&filename=f{i}.txt'),
                     method='POST', body=b'x', headers=headers,
                     raise_error=False)
                 for i in range(n)
@@ -1798,7 +1954,7 @@ class TestTransferUploadCancellation(unittest.TestCase):
     handler's equivalent _aborted/_bind_download hardening.
     """
 
-    class FakeWorker(object):
+    class FakeWorker:
         def __init__(self):
             self.transfers = 0
 
@@ -1810,7 +1966,7 @@ class TestTransferUploadCancellation(unittest.TestCase):
         def end_transfer(self):
             self.transfers = max(0, self.transfers - 1)
 
-    class FakeSFTP(object):
+    class FakeSFTP:
         def __init__(self):
             self.closed = False
 
@@ -1940,7 +2096,7 @@ class TestTransferUploadWriteDuringDisconnect(unittest.TestCase):
 
 class TestIdleTimeoutDuringTransfer(unittest.TestCase):
 
-    class FakeWorker(object):
+    class FakeWorker:
         def __init__(self, transfers):
             self.transfers = transfers
             self.closed_reason = None
@@ -1999,6 +2155,42 @@ class TestShellIntegrationSnippet(unittest.TestCase):
     def test_snippet_emits_an_osc7_sequence(self):
         self.assertIn('\\033]7;file://', handler.SHELL_INTEGRATION_SNIPPET)
 
+    def test_snippet_wraps_osc7_for_tmux(self):
+        # tmux consumes OSC 7 to maintain its own pane_current_path and does
+        # not forward it, so inside tmux the sequence has to travel in a DCS
+        # passthrough (ESC P tmux; <payload with ESCs doubled> ESC backslash).
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('${TMUX:-}', snippet)
+        self.assertIn('\\033Ptmux;\\033\\033]7;file://', snippet)
+
+    def test_snippet_enables_tmux_passthrough(self):
+        # allow-passthrough defaults to off, so a wrapped sequence would be
+        # dropped just as silently as the bare one.
+        self.assertIn('allow-passthrough on', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_exports_the_emitter_so_tmux_panes_inherit_it(self):
+        # Shells spawned by tmux never see the snippet we typed at the login
+        # shell; they only inherit the environment.
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        self.assertIn('export', snippet)
+        self.assertRegex(snippet, r'export[^;]*PROMPT_COMMAND')
+
+    def test_snippet_reports_a_hostname_under_both_shells(self):
+        # bash sets HOSTNAME, zsh sets HOST; one expansion has to cover both
+        # now that the emitter body is shared.
+        self.assertIn(
+            '${HOSTNAME:-${HOST:-}}', handler.SHELL_INTEGRATION_SNIPPET)
+
+    def test_snippet_survives_set_u(self):
+        # A user's rc file may run `set -u`, under which a bare expansion of
+        # an unset variable aborts the emitter: no directory is ever
+        # reported, and every prompt prints "unbound variable" instead.
+        snippet = handler.SHELL_INTEGRATION_SNIPPET
+        for name in ('TMUX', 'ZSH_VERSION', '_WEBSSH_PT', 'HOST', 'HOSTNAME'):
+            self.assertNotIn(
+                f'"${name}"', snippet,
+                f'${name} is expanded without a default')
+
     def test_snippet_is_a_single_line_so_it_cannot_half_execute(self):
         # A partially delivered multi-line snippet would leave the shell in
         # a continuation prompt, wedging the session.
@@ -2011,7 +2203,7 @@ class TestShellIntegrationSnippet(unittest.TestCase):
         self.assertFalse(snippet.endswith('\n\n'))
 
 
-class FakeShellChannel(object):
+class FakeShellChannel:
     """A minimal stand-in for a paramiko Channel, used to exercise the
     ``ssh_connect`` call site directly without a real (or fake) SSH
     server.
@@ -2028,7 +2220,7 @@ class FakeShellChannel(object):
         return 99
 
 
-class PartialWriteChannel(object):
+class PartialWriteChannel:
     """Mimics paramiko's real ``Channel.sendall``: it loops over ``send``,
     which here only ever accepts a few bytes at a time, to prove that a
     partial underlying write still results in the whole snippet being
@@ -2071,7 +2263,7 @@ class TestShellIntegrationSendSite(OptionsRestoreMixin, unittest.TestCase):
         fake_self = mock.Mock()
         fake_self.ssh_client = ssh_client
         fake_self.loop = mock.Mock()
-        fake_self.get_argument.return_value = u''
+        fake_self.get_argument.return_value = ''
         return fake_self
 
     def test_sends_snippet_when_shell_integration_is_enabled(self):
@@ -2144,7 +2336,7 @@ class TestTransferListFilter(TransferTestBase):
     """The filter parameter must reach through the handler to the listing."""
 
     def setUp(self):
-        super(TestTransferListFilter, self).setUp()
+        super().setUp()
         self.sftp.dirs['/home/ryan'] = [
             FakeAttr('syslog', size=10),
             FakeAttr('auth.log', size=20),
@@ -2192,7 +2384,7 @@ class TestTransferDownloadMultiChunk(TransferTestBase):
     in a single read and never exercises the chunk loop or its flushes."""
 
     def setUp(self):
-        super(TestTransferDownloadMultiChunk, self).setUp()
+        super().setUp()
         self.payload = bytes(bytearray(
             (i % 251) for i in range(transfer.CHUNK_SIZE * 2 + 7)))
         self.sftp.files['/home/ryan/big.bin'] = self.payload
@@ -2230,14 +2422,14 @@ class TestTransferCounter(unittest.TestCase):
     session unable to ever time out."""
 
     def make_worker(self):
-        class FakeChan(object):
+        class FakeChan:
             def fileno(self):
                 return 0
 
             def close(self):
                 pass
 
-        class FakeSSH(object):
+        class FakeSSH:
             def close(self):
                 pass
 
@@ -2353,7 +2545,7 @@ class TestTicketStore(unittest.TestCase):
         # Ten distinct worker ids, one ticket each, so this exercises the
         # sweep rather than the per-worker cap (which is below 10).
         for i in range(10):
-            worker.mint_ticket('wid{}'.format(i), '/f{}'.format(i),
+            worker.mint_ticket(f'wid{i}', f'/f{i}',
                                '10.0.0.5', now=1000)
         self.assertEqual(len(worker.tickets), 10)
         worker.mint_ticket('fresh-wid', '/fresh', '10.0.0.5',
@@ -2368,8 +2560,8 @@ class TestTicketStore(unittest.TestCase):
         assert worker.MAX_TICKETS % worker.MAX_TICKETS_PER_WORKER == 0
         n_workers = worker.MAX_TICKETS // worker.MAX_TICKETS_PER_WORKER
         for i in range(worker.MAX_TICKETS):
-            wid = 'wid{}'.format(i % n_workers)
-            worker.mint_ticket(wid, '/f{}'.format(i), '10.0.0.5', now=1000)
+            wid = f'wid{i % n_workers}'
+            worker.mint_ticket(wid, f'/f{i}', '10.0.0.5', now=1000)
         with self.assertRaises(worker.TicketStoreFull):
             worker.mint_ticket('overflow-wid', '/overflow', '10.0.0.5',
                                now=1000)
@@ -2380,7 +2572,7 @@ class TestTicketStore(unittest.TestCase):
         # global budget and lock out every other user; it must trip well
         # before MAX_TICKETS, and it must not affect other workers.
         for i in range(worker.MAX_TICKETS_PER_WORKER):
-            worker.mint_ticket('hog', '/f{}'.format(i), '10.0.0.5', now=1000)
+            worker.mint_ticket('hog', f'/f{i}', '10.0.0.5', now=1000)
         with self.assertRaises(worker.TicketStoreFull):
             worker.mint_ticket('hog', '/ninth', '10.0.0.5', now=1000)
         # A different worker is unaffected by the first worker's cap.
@@ -2404,14 +2596,14 @@ class TestTicketStore(unittest.TestCase):
 
     def test_closing_a_worker_drops_its_tickets(self):
         # A ticket must not outlive the session it authorises.
-        class FakeChan(object):
+        class FakeChan:
             def fileno(self):
                 return 0
 
             def close(self):
                 pass
 
-        class FakeSSH(object):
+        class FakeSSH:
             def close(self):
                 pass
 
@@ -2667,3 +2859,53 @@ class TestTransferDownloadTicket(TransferTestBase):
         response = self.fetch('/transfer/download?ticket=' + ticket,
                               headers=self.headers)
         self.assertEqual(response.code, 404)
+
+
+class TestEffectiveHostsMemoized(TransferTestBase):
+    """A connect POST asks for the effective host list twice -- once for the
+    allowlist check, once for host-key pinning. Each miss re-reads and
+    re-parses hosts.json from disk, synchronously on the IOLoop thread."""
+
+    def make_handler(self):
+        instance = handler.IndexHandler.__new__(handler.IndexHandler)
+        instance.allowed_hosts = [
+            {'hostname': 'admin.lan', 'port': 22, 'host_keys': []}]
+        instance._effective_hosts = None
+        return instance
+
+    def test_the_user_host_file_is_read_once_per_request(self):
+        instance = self.make_handler()
+        reads = []
+
+        def counting_read():
+            reads.append(1)
+            return [{'hostname': 'user.lan', 'port': 22}]
+
+        instance.get_user_hosts = counting_read
+
+        first = instance.get_effective_hosts()
+        second = instance.get_effective_hosts()
+
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(first, second)
+
+    def test_the_memoized_result_still_merges_admin_and_user_hosts(self):
+        instance = self.make_handler()
+        instance.get_user_hosts = lambda: [
+            {'hostname': 'user.lan', 'port': 22}]
+        names = [h['hostname'] for h in instance.get_effective_hosts()]
+        self.assertEqual(names, ['admin.lan', 'user.lan'])
+
+    def test_a_fresh_request_does_not_reuse_another_requests_cache(self):
+        # Tornado builds a handler per request, so the cache must live on
+        # the instance and not leak across them.
+        one = self.make_handler()
+        one.get_user_hosts = lambda: [{'hostname': 'one.lan', 'port': 22}]
+        self.assertIn('one.lan',
+                      [h['hostname'] for h in one.get_effective_hosts()])
+
+        two = self.make_handler()
+        two.get_user_hosts = lambda: [{'hostname': 'two.lan', 'port': 22}]
+        names = [h['hostname'] for h in two.get_effective_hosts()]
+        self.assertIn('two.lan', names)
+        self.assertNotIn('one.lan', names)

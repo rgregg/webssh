@@ -1,4 +1,5 @@
 import errno
+import posixpath
 import stat
 import unittest
 
@@ -7,7 +8,7 @@ import paramiko
 from webssh import transfer
 
 
-class FakeAttr(object):
+class FakeAttr:
 
     def __init__(self, filename, size=0, isdir=False, mtime=0):
         self.filename = filename
@@ -16,7 +17,7 @@ class FakeAttr(object):
         self.st_mode = (stat.S_IFDIR | 0o755) if isdir else (stat.S_IFREG | 0o644)
 
 
-class FakeFile(object):
+class FakeFile:
 
     def __init__(self, data=b'', parent=None, path=None):
         self.data = data
@@ -43,7 +44,7 @@ class FakeFile(object):
             self.parent.files[self.path] = self.data
 
 
-class FakeSFTP(object):
+class FakeSFTP:
     """Stands in for paramiko's SFTPClient. Only the calls transfer.py makes."""
 
     def __init__(self, files=None, dirs=None):
@@ -51,27 +52,49 @@ class FakeSFTP(object):
         self.dirs = dict(dirs or {})
         self.removed = []
         self.closed = False
+        self.made = []
 
     def stat(self, path):
         if path in self.dirs:
             return FakeAttr(path, isdir=True)
         if path in self.files:
             return FakeAttr(path, size=len(self.files[path]))
-        raise IOError(errno.ENOENT, 'No such file')
+        raise OSError(errno.ENOENT, 'No such file')
 
     def open(self, path, mode='r', bufsize=-1):
         if 'r' in mode:
             if path not in self.files:
-                raise IOError(errno.ENOENT, 'No such file')
+                raise OSError(errno.ENOENT, 'No such file')
             return FakeFile(self.files[path], self, path)
         handle = FakeFile(b'', self, path)
         self.files[path] = b''
         return handle
 
+    home = '/home/fake'
+
+    def normalize(self, path):
+        # paramiko's normalize is the server's realpath: absolute, with
+        # '.' and '..' resolved, relative paths taken from the SFTP home.
+        full = posixpath.join(self.home, path) if path else self.home
+        full = posixpath.normpath(full)
+        # normpath keeps a leading '//' (POSIX allows it to mean something
+        # else); a real realpath does not.
+        return '/' + full.lstrip('/')
+
     def listdir_attr(self, path):
         if path not in self.dirs:
-            raise IOError(errno.ENOENT, 'No such file')
+            raise OSError(errno.ENOENT, 'No such file')
         return list(self.dirs[path])
+
+    def mkdir(self, path, mode=0o777):
+        if path in self.dirs or path in self.files:
+            # paramiko reports an existing path as a bare SFTP failure.
+            raise OSError('Failure')
+        parent = posixpath.dirname(path)
+        if parent and parent != '/' and parent not in self.dirs:
+            raise OSError(errno.ENOENT, 'No such file')
+        self.dirs[path] = []
+        self.made.append((path, mode))
 
     def remove(self, path):
         self.removed.append(path)
@@ -84,17 +107,17 @@ class FakeSFTP(object):
 class TestErrorMapping(unittest.TestCase):
 
     def test_permission_denied_maps_to_403_and_keeps_the_message(self):
-        exc = IOError(errno.EACCES, 'Permission denied')
+        exc = OSError(errno.EACCES, 'Permission denied')
         err = transfer.error_from_oserror(exc, '/etc/shadow')
         self.assertEqual(err.status, 403)
         self.assertIn('Permission denied', err.message)
 
     def test_missing_file_maps_to_404(self):
-        exc = IOError(errno.ENOENT, 'No such file')
+        exc = OSError(errno.ENOENT, 'No such file')
         self.assertEqual(transfer.error_from_oserror(exc, '/nope').status, 404)
 
     def test_no_space_maps_to_507(self):
-        exc = IOError(errno.ENOSPC, 'No space left on device')
+        exc = OSError(errno.ENOSPC, 'No space left on device')
         err = transfer.error_from_oserror(exc, '/tmp/big')
         self.assertEqual(err.status, 507)
         self.assertIn('No space left', err.message)
@@ -102,7 +125,7 @@ class TestErrorMapping(unittest.TestCase):
     def test_unknown_errno_maps_to_400_rather_than_500(self):
         # A remote filesystem error is the user's own business; it should
         # never be reported as a WebSSH server fault.
-        exc = IOError(errno.EIO, 'Input/output error')
+        exc = OSError(errno.EIO, 'Input/output error')
         self.assertEqual(transfer.error_from_oserror(exc, '/x').status, 400)
 
 
@@ -205,12 +228,59 @@ class TestUpload(unittest.TestCase):
     def test_permission_denied_on_open_maps_to_403(self):
         class Denying(FakeSFTP):
             def open(self, path, mode='r', bufsize=-1):
-                raise IOError(errno.EACCES, 'Permission denied')
+                raise OSError(errno.EACCES, 'Permission denied')
 
         up = transfer.Upload(Denying(), '/root/x', 'x')
         with self.assertRaises(transfer.TransferError) as caught:
             up.open()
         self.assertEqual(caught.exception.status, 403)
+
+
+class TestUploadMakedirs(unittest.TestCase):
+
+    def test_creates_the_missing_directory_chain_privately(self):
+        # Pasted screenshots can be private, so every directory this makes
+        # is owner-only.
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': []})
+        up = transfer.Upload(sftp, '.cache/webssh-paste', 'shot.png',
+                             makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/.cache/webssh-paste/shot.png')
+        self.assertEqual(sftp.made, [('/home/fake/.cache', 0o700),
+                                     ('/home/fake/.cache/webssh-paste', 0o700)])
+
+    def test_leaves_an_existing_directory_alone(self):
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': [], '/home/fake/.cache': []})
+        up = transfer.Upload(sftp, '.cache', 'shot.png', makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/.cache/shot.png')
+        self.assertEqual(sftp.made, [])
+
+    def test_a_directory_created_concurrently_is_not_an_error(self):
+        class Racing(FakeSFTP):
+            def stat(self, path):
+                if path == '/home/fake/new' and path not in self.dirs:
+                    # Appears between our stat and our mkdir.
+                    self.dirs[path] = []
+                    raise OSError(errno.ENOENT, 'No such file')
+                return super().stat(path)
+
+        sftp = Racing(dirs={'/home': [], '/home/fake': []})
+        up = transfer.Upload(sftp, 'new', 'shot.png', makedirs=True)
+        self.assertEqual(up.open(), '/home/fake/new/shot.png')
+
+    def test_a_file_in_the_way_is_a_400(self):
+        sftp = FakeSFTP(dirs={'/home': [], '/home/fake': []},
+                        files={'/home/fake/.cache': b''})
+        up = transfer.Upload(sftp, '.cache/webssh-paste', 'shot.png',
+                             makedirs=True)
+        with self.assertRaises(transfer.TransferError) as caught:
+            up.open()
+        self.assertEqual(caught.exception.status, 400)
+
+    def test_without_makedirs_a_relative_path_is_untouched(self):
+        sftp = FakeSFTP()
+        up = transfer.Upload(sftp, 'out.txt', 'out.txt')
+        self.assertEqual(up.open(), 'out.txt')
+        self.assertEqual(sftp.made, [])
 
 
 class TestListDirectory(unittest.TestCase):
@@ -224,7 +294,7 @@ class TestListDirectory(unittest.TestCase):
 
         self.assertEqual(result['path'], '/var/log')
         self.assertFalse(result['truncated'])
-        by_name = dict((e['name'], e) for e in result['entries'])
+        by_name = {e['name']: e for e in result['entries']}
         self.assertEqual(by_name['syslog']['size'], 2100)
         self.assertFalse(by_name['syslog']['is_dir'])
         self.assertTrue(by_name['nginx']['is_dir'])
@@ -241,7 +311,7 @@ class TestListDirectory(unittest.TestCase):
 
     def test_caps_long_listings_and_reports_truncation(self):
         # /usr/bin must not produce a multi-megabyte JSON response.
-        entries = [FakeAttr('f{}'.format(i)) for i in range(transfer.MAX_LIST_ENTRIES + 50)]
+        entries = [FakeAttr(f'f{i}') for i in range(transfer.MAX_LIST_ENTRIES + 50)]
         sftp = FakeSFTP(dirs={'/usr/bin': entries})
         result = transfer.list_directory(sftp, '/usr/bin')
         self.assertEqual(len(result['entries']), transfer.MAX_LIST_ENTRIES)
@@ -250,6 +320,29 @@ class TestListDirectory(unittest.TestCase):
     def test_missing_directory_raises_404(self):
         with self.assertRaises(transfer.TransferError) as caught:
             transfer.list_directory(FakeSFTP(), '/nope')
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_reports_the_canonical_absolute_path(self):
+        # The client builds its '..' row and its remembered folder from the
+        # path it is told it listed, so '.' and '..' must not survive.
+        sftp = FakeSFTP(dirs={
+            '/var/log': [FakeAttr('syslog')],
+            '/home/fake': [FakeAttr('notes.txt')],
+        })
+        self.assertEqual(
+            transfer.list_directory(sftp, '/var/log/nginx/..')['path'],
+            '/var/log')
+        home = transfer.list_directory(sftp, '.')
+        self.assertEqual(home['path'], '/home/fake')
+        self.assertEqual([e['name'] for e in home['entries']], ['notes.txt'])
+
+    def test_unresolvable_path_raises_404(self):
+        class NoSuchPath(FakeSFTP):
+            def normalize(self, path):
+                raise OSError(errno.ENOENT, 'No such file')
+
+        with self.assertRaises(transfer.TransferError) as caught:
+            transfer.list_directory(NoSuchPath(), '/gone')
         self.assertEqual(caught.exception.status, 404)
 
 
@@ -280,7 +373,7 @@ class TestListDirectoryFilter(unittest.TestCase):
         # The regression that motivated server-side filtering: slicing the
         # first MAX_LIST_ENTRIES alphabetically and then filtering means a
         # match sorting past the cap can never be found.
-        entries = [FakeAttr('a{:05d}'.format(i))
+        entries = [FakeAttr(f'a{i:05d}')
                    for i in range(transfer.MAX_LIST_ENTRIES + 500)]
         entries.append(FakeAttr('zzz-needle.txt'))
         sftp = FakeSFTP(dirs={'/big': entries})
@@ -292,7 +385,7 @@ class TestListDirectoryFilter(unittest.TestCase):
         self.assertFalse(result['truncated'])
 
     def test_truncation_reports_when_matches_exceed_the_cap(self):
-        entries = [FakeAttr('match{:05d}'.format(i))
+        entries = [FakeAttr(f'match{i:05d}')
                    for i in range(transfer.MAX_LIST_ENTRIES + 10)]
         sftp = FakeSFTP(dirs={'/big': entries})
         result = transfer.list_directory(sftp, '/big', 'match')
@@ -322,14 +415,14 @@ class TestOpenSftp(unittest.TestCase):
     def test_returns_the_channel_when_the_connection_is_healthy(self):
         sentinel = FakeSFTP()
 
-        class Healthy(object):
+        class Healthy:
             def open_sftp(self):
                 return sentinel
 
         self.assertIs(transfer.open_sftp(Healthy()), sentinel)
 
     def test_a_dead_connection_becomes_a_410(self):
-        class Dead(object):
+        class Dead:
             def open_sftp(self):
                 raise EOFError()
 
@@ -340,7 +433,7 @@ class TestOpenSftp(unittest.TestCase):
     def test_the_410_message_does_not_leak_the_underlying_error(self):
         # Unlike remote filesystem errors, this one is about our own
         # connection state and says nothing useful to the user.
-        class Dead(object):
+        class Dead:
             def open_sftp(self):
                 raise paramiko.SSHException('/internal/detail channel 3 EOF')
 
@@ -373,7 +466,7 @@ class TestListDirectoryCapBoundary(unittest.TestCase):
     here would warn users about a cap that did not actually apply."""
 
     def listing_of(self, count):
-        entries = [FakeAttr('f{:05d}'.format(i)) for i in range(count)]
+        entries = [FakeAttr(f'f{i:05d}') for i in range(count)]
         return transfer.list_directory(FakeSFTP(dirs={'/d': entries}), '/d')
 
     def test_one_below_the_cap_is_not_truncated(self):

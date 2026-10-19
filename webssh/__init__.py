@@ -1,10 +1,10 @@
 import sys
-from webssh._version import __version__ as __version__, __version_info__ as __version_info__
 
+from webssh._version import __version__ as __version__
+from webssh._version import __version_info__ as __version_info__
 
 __author__ = 'Shengdun Hua <webmaster0115@gmail.com>'
 
-if sys.platform == 'win32' and sys.version_info.major == 3 and \
-        sys.version_info.minor >= 8:
+if sys.platform == 'win32' and sys.version_info >= (3, 8):
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

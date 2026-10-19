@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebSSH</title>
-    <link href="static/img/favicon.png" rel="icon" type="image/png">
-    <link href="static/css/xterm.min.css" rel="stylesheet" type="text/css"/>
-    <link href="static/css/fullscreen.min.css" rel="stylesheet" type="text/css"/>
-    <link href="static/css/main.css" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('img/favicon.png') }}" rel="icon" type="image/png">
+    <link href="{{ static_url('css/xterm.min.css') }}" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('css/fullscreen.min.css') }}" rel="stylesheet" type="text/css"/>
+    <link href="{{ static_url('css/main.css') }}" rel="stylesheet" type="text/css"/>
     {% if font.family %}
     <style>
       @font-face {
@@ -27,6 +27,7 @@
       <div id="tab-list"></div>
       <button id="new-tab-btn" type="button" title="New connection" aria-label="Open new connection tab">+</button>
       <button id="download-btn" type="button" title="Download file" aria-label="Download a file from the host">&#8595;</button>
+      <button id="upload-btn" type="button" title="Upload file" aria-label="Upload files to the host">&#8593;</button>
       {% if user_hosts_enabled and auth_username %}
       <button id="settings-btn" type="button" title="Settings" aria-label="Open settings">&#9881;&#xFE0E;</button>
       {% end %}
@@ -171,6 +172,10 @@
 
     <div class="container">
       <div id="status"></div>
+      <div id="auth-prompt" role="alert">
+        <span class="auth-prompt-text"></span>
+        <button type="button" class="auth-prompt-sign-in">Sign in</button>
+      </div>
       <div id="terminals-container"></div>
     </div>
 
@@ -186,25 +191,41 @@
         </div>
       </div>
     </div>
+    <div id="transfer-uploader">
+      <div class="picker-box">
+        <input type="text" class="picker-path" spellcheck="false" aria-label="Destination directory on the host">
+        <div class="picker-list"></div>
+        <div class="uploader-source">
+          <button type="button" class="uploader-browse">Browse&hellip;</button>
+          <span class="uploader-summary"></span>
+          <input type="file" class="uploader-files" multiple hidden>
+        </div>
+        <div class="picker-actions">
+          <button type="button" class="picker-cancel">Cancel</button>
+          <button type="button" class="picker-upload">Upload</button>
+        </div>
+      </div>
+    </div>
 
-    <script src="static/js/jquery.min.js"></script>
-    <script src="static/js/popper.min.js"></script>
-    <script src="static/js/bootstrap.min.js"></script>
-    <script src="static/js/xterm.min.js"></script>
-    <script src="static/js/xterm-addon-fit.min.js"></script>
-    <script src="static/js/xterm-addon-web-links.min.js"></script>
-    <script src="static/js/xterm-addon-clipboard.min.js"></script>
-    <script src="static/js/xterm-addon-webgl.min.js"></script>
+    <script src="{{ static_url('js/jquery.min.js') }}"></script>
+    <script src="{{ static_url('js/popper.min.js') }}"></script>
+    <script src="{{ static_url('js/bootstrap.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-fit.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-web-links.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-clipboard.min.js') }}"></script>
+    <script src="{{ static_url('js/xterm-addon-webgl.min.js') }}"></script>
     <script>
       var allowed_hosts_configured = {% if allowed_hosts or user_hosts %}true{% else %}false{% end %};
       var user_key_enabled = {% if user_key_enabled %}true{% else %}false{% end %};
       var has_stored_key = {% if has_stored_key %}true{% else %}false{% end %};
       var user_hosts_enabled = {% if user_hosts_enabled %}true{% else %}false{% end %};
-      var user_settings = {% raw json_encode(user_settings) %};
+      var user_settings = {% raw user_settings_json %};
     </script>
-    <script src="static/js/user-hosts.js"></script>
-    <script src="static/js/file-transfer.js"></script>
-    <script src="static/js/transfer-ui.js"></script>
-    <script src="static/js/main.js"></script>
+    <script src="{{ static_url('js/user-hosts.js') }}"></script>
+    <script src="{{ static_url('js/auth-refresh.js') }}"></script>
+    <script src="{{ static_url('js/file-transfer.js') }}"></script>
+    <script src="{{ static_url('js/transfer-ui.js') }}"></script>
+    <script src="{{ static_url('js/main.js') }}"></script>
   </body>
 </html>

@@ -85,15 +85,30 @@ test('build_host_payload omits port entirely when blank', function () {
             'a blank port must be absent, not null/0/NaN, so the server defaults it');
 });
 
-test('build_host_payload skips rows with a blank hostname', function () {
+test('build_host_payload skips a row that is entirely blank', function () {
   var out = hosts.build_host_payload([
     row({hostname: 'a.com'}),
-    row({name: 'half-filled', keys_text: 'ssh-ed25519 AAA'}),
+    row({}),
     row({hostname: 'b.com'})
   ]);
+  assert.strictEqual(out.error, null);
   assert.strictEqual(out.hosts.length, 2);
   assert.deepStrictEqual([out.hosts[0].hostname, out.hosts[1].hostname],
                          ['a.com', 'b.com']);
+});
+
+test('build_host_payload reports an error for a half-filled row instead of dropping it', function () {
+  // Regression: a row with data in it but no hostname used to be silently
+  // dropped on save, so a half-filled row would simply vanish with no
+  // feedback to the user.
+  var out = hosts.build_host_payload([
+    row({hostname: 'a.com'}),
+    row({name: 'half-filled', keys_text: 'ssh-ed25519 AAA'})
+  ]);
+  assert.strictEqual(out.hosts.length, 1);
+  assert.strictEqual(out.error_index, 1);
+  assert.strictEqual(out.error_field, 'host-hostname');
+  assert.ok(/Host name is required/.test(out.error));
 });
 
 test('build_host_payload reports an invalid port with the offending row index', function () {
@@ -211,6 +226,27 @@ test('roaming_update drops an unusable port instead of sending it', function () 
   assert.strictEqual(hosts.roaming_update('port', '0'), null);
 });
 
+test('resolve_encoding prefers a URL parameter over the stored setting', function () {
+  assert.strictEqual(
+    hosts.resolve_encoding({encoding: 'gbk'}, {encoding: 'utf-8'}), 'gbk');
+});
+
+test('resolve_encoding uses the stored setting when no URL parameter is given', function () {
+  // Regression: the stored Encoding field was saved and redisplayed but
+  // never consulted at connect time, so a user correcting a bad detection
+  // result (#68: a macOS server reports US-ASCII, which browsers decode as
+  // windows-1252) saw the setting silently ignored.
+  assert.strictEqual(hosts.resolve_encoding({}, {encoding: 'utf-8'}), 'utf-8');
+  assert.strictEqual(hosts.resolve_encoding({}, {encoding: '  utf-8  '}), 'utf-8');
+});
+
+test('resolve_encoding defers to the server when nothing is configured', function () {
+  // '' is the signal to keep the detected encoding, not an encoding name.
+  assert.strictEqual(hosts.resolve_encoding({}, {}), '');
+  assert.strictEqual(hosts.resolve_encoding({encoding: '   '}, {}), '');
+  assert.strictEqual(hosts.resolve_encoding(undefined, undefined), '');
+});
+
 test('resolve_terminal_options lets a URL parameter beat a stored value', function () {
   // Existing shared links carry ?fontsize= and ?bgcolor=; a stored
   // preference must never override an explicit URL parameter.
@@ -297,6 +333,16 @@ test('parse_command_key reads a legacy command key', function () {
 test('parse_command_key defaults a missing port to 22', function () {
   assert.deepStrictEqual(hosts.parse_command_key('command:nas.lan:'),
                          {hostname: 'nas.lan', port: 22});
+});
+
+test('parse_command_key keeps colons inside an IPv6 hostname', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:2001:db8::1:2222'),
+                         {hostname: '2001:db8::1', port: 2222});
+});
+
+test('parse_command_key defaults an IPv6 hostname with no port to 22', function () {
+  assert.deepStrictEqual(hosts.parse_command_key('command:::1:'),
+                         {hostname: '::1', port: 22});
 });
 
 test('parse_command_key ignores unrelated localStorage keys', function () {
@@ -498,4 +544,40 @@ test('HOST_ROW_KEYS stay in sync with main.js collect_host_rows', function () {
               'main.js no longer references row key "' + key + '"; ' +
               'collect_host_rows and build_host_payload have drifted apart');
   }
+});
+
+test('key_source_update accepts only the two valid directions', function () {
+  // Regression (post-#62): the connect form's key_source radio was never
+  // persisted, so "use my stored key" was forgotten on every reload while
+  // a stale 'upload' written by an untouched settings-pane select won.
+  assert.deepStrictEqual(hosts.key_source_update('stored'),
+                         {key: 'key_source', value: 'stored'});
+  assert.deepStrictEqual(hosts.key_source_update('upload'),
+                         {key: 'key_source', value: 'upload'});
+});
+
+test('key_source_update drops anything the server would reject', function () {
+  // validate_settings 400s on any value but 'stored'/'upload', and that
+  // 400 lands in a background PUT the user never sees.
+  assert.strictEqual(hosts.key_source_update(''), null);
+  assert.strictEqual(hosts.key_source_update(undefined), null);
+  assert.strictEqual(hosts.key_source_update(null), null);
+  assert.strictEqual(hosts.key_source_update('somewhere-else'), null);
+});
+
+test('default_key_source prefers a stored preference over the fallback', function () {
+  assert.strictEqual(hosts.default_key_source('stored', true), 'stored');
+  assert.strictEqual(hosts.default_key_source('upload', true), 'upload');
+  assert.strictEqual(hosts.default_key_source('stored', false), 'stored');
+});
+
+test('default_key_source falls back to the stored key when one exists', function () {
+  // Root cause of the regression: with no preference saved, the settings
+  // pane's select sat on its first option ('upload') and any save of that
+  // pane silently persisted 'upload' for a user whose actual connect-form
+  // choice was the stored key.
+  assert.strictEqual(hosts.default_key_source(undefined, true), 'stored');
+  assert.strictEqual(hosts.default_key_source('', true), 'stored');
+  assert.strictEqual(hosts.default_key_source(undefined, false), 'upload');
+  assert.strictEqual(hosts.default_key_source('bogus', false), 'upload');
 });

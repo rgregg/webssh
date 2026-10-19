@@ -1,7 +1,10 @@
 import logging
 import os.path
 import threading
+
 import paramiko
+
+logger = logging.getLogger(__name__)
 
 
 def load_host_keys(path):
@@ -26,12 +29,12 @@ def get_policy_class(policy):
         policy += 'policy'
 
     dic = get_policy_dictionary()
-    logging.debug(dic)
+    logger.debug(dic)
 
     try:
         cls = dic[policy]
     except KeyError:
-        raise ValueError('Unknown policy {!r}'.format(origin_policy))
+        raise ValueError(f'Unknown policy {origin_policy!r}')
     return cls
 
 
@@ -42,11 +45,11 @@ def check_policy_setting(policy_class, host_keys_settings):
 
     if policy_class is paramiko.client.AutoAddPolicy:
         host_keys.save(host_keys_filename)  # for permission test
-    elif policy_class is paramiko.client.RejectPolicy:
-        if not host_keys and not system_host_keys:
-            raise ValueError(
-                'Reject policy could not be used without host keys.'
-            )
+    elif (policy_class is paramiko.client.RejectPolicy
+            and not host_keys and not system_host_keys):
+        raise ValueError(
+            'Reject policy could not be used without host keys.'
+        )
 
 
 class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
@@ -70,17 +73,28 @@ class AutoAddPolicy(paramiko.client.MissingHostKeyPolicy):
         with self.lock:
             if self.is_missing_host_key(client, hostname, key):
                 keytype = key.get_name()
-                logging.info(
-                    'Adding {} host key for {}'.format(keytype, hostname)
+                logger.info(
+                    f'Adding {keytype} host key for {hostname}'
                 )
                 client._host_keys._entries.append(
                     paramiko.hostkeys.HostKeyEntry([hostname], key)
                 )
+                # A request that has user_hosts enabled gets its own copy
+                # of the process-wide host_keys store (see get_ssh_client's
+                # copy_host_keys), so this client's _host_keys is discarded
+                # once the request ends. Without also updating the shared
+                # store, the next connection to the same host would start
+                # from the same stale snapshot and re-append an identical
+                # line here, growing the file unboundedly. _shared_host_keys
+                # is only set by webssh's SSHClient wiring, hence getattr.
+                shared = getattr(client, '_shared_host_keys', None)
+                if shared is not None and shared is not client._host_keys:
+                    shared._entries.append(
+                        paramiko.hostkeys.HostKeyEntry([hostname], key)
+                    )
 
                 with open(client._host_keys_filename, 'a') as f:
-                    f.write('{} {} {}\n'.format(
-                        hostname, keytype, key.get_base64()
-                    ))
+                    f.write(f'{hostname} {keytype} {key.get_base64()}\n')
 
 
 paramiko.client.AutoAddPolicy = AutoAddPolicy

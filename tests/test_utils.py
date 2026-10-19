@@ -1,8 +1,18 @@
+import json
 import unittest
 
 from webssh.utils import (
-    is_valid_ip_address, is_valid_port, is_valid_hostname, to_str, to_bytes,
-    to_int, is_ip_hostname, is_same_primary_domain, parse_origin_from_url
+    is_ascii_encoding,
+    is_ip_hostname,
+    is_same_primary_domain,
+    is_valid_hostname,
+    is_valid_ip_address,
+    is_valid_port,
+    json_encode_for_script,
+    parse_origin_from_url,
+    to_bytes,
+    to_int,
+    to_str,
 )
 
 
@@ -10,13 +20,13 @@ class TestUitls(unittest.TestCase):
 
     def test_to_str(self):
         b = b'hello'
-        u = u'hello'
+        u = 'hello'
         self.assertEqual(to_str(b), u)
         self.assertEqual(to_str(u), u)
 
     def test_to_bytes(self):
         b = b'hello'
-        u = u'hello'
+        u = 'hello'
         self.assertEqual(to_bytes(b), b)
         self.assertEqual(to_bytes(u), b)
 
@@ -44,6 +54,18 @@ class TestUitls(unittest.TestCase):
         self.assertTrue(is_valid_port(80))
         self.assertFalse(is_valid_port(0))
         self.assertFalse(is_valid_port(65536))
+
+    def test_is_ascii_encoding(self):
+        # Every spelling the shells actually report, plus the aliases
+        # codecs resolves to the same codec.
+        self.assertTrue(is_ascii_encoding('US-ASCII'))
+        self.assertTrue(is_ascii_encoding('us-ascii'))
+        self.assertTrue(is_ascii_encoding('ANSI_X3.4-1968'))
+        self.assertTrue(is_ascii_encoding('ascii'))
+        self.assertFalse(is_ascii_encoding('UTF-8'))
+        self.assertFalse(is_ascii_encoding('GBK'))
+        self.assertFalse(is_ascii_encoding('unknown-encoding'))
+        self.assertFalse(is_ascii_encoding(''))
 
     def test_is_valid_hostname(self):
         self.assertTrue(is_valid_hostname('google.com'))
@@ -125,3 +147,28 @@ class TestUitls(unittest.TestCase):
 
         url = 'http://www.example.com:443'
         self.assertEqual(parse_origin_from_url(url), url)
+
+
+class TestJsonEncodeForScript(unittest.TestCase):
+
+    def test_round_trips_through_json(self):
+        value = {'last_hostname': 'nas.lan', 'font_size': 16}
+        encoded = json_encode_for_script(value)
+        self.assertEqual(json.loads(encoded), value)
+
+    def test_escapes_script_closing_tag(self):
+        value = {'last_username': '</script><script>alert(1)</script>'}
+        encoded = json_encode_for_script(value)
+        self.assertNotIn('</script>', encoded.lower())
+        self.assertEqual(json.loads(encoded), value)
+
+    def test_escapes_double_escape_trigger_sequence(self):
+        # A bare "<!--" followed by a case-insensitive "<script" switches
+        # the HTML tokenizer into "script data double escaped" state --
+        # confusing it even without a literal "</script>" anywhere in the
+        # payload.
+        value = {'last_hostname': '<!--<script>x'}
+        encoded = json_encode_for_script(value)
+        self.assertNotIn('<!--', encoded)
+        self.assertNotIn('<script', encoded.lower())
+        self.assertEqual(json.loads(encoded), value)

@@ -1,11 +1,15 @@
 {
   "name": "webssh-client-tests",
   "private": true,
-  "description": "Unit tests for the WebSSH browser client. No runtime dependencies.",
+  "description": "Unit tests for the WebSSH browser client. No runtime dependencies; Playwright is only for the opt-in browser tests.",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/js/*.test.js"
+    "test": "node --test tests/js/*.test.js",
+    "test:e2e": "scripts/run_e2e.sh"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
   }
 }

@@ -1,0 +1,530 @@
+'use strict';
+
+var test = require('node:test');
+var assert = require('node:assert');
+var fs = require('node:fs');
+var path = require('node:path');
+var vm = require('node:vm');
+
+var ft = require('../../webssh/static/js/file-transfer.js');
+
+// transfer-ui.js is a browser script, not a module: it needs jQuery, a tray
+// element and fetch. Rather than pull in a DOM library (this suite has no
+// dependencies by design), stub the handful of jQuery calls it actually
+// makes. Each fake node records what was done to it, which is all the
+// assertions below need.
+function fake_node() {
+  var node = {
+    children_list: [],
+    status_text: null,
+    handlers: {},
+    removed: false
+  };
+  node.append = function (child) {
+    node.children_list.push(child);
+    return node;
+  };
+  node.find = function (selector) {
+    if (selector === '.transfer-status') {
+      return {
+        text: function (value) {
+          if (value === undefined) {
+            return node.status_text;
+          }
+          node.status_text = value;
+          return this;
+        }
+      };
+    }
+    // .transfer-cancel, and the dialog parts the uploader reaches for. One
+    // shared stub: nothing here asserts on the dialog's internals, only
+    // that opening it does not send anything.
+    var child = {
+      0: {files: []},
+      off: function () {
+        return this;
+      },
+      on: function (event, fn) {
+        node.handlers[event] = fn;
+        return this;
+      },
+      remove: function () {
+        return this;
+      },
+      empty: function () {
+        return this;
+      },
+      append: function () {
+        return this;
+      },
+      val: function () {
+        return '';
+      },
+      text: function () {
+        return this;
+      },
+      prop: function () {
+        return this;
+      },
+      addClass: function () {
+        return this;
+      },
+      trigger: function () {
+        return this;
+      },
+      find: function () {
+        return this;
+      }
+    };
+    return child;
+  };
+  node.off = function () {
+    return node;
+  };
+  node.on = function (event, fn) {
+    // bind_drop registers several events in one call, as jQuery allows.
+    event.split(' ').forEach(function (name) {
+      node.handlers[name] = fn;
+    });
+    return node;
+  };
+  node.classes = [];
+  node.addClass = function (name) {
+    if (node.classes.indexOf(name) === -1) {
+      node.classes.push(name);
+    }
+    return node;
+  };
+  node.removeClass = function (name) {
+    var at = node.classes.indexOf(name);
+    if (at !== -1) {
+      node.classes.splice(at, 1);
+    }
+    return node;
+  };
+  node.children = function () {
+    return node.children_list;
+  };
+  node.remove = function () {
+    node.removed = true;
+    return node;
+  };
+  node.fadeOut = function (ms, fn) {
+    if (fn) {
+      fn();
+    }
+    return node;
+  };
+  node.text = function () {
+    return node;
+  };
+  return node;
+}
+
+function load_ui(fetch_impl, timers) {
+  var tray = fake_node();
+  var jq = function () {
+    return tray;
+  };
+  jq.each = function (list, fn) {
+    (list || []).forEach(function (item, i) {
+      fn(i, item);
+    });
+  };
+  // The uploader lists the destination directory as it opens. Nothing here
+  // depends on what comes back, so the request simply never settles.
+  jq.ajax = function () {
+    var chain = {
+      done: function () {
+        return chain;
+      },
+      fail: function () {
+        return chain;
+      }
+    };
+    return chain;
+  };
+  var sandbox = {
+    window: {
+      confirm: function () {
+        return false;
+      },
+      File: File,
+      wssh: {get_xsrf_token: function () {
+        return 'x';
+      }}
+    },
+    $: jq,
+    webssh_transfer: ft,
+    fetch: fetch_impl,
+    AbortController: AbortController,
+    setTimeout: timers ? timers.set : setTimeout,
+    clearTimeout: timers ? timers.clear : clearTimeout,
+    console: console
+  };
+  var src = fs.readFileSync(
+    path.join(__dirname, '../../webssh/static/js/transfer-ui.js'), 'utf8'
+  );
+  vm.runInNewContext(src, sandbox);
+  // `tray` doubles as every row: the stub returns one node for any
+  // selector, which is enough to read back the handler a row's cancel
+  // button currently carries.
+  return {ui: sandbox.webssh_transfer_ui, row: tray, window: sandbox.window};
+}
+
+// A fetch stub that never settles on its own: the test decides when each
+// upload completes, which is how concurrency is observed at all.
+function pending_fetch() {
+  var calls = [];
+  var impl = function (url, opts) {
+    var settle;
+    var promise = new Promise(function (resolve) {
+      settle = resolve;
+    });
+    calls.push({
+      url: url,
+      settle: settle,
+      signal: opts ? opts.signal : null
+    });
+    return promise;
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+// Collects timers instead of running them, so the 429 back-off is stepped
+// by the test rather than waited on.
+function fake_timers() {
+  var pending = [];
+  return {
+    set: function (fn, ms) {
+      var entry = {fn: fn, ms: ms, cancelled: false};
+      pending.push(entry);
+      return entry;
+    },
+    clear: function (entry) {
+      if (entry) {
+        entry.cancelled = true;
+      }
+    },
+    // Fires every timer set for `ms`, which is how the back-off is
+    // distinguished from finish_row's fade-out timer.
+    run: function (ms) {
+      var due = pending.filter(function (e) {
+        return e.ms === ms && !e.cancelled;
+      });
+      pending = pending.filter(function (e) {
+        return due.indexOf(e) === -1;
+      });
+      due.forEach(function (e) {
+        e.fn();
+      });
+      return due.length;
+    }
+  };
+}
+
+function busy_response() {
+  return {
+    ok: false,
+    status: 429,
+    json: function () {
+      return Promise.resolve({status: 'Too many transfers in progress.'});
+    }
+  };
+}
+
+function ok_response(bytes) {
+  return {
+    ok: true,
+    status: 200,
+    json: function () {
+      return Promise.resolve({bytes: bytes});
+    }
+  };
+}
+
+function files(n) {
+  var out = [];
+  for (var i = 0; i < n; i++) {
+    out.push({name: 'photo' + i + '.jpg'});
+  }
+  return out;
+}
+
+test('a drop of eight files uploads only three at a time', async function () {
+  // The reported bug: eight photos dropped at once, five refused with 429
+  // because the server caps a session at three concurrent transfers.
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  ui.start_batch('tab1', 'worker1', files(8), '/srv/photos');
+
+  assert.strictEqual(fetch_impl.calls.length, 3);
+
+  // Finishing one upload admits exactly one more, never the whole backlog.
+  fetch_impl.calls[0].settle(ok_response(10));
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(fetch_impl.calls.length, 4);
+
+  var seen = 3;
+  while (seen < 8) {
+    fetch_impl.calls[seen - 3 + 1].settle(ok_response(10));
+    /* eslint-disable no-await-in-loop */
+    await new Promise(function (r) {
+      setImmediate(r);
+    });
+    seen = fetch_impl.calls.length;
+  }
+
+  // All eight were eventually sent, each to the confirmed directory.
+  assert.strictEqual(fetch_impl.calls.length, 8);
+  assert.ok(fetch_impl.calls[7].url.indexOf('path=%2Fsrv%2Fphotos%2Fphoto7.jpg') !== -1);
+});
+
+test('queued uploads are not sent against a closed session', async function () {
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  ui.start_batch('tab1', 'worker1', files(8), '/srv/photos');
+  assert.strictEqual(fetch_impl.calls.length, 3);
+
+  ui.cancel_for_tab('tab1');
+  fetch_impl.calls[0].settle(ok_response(10));
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+
+  assert.strictEqual(fetch_impl.calls.length, 3);
+});
+
+test('a 429 frees the slot for the next queued file straight away', async function () {
+  var fetch_impl = pending_fetch();
+  var timers = fake_timers();
+  var ui = load_ui(fetch_impl, timers).ui;
+  ui.start_batch('tab1', 'worker1', files(5), '/srv/photos');
+  assert.strictEqual(fetch_impl.calls.length, 3);
+
+  // The server is busy with transfers this queue does not schedule (a
+  // download, say). The refused upload must not keep holding its slot.
+  fetch_impl.calls[0].settle(busy_response());
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(fetch_impl.calls.length, 4);
+});
+
+test('a 429 rejoins the queue instead of failing the file', async function () {
+  var fetch_impl = pending_fetch();
+  var timers = fake_timers();
+  var ui = load_ui(fetch_impl, timers).ui;
+  ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  assert.strictEqual(fetch_impl.calls.length, 1);
+
+  fetch_impl.calls[0].settle(busy_response());
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  // Nothing re-sent yet: it is waiting out the back-off, not spinning.
+  assert.strictEqual(fetch_impl.calls.length, 1);
+
+  assert.strictEqual(timers.run(1000), 1);
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(fetch_impl.calls.length, 2);
+  assert.strictEqual(
+    fetch_impl.calls[1].url,
+    fetch_impl.calls[0].url,
+    'the retry targets the same destination'
+  );
+
+  // And it keeps waiting for as long as the server stays busy, rather than
+  // spending a fixed number of tries and giving up.
+  var round;
+  for (round = 0; round < 20; round++) {
+    fetch_impl.calls[fetch_impl.calls.length - 1].settle(busy_response());
+    /* eslint-disable no-await-in-loop */
+    await new Promise(function (r) {
+      setImmediate(r);
+    });
+    timers.run(1000);
+    await new Promise(function (r) {
+      setImmediate(r);
+    });
+  }
+  assert.strictEqual(fetch_impl.calls.length, 22);
+
+  fetch_impl.calls[21].settle(ok_response(10));
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(fetch_impl.calls.length, 22);
+});
+
+test('closing the tab stops an upload waiting out a 429', async function () {
+  var fetch_impl = pending_fetch();
+  var timers = fake_timers();
+  var ui = load_ui(fetch_impl, timers).ui;
+  ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+
+  fetch_impl.calls[0].settle(busy_response());
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+
+  // Between the 429 and its return to the queue this transfer is in neither
+  // `active` nor the queue, so it has to be cancelled on its own.
+  ui.cancel_for_tab('tab1');
+  timers.run(1000);
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(fetch_impl.calls.length, 1);
+});
+
+test('cancelling a row that started immediately aborts its request', function () {
+  // The first three files in a drop start synchronously inside push(), so
+  // their cancel button is bound to the AbortController and must not be
+  // rebound to a queue cancellation that can no longer apply.
+  var fetch_impl = pending_fetch();
+  var loaded = load_ui(fetch_impl);
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  assert.strictEqual(fetch_impl.calls.length, 1);
+
+  loaded.row.handlers.click();
+  assert.strictEqual(fetch_impl.calls[0].signal.aborted, true);
+});
+
+test('closing the tab stops every upload waiting out a 429', async function () {
+  var fetch_impl = pending_fetch();
+  var timers = fake_timers();
+  var loaded = load_ui(fetch_impl, timers);
+  loaded.ui.start_batch('tab1', 'worker1', files(3), '/srv/photos');
+  assert.strictEqual(fetch_impl.calls.length, 3);
+
+  var i;
+  for (i = 0; i < 3; i++) {
+    fetch_impl.calls[i].settle(busy_response());
+  }
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+
+  loaded.ui.cancel_for_tab('tab1');
+  timers.run(1000);
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  // Every waiting transfer must be dropped, not just the first: a survivor
+  // re-enqueues against a worker the user has already closed.
+  assert.strictEqual(fetch_impl.calls.length, 3);
+});
+
+test('a drop stages the files in the uploader instead of uploading them', function () {
+  // Drops used to confirm the directory with window.prompt and upload
+  // straight away. They now open the same dialog the toolbar button does,
+  // so nothing is sent until the user confirms the destination.
+  var fetch_impl = pending_fetch();
+  var loaded = load_ui(fetch_impl);
+  var el = fake_node();
+  loaded.ui.bind_drop(el, 'tab1', 'worker1');
+
+  el.handlers['drop.transfer']({
+    preventDefault: function () {},
+    originalEvent: {dataTransfer: {files: files(2)}}
+  });
+
+  assert.strictEqual(fetch_impl.calls.length, 0);
+  // `tray` doubles as every element the stub hands out, the dialog included.
+  assert.ok(loaded.row.classes.indexOf('visible') !== -1);
+});
+
+test('an upload network error asks main.js to check the sign-in', async function () {
+  // A lapsed auth-proxy session looks like a network error to fetch: the
+  // redirect to the identity provider is blocked cross-origin.
+  var checks = 0;
+  var loaded = load_ui(function () {
+    return Promise.reject(new TypeError('Failed to fetch'));
+  });
+  loaded.window.wssh.check_auth = function () {
+    checks += 1;
+  };
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(checks, 1);
+});
+
+test('a cancelled upload does not check the sign-in', async function () {
+  var checks = 0;
+  var loaded = load_ui(function () {
+    var err = new Error('aborted');
+    err.name = 'AbortError';
+    return Promise.reject(err);
+  });
+  loaded.window.wssh.check_auth = function () {
+    checks += 1;
+  };
+  loaded.ui.start_batch('tab1', 'worker1', files(1), '/srv/photos');
+  await new Promise(function (r) {
+    setImmediate(r);
+  });
+  assert.strictEqual(checks, 0);
+});
+
+function flush() {
+  return new Promise(function (resolve) {
+    setImmediate(resolve);
+  });
+}
+
+test('a pasted image uploads into the paste folder and reports its path', async function () {
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  var pasted = [];
+  var image = new Blob(['png'], {type: 'image/png'});
+
+  ui.paste_image('t1', 'w1', image, function (p) {
+    pasted.push(p);
+  });
+
+  assert.strictEqual(fetch_impl.calls.length, 1);
+  var url = fetch_impl.calls[0].url;
+  assert.ok(url.indexOf('path=.cache%2Fwebssh-paste') !== -1, url);
+  assert.ok(url.indexOf('mkdir=true') !== -1, url);
+  assert.ok(/filename=paste-\d{8}-\d{6}-\d{3}\.png/.test(url), url);
+
+  fetch_impl.calls[0].settle({
+    ok: true,
+    status: 200,
+    json: function () {
+      return Promise.resolve({bytes: 3, path: '/home/r/.cache/webssh-paste/p.png'});
+    }
+  });
+  await flush();
+  await flush();
+  assert.deepStrictEqual(pasted, ['/home/r/.cache/webssh-paste/p.png']);
+});
+
+test('a failed image paste types nothing', async function () {
+  var fetch_impl = pending_fetch();
+  var ui = load_ui(fetch_impl).ui;
+  var pasted = [];
+
+  ui.paste_image('t1', 'w1', new Blob(['png'], {type: 'image/png'}),
+                 function (p) {
+                   pasted.push(p);
+                 });
+  fetch_impl.calls[0].settle({
+    ok: false,
+    status: 403,
+    json: function () {
+      return Promise.resolve({status: 'Permission denied'});
+    }
+  });
+  await flush();
+  await flush();
+  assert.deepStrictEqual(pasted, []);
+});

@@ -3,34 +3,46 @@ import io
 import json
 import logging
 import posixpath
-import socket
 import struct
 import time
 import traceback
 import weakref
+from concurrent.futures import ThreadPoolExecutor
+from typing import ClassVar
+from urllib.parse import quote
+
 import paramiko
 import tornado.gen
 import tornado.web
-
-from concurrent.futures import ThreadPoolExecutor
 from tornado.ioloop import IOLoop
 from tornado.options import options
 from tornado.process import cpu_count
-from urllib.parse import quote
+
+from webssh import transfer, user_data, user_keys
+from webssh import worker as worker_module
+from webssh._version import __version__
+from webssh.settings import max_upload_size
 from webssh.utils import (
-    is_valid_ip_address, is_valid_port, is_valid_hostname, to_bytes, to_str,
-    to_int, to_ip_address, UnicodeType, is_ip_hostname, is_same_primary_domain,
-    is_valid_encoding
+    UnicodeType,
+    is_ascii_encoding,
+    is_ip_hostname,
+    is_same_primary_domain,
+    is_valid_encoding,
+    is_valid_hostname,
+    is_valid_ip_address,
+    is_valid_port,
+    json_encode_for_script,
+    to_bytes,
+    to_int,
+    to_ip_address,
+    to_str,
 )
 from webssh.worker import (
-    Worker, recycle_worker, clients, register_live_worker  # noqa
+    Worker,
+    clients,
+    recycle_worker,
+    register_live_worker,
 )
-from webssh import worker as worker_module
-from webssh.settings import max_upload_size
-from webssh import transfer
-from webssh import user_data
-from webssh import user_keys
-from webssh._version import __version__
 
 try:
     from json.decoder import JSONDecodeError
@@ -43,7 +55,14 @@ except ImportError:
     from urlparse import urlparse
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_PORT = 22
+
+# Seconds allowed for each `locale charmap` probe. A login shell over SSH
+# can be slow to source its profile, and a probe that times out costs the
+# session its detected encoding.
+ENCODING_TIMEOUT = 3
 
 swallow_http_errors = True
 redirecting = None
@@ -52,12 +71,36 @@ redirecting = None
 # once when the shell starts, then scrubbed from the screen and from bash
 # history. Kept to a single line: a partially delivered multi-line snippet
 # would strand the shell at a continuation prompt.
+#
+# The emitter lives in an exported variable rather than a shell function so
+# that shells tmux spawns later -- which never see anything we typed at the
+# login shell -- still inherit it through the environment. Inside tmux the
+# OSC 7 also has to travel in a DCS passthrough (ESC P tmux; ... ESC \\) with
+# its own escapes doubled, because tmux consumes a bare OSC 7 to maintain
+# pane_current_path and never forwards it upstream. Passthrough is off by
+# default, so the emitter turns it on for its pane the first time it runs.
+# ${HOSTNAME:-${HOST:-}} covers both shells: bash sets the former, zsh the
+# latter. Every expansion carries a default because a user's rc file may have
+# set -u, under which a bare $TMUX or $ZSH_VERSION aborts the emitter and
+# prints "unbound variable" at every prompt instead of reporting a directory.
+_OSC7_PLAIN = (
+    r'printf "\033]7;file://%s%s\033\\\\" "${HOSTNAME:-${HOST:-}}" "$PWD"'
+)
+_OSC7_TMUX = (
+    r'printf "\033Ptmux;\033\033]7;file://%s%s\033\033\\\\\033\\\\"'
+    r' "${HOSTNAME:-${HOST:-}}" "$PWD"'
+)
+
 SHELL_INTEGRATION_SNIPPET = (
-    ' if [ -n "$ZSH_VERSION" ]; then '
-    'precmd() { printf "\\033]7;file://%s%s\\033\\\\" "$HOST" "$PWD"; }; '
-    'elif [ -n "$BASH_VERSION" ]; then '
-    'PROMPT_COMMAND=\'printf "\\033]7;file://%s%s\\033\\\\" "$HOSTNAME" "$PWD"\'; '
-    'fi; clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
+    " _WEBSSH_OSC7='if [ -n \"${TMUX:-}\" ]; then "
+    '[ -n "${_WEBSSH_PT:-}" ] || '
+    '{ tmux set -p allow-passthrough on >/dev/null 2>&1; _WEBSSH_PT=1; }; '
+    + _OSC7_TMUX + '; else ' + _OSC7_PLAIN + "; fi'; "
+    'export _WEBSSH_OSC7; '
+    'PROMPT_COMMAND=\'eval "$_WEBSSH_OSC7"\'; export PROMPT_COMMAND; '
+    'if [ -n "${ZSH_VERSION:-}" ]; then precmd() { eval "$_WEBSSH_OSC7"; }; '
+    'fi; '
+    'clear; history -d $((HISTCMD-1)) 2>/dev/null || true\n'
 )
 
 
@@ -76,7 +119,7 @@ class SSHClient(paramiko.SSHClient):
             elif prompt.startswith('verification'):
                 answers.append(self.totp)
             else:
-                raise ValueError('Unknown prompt: {}'.format(prompt_))
+                raise ValueError(f'Unknown prompt: {prompt_}')
         return answers
 
     def auth_interactive(self, username, handler):
@@ -92,7 +135,7 @@ class SSHClient(paramiko.SSHClient):
         two_factor_types = {'keyboard-interactive', 'password'}
 
         if pkey is not None:
-            logging.info('Trying publickey authentication')
+            logger.info('Trying publickey authentication')
             try:
                 allowed_types = set(
                     self._transport.auth_publickey(username, pkey)
@@ -104,11 +147,11 @@ class SSHClient(paramiko.SSHClient):
                 saved_exception = e
 
         if two_factor:
-            logging.info('Trying publickey 2fa')
+            logger.info('Trying publickey 2fa')
             return self.auth_interactive(username, self.handler)
 
         if password is not None:
-            logging.info('Trying password authentication')
+            logger.info('Trying password authentication')
             try:
                 self._transport.auth_password(username, password)
                 return
@@ -118,18 +161,18 @@ class SSHClient(paramiko.SSHClient):
                 two_factor = allowed_types & two_factor_types
 
         if two_factor:
-            logging.info('Trying password 2fa')
+            logger.info('Trying password 2fa')
             return self.auth_interactive(username, self.handler)
 
         assert saved_exception is not None
         raise saved_exception
 
 
-class PrivateKey(object):
+class PrivateKey:
 
     max_length = 16384  # rough number
 
-    tag_to_name = {
+    tag_to_name: ClassVar[dict] = {
         'RSA': 'RSA',
         'EC': 'ECDSA',
         'OPENSSH': 'Ed25519'
@@ -164,9 +207,9 @@ class PrivateKey(object):
 
     def get_specific_pkey(self, name, offset, password):
         self.iostr.seek(offset)
-        logging.debug('Reset offset to {}.'.format(offset))
+        logger.debug(f'Reset offset to {offset}.')
 
-        logging.debug('Try parsing it as {} type key'.format(name))
+        logger.debug(f'Try parsing it as {name} type key')
         pkeycls = getattr(paramiko, name+'Key')
         pkey = None
 
@@ -176,15 +219,15 @@ class PrivateKey(object):
             raise InvalidValueError('Need a passphrase to decrypt the key.')
         except (paramiko.SSHException, ValueError) as exc:
             self.last_exception = exc
-            logging.debug(str(exc))
+            logger.debug(str(exc))
 
         return pkey
 
     def get_pkey_obj(self):
-        logging.info('Parsing private key {!r}'.format(self.filename))
+        logger.info(f'Parsing private key {self.filename!r}')
         name, length = self.parse_name(self.iostr, self.tag_to_name)
         if not name:
-            raise InvalidValueError('Invalid key {}.'.format(self.filename))
+            raise InvalidValueError(f'Invalid key {self.filename}.')
 
         offset = self.iostr.tell() - length
         password = to_bytes(self.password) if self.password else None
@@ -199,16 +242,16 @@ class PrivateKey(object):
         if pkey:
             return pkey
 
-        logging.error(str(self.last_exception))
+        logger.error(str(self.last_exception))
         msg = 'Invalid key'
         if self.password:
             msg += ' or wrong passphrase for decrypting it.'
         raise InvalidValueError(msg)
 
 
-class MixinHandler(object):
+class MixinHandler:
 
-    custom_headers = {
+    custom_headers: ClassVar[dict] = {
         'Server': 'TornadoServer'
     }
 
@@ -266,10 +309,10 @@ class MixinHandler(object):
 
         parsed_origin = urlparse(origin)
         netloc = parsed_origin.netloc.lower()
-        logging.debug('netloc: {}'.format(netloc))
+        logger.debug(f'netloc: {netloc}')
 
         host = self.request.headers.get('Host')
-        logging.debug('host: {}'.format(host))
+        logger.debug(f'host: {host}')
 
         if netloc == host:
             return True
@@ -289,8 +332,8 @@ class MixinHandler(object):
         ip_address = None
 
         if lst and ip not in lst:
-            logging.warning(
-                'IP {!r} not found in trusted downstream {!r}'.format(ip, lst)
+            logger.warning(
+                f'IP {ip!r} not found in trusted downstream {lst!r}'
             )
             self._untrusted_ip = ip
             return True
@@ -306,12 +349,12 @@ class MixinHandler(object):
                 if ip_address is None:
                     ip_address = to_ip_address(ip)
                 if not ip_address.is_private:
-                    logging.warning('Public plain http request is forbidden.')
+                    logger.warning('Public plain http request is forbidden.')
                     return True
 
     def get_redirect_url(self, hostname, port, uri):
-        port = '' if port == 443 else ':%s' % port
-        return 'https://{}{}{}'.format(hostname, port, uri)
+        port = '' if port == 443 else f':{port}'
+        return f'https://{hostname}{port}{uri}'
 
     def set_default_headers(self):
         for header in self.custom_headers.items():
@@ -320,7 +363,7 @@ class MixinHandler(object):
     def get_value(self, name):
         value = self.get_argument(name)
         if not value:
-            raise InvalidValueError('Missing value {}'.format(name))
+            raise InvalidValueError(f'Missing value {name}')
         return value
 
     def get_context_addr(self):
@@ -354,7 +397,7 @@ class MixinHandler(object):
 class NotFoundHandler(MixinHandler, tornado.web.ErrorHandler):
 
     def initialize(self):
-        super(NotFoundHandler, self).initialize()
+        super().initialize()
 
     def prepare(self):
         raise tornado.web.HTTPError(404)
@@ -364,11 +407,25 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     executor = ThreadPoolExecutor(max_workers=cpu_count()*5)
 
+    def static_url(self, path, include_host=None, **kwargs):
+        """Versioned, but relative like the rest of the page's URLs.
+
+        The ?v= content hash gives every changed asset a new URL on
+        deploy, so browsers never keep running stale JS. Tornado's own
+        URL is absolute (/static/...), which would break a deployment
+        mounted under a path prefix.
+        """
+        url = super().static_url(path, include_host=False, **kwargs)
+        return url.lstrip('/')
+
+    # Per-request cache for get_effective_hosts. See its comment.
+    _effective_hosts = None
+
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
                    user_key_dir='', user_header='X-Authentik-Username',
                    user_data_dir='', user_hosts_enabled=False,
                    live_config=None):
-        super(IndexHandler, self).initialize(loop)
+        super().initialize(loop)
         self.live_config = live_config if live_config is not None else {}
         self.policy = self.live_config.get('policy', policy)
         self.host_keys_settings = self.live_config.get(
@@ -382,7 +439,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
-        self.result = dict(id=None, status=None, encoding=None)
+        self.result = {'id': None, 'status': None, 'encoding': None}
 
     def write_error(self, status_code, **kwargs):
         if swallow_http_errors and self.request.method == 'POST':
@@ -395,12 +452,13 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             self.set_status(200)
             self.finish(self.result)
         else:
-            super(IndexHandler, self).write_error(status_code, **kwargs)
+            super().write_error(status_code, **kwargs)
 
     def get_ssh_client(self):
         ssh = SSHClient()
         ssh._system_host_keys = self.host_keys_settings['system_host_keys']
-        host_keys = self.host_keys_settings['host_keys']
+        shared_host_keys = self.host_keys_settings['host_keys']
+        host_keys = shared_host_keys
         if self.user_hosts_enabled:
             # User-supplied host entries can contribute host key pins, and
             # paramiko's HostKeys.add() mutates the store in place (replacing
@@ -411,8 +469,15 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             # copy: new HostKeys, new HostKeyEntry objects, new hostname
             # lists. The PKey objects themselves are never mutated, only
             # rebound, so they can be shared.
-            host_keys = self.copy_host_keys(host_keys)
+            host_keys = self.copy_host_keys(shared_host_keys)
         ssh._host_keys = host_keys
+        # AutoAddPolicy also mirrors newly learned keys here, so a host
+        # learned via one request's (possibly copied) _host_keys is
+        # already known to the next request's copy, instead of being
+        # re-added -- and re-appended to the known_hosts file -- every
+        # time, since the request-scoped copy above is otherwise discarded
+        # once the request ends.
+        ssh._shared_host_keys = shared_host_keys
         ssh._host_keys_filename = self.host_keys_settings['host_keys_filename']
         ssh.set_missing_host_key_policy(self.policy)
         return ssh
@@ -438,7 +503,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             value = self.decode_argument(data, name=name).strip()
         else:
             # urlencoded form
-            value = self.get_argument(name, u'')
+            value = self.get_argument(name, '')
             filename = ''
 
         return value, filename
@@ -446,28 +511,27 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def get_hostname(self):
         value = self.get_value('hostname')
         if not (is_valid_hostname(value) or is_valid_ip_address(value)):
-            raise InvalidValueError('Invalid hostname: {}'.format(value))
+            raise InvalidValueError(f'Invalid hostname: {value}')
         return value
 
     def get_port(self):
-        value = self.get_argument('port', u'')
+        value = self.get_argument('port', '')
         if not value:
             return DEFAULT_PORT
 
         port = to_int(value)
         if port is None or not is_valid_port(port):
-            raise InvalidValueError('Invalid port: {}'.format(value))
+            raise InvalidValueError(f'Invalid port: {value}')
         return port
 
     def lookup_hostname(self, hostname, port):
-        key = hostname if port == 22 else '[{}]:{}'.format(hostname, port)
+        key = hostname if port == 22 else f'[{hostname}]:{port}'
 
-        if self.ssh_client._system_host_keys.lookup(key) is None:
-            if self.ssh_client._host_keys.lookup(key) is None:
-                raise tornado.web.HTTPError(
-                        403, 'Connection to {}:{} is not allowed.'.format(
-                            hostname, port)
-                    )
+        if (self.ssh_client._system_host_keys.lookup(key) is None
+                and self.ssh_client._host_keys.lookup(key) is None):
+            raise tornado.web.HTTPError(
+                    403, f'Connection to {hostname}:{port} is not allowed.'
+                )
 
     def get_user_hosts(self):
         if not self.user_hosts_enabled or not self.user_data_dir:
@@ -481,22 +545,31 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             return []
 
     def get_effective_hosts(self):
+        # Memoized per request. A connect POST asks twice -- once for the
+        # allowlist check, once for host-key pinning -- and each miss
+        # re-reads and re-parses hosts.json from disk, synchronously on
+        # the IOLoop thread. Tornado builds a handler per request, so an
+        # instance attribute is per-request by construction.
+        if self._effective_hosts is not None:
+            return self._effective_hosts
+
         admin = self.allowed_hosts
-        seen = set((h['hostname'], h['port']) for h in admin)
+        seen = {(h['hostname'], h['port']) for h in admin}
         merged = list(admin)
         for host in self.get_user_hosts():
             if not isinstance(host, dict):
-                logging.warning(
-                    'Skipping malformed user host entry: {!r}'.format(host))
+                logger.warning(
+                    f'Skipping malformed user host entry: {host!r}')
                 continue
             hostname = host.get('hostname')
             port = host.get('port')
             if hostname is None or port is None:
-                logging.warning(
-                    'Skipping malformed user host entry: {!r}'.format(host))
+                logger.warning(
+                    f'Skipping malformed user host entry: {host!r}')
                 continue
             if (hostname, port) not in seen:
                 merged.append(host)
+        self._effective_hosts = merged
         return merged
 
     def check_allowed_hosts(self, hostname, port):
@@ -506,7 +579,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             if host['hostname'] == hostname and host['port'] == port:
                 return
         raise tornado.web.HTTPError(
-            403, 'Connection to {}:{} is not allowed.'.format(hostname, port)
+            403, f'Connection to {hostname}:{port} is not allowed.'
         )
 
     def load_configured_host_key(self, hostname, port):
@@ -539,23 +612,22 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         if port == 22:
             host_entry = hostname
         else:
-            host_entry = '[{}]:{}'.format(hostname, port)
+            host_entry = f'[{hostname}]:{port}'
 
         self.ssh_client._host_keys.add(host_entry, key_type, key)
-        logging.debug(
-            'Loaded configured host key ({}) for {}'.format(
-                key_type, host_entry)
+        logger.debug(
+            f'Loaded configured host key ({key_type}) for {host_entry}'
         )
 
     def get_args(self):
         hostname = self.get_hostname()
         port = self.get_port()
         username = self.get_value('username')
-        password = self.get_argument('password', u'')
-        passphrase = self.get_argument('passphrase', u'')
-        totp = self.get_argument('totp', u'')
+        password = self.get_argument('password', '')
+        passphrase = self.get_argument('passphrase', '')
+        totp = self.get_argument('totp', '')
 
-        key_source = self.get_argument('key_source', u'')
+        key_source = self.get_argument('key_source', '')
 
         if key_source == 'stored' and self.user_key_dir:
             auth_username = self.request.headers.get(self.user_header, '')
@@ -588,7 +660,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
         self.ssh_client.totp = totp
         args = (hostname, port, username, password, pkey)
-        logging.debug((hostname, port, username))
+        logger.debug((hostname, port, username))
 
         return args
 
@@ -596,6 +668,17 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             encoding = to_str(data.strip(), 'ascii')
         except UnicodeDecodeError:
+            return
+
+        if is_ascii_encoding(encoding):
+            # A shell that reports plain ASCII has told us nothing useful:
+            # it is what an interactive-but-not-login shell reports when
+            # the locale is only exported from a login profile, which is
+            # the default on macOS. Worse, browsers treat 'us-ascii' as a
+            # label for windows-1252, so honouring it mangles every
+            # multi-byte character the terminal emits. UTF-8 is a superset
+            # of ASCII, so falling back costs a true ASCII server nothing.
+            logger.debug(f'Ignoring uninformative encoding {encoding!r}.')
             return
 
         if is_valid_encoding(encoding):
@@ -611,32 +694,35 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             try:
                 _, stdout, _ = ssh.exec_command(command,
                                                 get_pty=True,
-                                                timeout=1)
+                                                timeout=ENCODING_TIMEOUT)
             except paramiko.SSHException as exc:
-                logging.info(str(exc))
+                logger.info(f'{command!r} failed: {exc}')
             else:
                 try:
                     data = stdout.read()
-                except socket.timeout:
-                    pass
+                except TimeoutError:
+                    logger.info(
+                        f'{command!r} timed out after {ENCODING_TIMEOUT}s.'
+                    )
                 else:
-                    logging.debug('{!r} => {!r}'.format(command, data))
+                    logger.debug(f'{command!r} => {data!r}')
                     result = self.parse_encoding(data)
                     if result:
                         return result
+                    logger.info(f'{command!r} gave no usable encoding.')
 
-        logging.warning('Could not detect the default encoding.')
+        logger.warning('Could not detect the default encoding.')
         return 'utf-8'
 
     def ssh_connect(self, args):
         ssh = self.ssh_client
         dst_addr = args[:2]
-        logging.info('Connecting to {}:{}'.format(*dst_addr))
+        logger.info(f'Connecting to {dst_addr[0]}:{dst_addr[1]}')
 
         try:
             ssh.connect(*args, timeout=options.timeout)
-        except socket.error:
-            raise ValueError('Unable to connect to {}:{}'.format(*dst_addr))
+        except OSError:
+            raise ValueError(f'Unable to connect to {dst_addr[0]}:{dst_addr[1]}')
         except paramiko.BadAuthenticationType:
             raise ValueError('Bad authentication type.')
         except paramiko.AuthenticationException:
@@ -648,7 +734,7 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         if transport:
             transport.set_keepalive(30)
 
-        term = self.get_argument('term', u'') or u'xterm'
+        term = self.get_argument('term', '') or 'xterm'
         chan = ssh.invoke_shell(term=term)
         chan.setblocking(0)
         worker = Worker(self.loop, ssh, chan, dst_addr)
@@ -658,24 +744,24 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         if options.shell_integration:
             try:
                 chan.sendall(SHELL_INTEGRATION_SNIPPET)
-            except (OSError, IOError, EOFError) as exc:
+            except (OSError, EOFError) as exc:
                 # Never let this cost the user their session: the path box
                 # is always available as a fallback. paramiko raises EOFError
                 # (not an OSError) when the transport is already gone, e.g.
                 # the remote end closed the connection right after the shell
                 # was invoked.
-                logging.warning(
-                    'Shell integration not sent: {}'.format(exc))
+                logger.warning(
+                    f'Shell integration not sent: {exc}')
 
         return worker
 
     def check_origin(self):
-        event_origin = self.get_argument('_origin', u'')
+        event_origin = self.get_argument('_origin', '')
         header_origin = self.request.headers.get('Origin')
         origin = event_origin or header_origin
 
         if origin:
-            if not super(IndexHandler, self).check_origin(origin):
+            if not super().check_origin(origin):
                 raise tornado.web.HTTPError(
                     403, 'Cross origin operation is not allowed.'
                 )
@@ -723,12 +809,12 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                     auth_username=auth_username,
                     user_hosts_enabled=self.user_hosts_enabled,
                     user_hosts=user_hosts,
-                    user_settings=user_settings,
+                    user_settings_json=json_encode_for_script(user_settings),
                     version=__version__)
 
     @tornado.gen.coroutine
     def post(self):
-        if self.debug and self.get_argument('error', u''):
+        if self.debug and self.get_argument('error', ''):
             # for testing purpose only
             raise ValueError('Uncaught exception')
 
@@ -749,8 +835,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             worker = yield future
         except (ValueError, paramiko.SSHException) as exc:
-            logging.warning('SSH connection failed: {}'.format(exc))
-            logging.debug(traceback.format_exc())
+            logger.warning(f'SSH connection failed: {exc}')
+            logger.debug(traceback.format_exc())
             self.result.update(status=str(exc))
         else:
             if not workers:
@@ -768,7 +854,7 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
     executor = ThreadPoolExecutor(max_workers=4)
 
     def initialize(self, loop, user_key_dir, user_header):
-        super(UserKeyHandler, self).initialize(loop)
+        super().initialize(loop)
         self.user_key_dir = user_key_dir
         self.user_header = user_header
 
@@ -801,7 +887,7 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         try:
             public_key = yield future
         except Exception:
-            logging.exception('Failed to generate key pair for user %s', username)
+            logger.exception('Failed to generate key pair for user %s', username)
             self.set_status(500)
             self.write({'error': 'Failed to generate key pair.'})
             return
@@ -812,11 +898,11 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
         })
 
 
-class UserDataMixin(object):
+class UserDataMixin:
 
     def initialize(self, loop, user_data_dir, user_header,
                    user_hosts_enabled, allowed_hosts=None, live_config=None):
-        super(UserDataMixin, self).initialize(loop)
+        super().initialize(loop)
         self.user_data_dir = user_data_dir
         self.user_header = user_header
         self.user_hosts_enabled = user_hosts_enabled
@@ -828,7 +914,9 @@ class UserDataMixin(object):
         return self.live_config.get('allowed_hosts', self._allowed_hosts) or []
 
     def check_feature_enabled(self):
-        if not self.user_hosts_enabled or not self.user_data_dir:
+        # user_hosts_enabled already ANDs in user_data_dir (see main.py's
+        # make_handlers), so checking user_data_dir again here is dead.
+        if not self.user_hosts_enabled:
             raise tornado.web.HTTPError(
                 403, 'User host management is not enabled.')
 
@@ -851,7 +939,7 @@ class UserDataMixin(object):
             raise tornado.web.HTTPError(400, 'Body must be a JSON object.')
         if key not in data:
             raise tornado.web.HTTPError(
-                400, 'Missing "{}" key.'.format(key))
+                400, f'Missing "{key}" key.')
         return data[key]
 
     def write_error(self, status_code, **kwargs):
@@ -892,9 +980,8 @@ class UserHostsHandler(UserDataMixin, MixinHandler,
         try:
             stored = user_data.write_hosts(self.user_data_dir, username, hosts)
         except ValueError as exc:
-            logging.error(
-                'Failed to write hosts for user {!r}: {}'.format(
-                    username, exc))
+            logger.error(
+                f'Failed to write hosts for user {username!r}: {exc}')
             raise tornado.web.HTTPError(500, 'Failed to save hosts.')
         self.write({'user_hosts': stored})
 
@@ -926,9 +1013,8 @@ class UserSettingsHandler(UserDataMixin, MixinHandler,
             stored = user_data.write_settings(
                 self.user_data_dir, username, settings)
         except ValueError as exc:
-            logging.error(
-                'Failed to write settings for user {!r}: {}'.format(
-                    username, exc))
+            logger.error(
+                f'Failed to write settings for user {username!r}: {exc}')
             raise tornado.web.HTTPError(500, 'Failed to save settings.')
         self.write({'settings': stored})
 
@@ -945,6 +1031,20 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
                     admin_hosts=self.allowed_hosts)
 
 
+class AuthDoneHandler(MixinHandler, tornado.web.RequestHandler):
+    """Landing page for the re-authentication popup.
+
+    When the auth proxy's session lapses, the client opens this URL in a
+    popup instead of reloading, so open terminals survive. The proxy
+    walks the popup through sign-in and back here with a fresh cookie;
+    the page then tells the opener and closes itself.
+    """
+
+    def get(self):
+        self.set_header('Cache-Control', 'no-store')
+        self.render('auth-done.html')
+
+
 def content_disposition(filename):
     """Build an attachment header that survives a non-ASCII filename.
 
@@ -958,8 +1058,7 @@ def content_disposition(filename):
     fallback = filename.encode('ascii', 'replace').decode('ascii')
     fallback = fallback.replace('\\', '_').replace('"', '_')
     quoted = quote(filename.encode('utf-8'), safe='')
-    return "attachment; filename=\"{}\"; filename*=UTF-8''{}".format(
-        fallback, quoted)
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quoted}"
 
 
 class TransferMixin(MixinHandler):
@@ -974,7 +1073,7 @@ class TransferMixin(MixinHandler):
     MAX_CONCURRENT_TRANSFERS = 3
 
     def initialize(self, loop):
-        super(TransferMixin, self).initialize()
+        super().initialize()
         self.loop = loop
 
     WORKER_ID_HEADER = 'X-Worker-Id'
@@ -993,9 +1092,9 @@ class TransferMixin(MixinHandler):
 
         ip = self.get_client_addr()[0]
         if worker.src_addr[0] != ip:
-            logging.warning(
-                'Transfer request for worker {} from {}, which does not own '
-                'it'.format(worker_id, ip))
+            logger.warning(
+                f'Transfer request for worker {worker_id} from {ip}, which does not own '
+                'it')
             raise tornado.web.HTTPError(404)
 
         if worker.closed:
@@ -1096,7 +1195,7 @@ class TransferTicketHandler(TransferMixin, tornado.web.RequestHandler):
         except worker_module.TicketPathTooLong:
             raise tornado.web.HTTPError(400, 'Path too long')
         except worker_module.TicketStoreFull:
-            logging.warning('Download ticket store full; refusing to mint')
+            logger.warning('Download ticket store full; refusing to mint')
             raise tornado.web.HTTPError(503, 'Too many pending downloads.')
 
         self.write({'ticket': ticket,
@@ -1203,7 +1302,7 @@ class TransferDownloadHandler(TransferMixin, tornado.web.RequestHandler):
         self._aborted = True
         if self._download is not None:
             self._download.cancel()
-        super(TransferDownloadHandler, self).on_connection_close()
+        super().on_connection_close()
 
 
 @tornado.web.stream_request_body
@@ -1259,6 +1358,9 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
             path = self.get_path()
             filename = self.get_argument('filename', '') or posixpath.basename(path)
             overwrite = self.get_argument('overwrite', '') == 'true'
+            # mkdir=true: ``path`` is a directory to create if missing (a
+            # pasted image's folder); the file goes inside it.
+            makedirs = self.get_argument('mkdir', '') == 'true'
 
             # Blocking paramiko calls (SFTP channel open, then stat/open of
             # the destination) must run on the executor, never the IOLoop.
@@ -1275,7 +1377,8 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
                 return
 
             self.upload = transfer.Upload(self.sftp, path, filename,
-                                          overwrite=overwrite)
+                                          overwrite=overwrite,
+                                          makedirs=makedirs)
             try:
                 yield self.executor.submit(self.upload.open)
             except transfer.TransferError as exc:
@@ -1367,7 +1470,7 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         # will not fire again for the same connection.
         self._aborted = True
         self._cleanup(abort=True)
-        super(TransferUploadHandler, self).on_connection_close()
+        super().on_connection_close()
 
     def _cleanup(self, abort):
         if getattr(self, 'counted', False):
@@ -1384,21 +1487,21 @@ class TransferUploadHandler(TransferMixin, tornado.web.RequestHandler):
         if sftp is not None:
             try:
                 sftp.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- best-effort cleanup
+                logger.debug(f'Ignoring error closing sftp: {exc}')
             self.sftp = None
 
 
 class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
 
     def initialize(self, loop):
-        super(WsockHandler, self).initialize(loop)
+        super().initialize(loop)
         self.worker_ref = None
         self._idle_timeout = None
 
     def open(self):
         self.src_addr = self.get_client_addr()
-        logging.info('Connected from {}:{}'.format(*self.src_addr))
+        logger.info(f'Connected from {self.src_addr[0]}:{self.src_addr[1]}')
 
         workers = clients.get(self.src_addr[0])
         if not workers:
@@ -1437,23 +1540,21 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if worker and worker.transfers:
             # A transfer is in flight on this connection. Closing now would
             # kill the SSH session it rides on, so re-arm instead.
-            logging.debug('Idle timeout deferred: transfer in progress')
+            logger.debug('Idle timeout deferred: transfer in progress')
             self._reset_idle_timeout()
             return
 
-        logging.info('Idle timeout for {}:{}'.format(*self.src_addr))
+        logger.info(f'Idle timeout for {self.src_addr[0]}:{self.src_addr[1]}')
         if worker:
             worker.close(reason='Idle timeout.')
 
     def on_message(self, message):
-        logging.debug('{!r} from {}:{}'.format(message, *self.src_addr))
+        logger.debug(f'{message!r} from {self.src_addr[0]}:{self.src_addr[1]}')
         worker = self.worker_ref()
         if not worker:
             # The worker has likely been closed. Do not process.
-            logging.debug(
-                "received message to closed worker from {}:{}".format(
-                    *self.src_addr
-                )
+            logger.debug(
+                f'received message to closed worker from {self.src_addr[0]}:{self.src_addr[1]}'
             )
             self.close(reason='No worker found')
             return
@@ -1488,7 +1589,7 @@ class WsockHandler(MixinHandler, tornado.websocket.WebSocketHandler):
         if self._idle_timeout:
             self.loop.remove_timeout(self._idle_timeout)
             self._idle_timeout = None
-        logging.info('Disconnected from {}:{}'.format(*self.src_addr))
+        logger.info(f'Disconnected from {self.src_addr[0]}:{self.src_addr[1]}')
         if not self.close_reason:
             self.close_reason = 'client disconnected'
 

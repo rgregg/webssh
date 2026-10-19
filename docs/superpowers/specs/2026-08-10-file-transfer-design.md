@@ -1,5 +1,7 @@
 # File Transfer — Design
 
+> **Historical note (#52):** The "match existing code style" constraint below (no f-strings, `super(ClassName, self)`, `u''` prefixes, root-logger calls) described the codebase as it stood when this plan was written. The repository was modernized to current ruff defaults afterwards; new code should follow that modern style, not this plan's.
+
 Move files between the browser and the host a user is already connected to,
 without a second login and without leaving the terminal.
 

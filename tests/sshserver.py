@@ -1,14 +1,16 @@
 import base64
 import random
 import socket
+
 # import sys
 import threading
+from binascii import hexlify
+from typing import ClassVar
+
 # import traceback
 import paramiko
 
-from binascii import hexlify
 from tests.utils import make_tests_data_path
-
 
 # setup logging
 paramiko.util.log_to_file(make_tests_data_path('sshserver.log'))
@@ -18,7 +20,7 @@ host_key = paramiko.RSAKey(filename=make_tests_data_path('test_rsa.key'))
 
 print('Read key: ' + hexlify(host_key.get_fingerprint()).decode('utf-8'))
 
-banner = u'\r\n\u6b22\u8fce\r\n'
+banner = '\r\n\u6b22\u8fce\r\n'
 event_timeout = 5
 
 
@@ -31,13 +33,15 @@ class Server(paramiko.ServerInterface):
             b'UWT10hcuO4Ks8=')
     good_pub_key = paramiko.RSAKey(data=base64.decodebytes(data))
 
-    commands = [
+    commands: ClassVar[list] = [
         b'$SHELL -ilc "locale charmap"',
         b'$SHELL -ic "locale charmap"'
     ]
-    encodings = ['UTF-8', 'GBK', 'UTF-8\r\n', 'GBK\r\n']
+    encodings: ClassVar[list] = ['UTF-8', 'GBK', 'UTF-8\r\n', 'GBK\r\n']
 
-    def __init__(self, encodings=[]):
+    def __init__(self, encodings=None):
+        if encodings is None:
+            encodings = []
         self.shell_event = threading.Event()
         self.exec_event = threading.Event()
         self.cmd_to_enc = self.get_cmd2enc(encodings)
@@ -56,13 +60,14 @@ class Server(paramiko.ServerInterface):
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_auth_password(self, username, password):
-        print('Auth attempt with username: {!r} & password: {!r}'.format(username, password)) # noqa
+        print(f'Auth attempt with username: {username!r} & password: {password!r}')
         if (username in ['robey', 'bar', 'foo']) and (password == 'foo'):
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
     def check_auth_publickey(self, username, key):
-        print('Auth attempt with username: {!r} & key: {!r}'.format(username, hexlify(key.get_fingerprint()).decode('utf-8'))) # noqa
+        fp = hexlify(key.get_fingerprint()).decode('utf-8')
+        print(f'Auth attempt with username: {username!r} & key: {fp!r}')
         if (username in ['robey', 'keyonly']) and (key == self.good_pub_key):
             return paramiko.AUTH_SUCCESSFUL
         if username == 'pkey2fa' and key == self.good_pub_key:
@@ -73,7 +78,7 @@ class Server(paramiko.ServerInterface):
     def check_auth_interactive(self, username, submethods):
         if username in ['pass2fa', 'pkey2fa']:
             self.username = username
-            prompt = 'Verification code: ' if self.password_verified else 'Password: '  # noqa
+            prompt = 'Verification code: ' if self.password_verified else 'Password: '
             print(username, prompt)
             return paramiko.InteractiveQuery('', '', prompt)
         return paramiko.AUTH_FAILED
@@ -87,14 +92,14 @@ class Server(paramiko.ServerInterface):
                     if self.username == 'pkey2fa':
                         return self.check_auth_interactive(self.username, '')
                 else:
-                    print('wrong password: {}'.format(responses[0]))
+                    print(f'wrong password: {responses[0]}')
                     return paramiko.AUTH_FAILED
             else:
                 if responses[0] == 'passcode':
                     print('totp verified')
                     return paramiko.AUTH_SUCCESSFUL
                 else:
-                    print('wrong totp: {}'.format(responses[0]))
+                    print(f'wrong totp: {responses[0]}')
                     return paramiko.AUTH_FAILED
         else:
             return paramiko.AUTH_FAILED
@@ -136,15 +141,17 @@ class Server(paramiko.ServerInterface):
         return True
 
 
-def run_ssh_server(port=2200, running=True, encodings=[]):
+def run_ssh_server(port=2200, running=True, encodings=None):
     # now connect
+    if encodings is None:
+        encodings = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('127.0.0.1', port))
     sock.listen(100)
 
     while running:
-        client, addr = sock.accept()
+        client, _addr = sock.accept()
         print('Got a connection!')
 
         t = paramiko.Transport(client)
@@ -153,7 +160,7 @@ def run_ssh_server(port=2200, running=True, encodings=[]):
         server = Server(encodings)
         try:
             t.start_server(server=server)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- test harness, log and keep serving
             print(e)
             continue
 
@@ -164,7 +171,7 @@ def run_ssh_server(port=2200, running=True, encodings=[]):
             continue
 
         username = t.get_username()
-        print('{} Authenticated!'.format(username))
+        print(f'{username} Authenticated!')
 
         server.shell_event.wait(timeout=event_timeout)
         if not server.shell_event.is_set():
@@ -205,7 +212,7 @@ def run_ssh_server(port=2200, running=True, encodings=[]):
 
     try:
         sock.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 -- best-effort cleanup
         pass
 
 

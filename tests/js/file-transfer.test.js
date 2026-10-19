@@ -119,3 +119,320 @@ test('match_entry with an empty filter matches everything', function () {
 test('match_entry rejects a non-match', function () {
   assert.strictEqual(ft.match_entry('syslog', 'zzz'), false);
 });
+
+test('resolve_upload_paths maps a whole drop onto one confirmed directory', function () {
+  assert.deepStrictEqual(
+    ft.resolve_upload_paths('/srv/app', ['a.txt', 'b.txt']),
+    ['/srv/app/a.txt', '/srv/app/b.txt']
+  );
+  assert.deepStrictEqual(
+    ft.resolve_upload_paths('/srv/app/', ['a.txt']),
+    ['/srv/app/a.txt']
+  );
+});
+
+test('resolve_upload_paths leaves names relative when no directory is known', function () {
+  // The server resolves a relative path against the SFTP home, which is the
+  // same fallback the picker uses.
+  assert.deepStrictEqual(ft.resolve_upload_paths('', ['a.txt']), ['a.txt']);
+  assert.deepStrictEqual(ft.resolve_upload_paths(null, ['a.txt']), ['a.txt']);
+});
+
+test('resolve_upload_paths tolerates an empty drop', function () {
+  assert.deepStrictEqual(ft.resolve_upload_paths('/srv', []), []);
+});
+
+test('make_queue runs no more than the limit at once', function () {
+  var q = ft.make_queue(3);
+  var running = 0;
+  var peak = 0;
+  var dones = [];
+  for (var i = 0; i < 8; i++) {
+    q.push(function (done) {
+      running = running + 1;
+      peak = Math.max(peak, running);
+      dones.push(function () {
+        running = running - 1;
+        done();
+      });
+    });
+  }
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 5);
+  // Draining one slot admits exactly one waiting job, never a burst.
+  dones.shift()();
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 4);
+  while (dones.length) {
+    dones.shift()();
+  }
+  assert.strictEqual(peak, 3);
+  assert.strictEqual(q.pending(), 0);
+  assert.strictEqual(q.running(), 0);
+});
+
+test('make_queue eventually runs every job', function () {
+  var q = ft.make_queue(2);
+  var ran = [];
+  var dones = [];
+  for (var i = 0; i < 5; i++) {
+    (function (n) {
+      q.push(function (done) {
+        ran.push(n);
+        dones.push(done);
+      });
+    }(i));
+  }
+  while (dones.length) {
+    dones.shift()();
+  }
+  assert.deepStrictEqual(ran, [0, 1, 2, 3, 4]);
+});
+
+test('make_queue ignores a double done instead of over-admitting', function () {
+  // A job that reports completion twice would otherwise free two slots and
+  // let a fourth upload past the server's cap.
+  var q = ft.make_queue(1);
+  var running = 0;
+  var peak = 0;
+  var first = null;
+  for (var i = 0; i < 3; i++) {
+    q.push(function (done) {
+      running = running + 1;
+      peak = Math.max(peak, running);
+      if (!first) {
+        first = function () {
+          running = running - 1;
+          done();
+        };
+      }
+    });
+  }
+  first();
+  first();
+  assert.strictEqual(peak, 1);
+});
+
+test('make_queue cancel drops a job that has not started', function () {
+  var q = ft.make_queue(1);
+  var ran = [];
+  var done_first;
+  q.push(function (done) {
+    ran.push('a');
+    done_first = done;
+  });
+  var cancelled = [];
+  var job = q.push(function () {
+    ran.push('b');
+  }, function () {
+    cancelled.push('b');
+  });
+  assert.strictEqual(q.cancel(job), true);
+  assert.deepStrictEqual(cancelled, ['b']);
+  done_first();
+  assert.deepStrictEqual(ran, ['a']);
+  // Cancelling twice, or cancelling a job already running, is a no-op.
+  assert.strictEqual(q.cancel(job), false);
+});
+
+test('make_queue clear cancels everything still waiting', function () {
+  var q = ft.make_queue(1);
+  var ran = [];
+  var cancelled = [];
+  q.push(function () {
+    ran.push('a');
+  });
+  q.push(function () {
+    ran.push('b');
+  }, function () {
+    cancelled.push('b');
+  });
+  q.push(function () {
+    ran.push('c');
+  }, function () {
+    cancelled.push('c');
+  });
+  q.clear();
+  assert.strictEqual(q.pending(), 0);
+  assert.deepStrictEqual(cancelled, ['b', 'c']);
+  assert.deepStrictEqual(ran, ['a']);
+});
+
+test('make_queue frees the slot when a job throws on the way out', function () {
+  // A job that throws before it can ever call done would otherwise hold its
+  // slot forever, shrinking the queue by one for the life of the tab.
+  var q = ft.make_queue(1);
+  assert.throws(function () {
+    q.push(function () {
+      throw new Error('boom');
+    });
+  }, /boom/);
+  assert.strictEqual(q.running(), 0);
+
+  var ran = [];
+  q.push(function () {
+    ran.push('next');
+  });
+  assert.deepStrictEqual(ran, ['next'], 'the freed slot admits the next job');
+});
+
+test('describe_selection names one file and counts a batch', function () {
+  assert.strictEqual(ft.describe_selection([]), 'No files selected');
+  assert.strictEqual(ft.describe_selection(null), 'No files selected');
+  assert.strictEqual(ft.describe_selection(['notes.txt']), 'notes.txt');
+  assert.strictEqual(ft.describe_selection(['a.jpg', 'b.jpg']), '2 files selected');
+});
+
+test('parent_dir walks up one level', function () {
+  assert.strictEqual(ft.parent_dir('/var/log/nginx'), '/var/log');
+  assert.strictEqual(ft.parent_dir('/var/log/nginx/'), '/var/log');
+  assert.strictEqual(ft.parent_dir('/var'), '/');
+});
+
+test('parent_dir has nothing above the root or an unknown directory', function () {
+  assert.strictEqual(ft.parent_dir('/'), null);
+  assert.strictEqual(ft.parent_dir(''), null);
+  assert.strictEqual(ft.parent_dir(null), null);
+  // Relative paths never reach here once the server canonicalizes, but
+  // guessing a parent for one would be wrong, so do not.
+  assert.strictEqual(ft.parent_dir('.'), null);
+});
+
+test('choose_start_dir takes whichever location is more recent', function () {
+  var shell = {dir: '/srv/app', at: 100};
+  var last = {dir: '/var/log', at: 200};
+  // Browsed after the shell last reported: the shell's report is stale.
+  assert.strictEqual(ft.choose_start_dir(shell, last), '/var/log');
+  // The shell reported after the last browse: the user has moved on.
+  assert.strictEqual(ft.choose_start_dir({dir: '/srv/app', at: 300}, last),
+    '/srv/app');
+});
+
+test('choose_start_dir falls back to whatever is known, then home', function () {
+  assert.strictEqual(ft.choose_start_dir(null, {dir: '/var/log', at: 1}), '/var/log');
+  assert.strictEqual(ft.choose_start_dir({dir: '/srv', at: 1}, null), '/srv');
+  assert.strictEqual(ft.choose_start_dir(null, null), '.');
+});
+
+test('remember_dir and recall_dir keep one folder per host and dialog', function () {
+  var store = {};
+  store = ft.remember_dir(store, 'me@a:22', 'download', '/var/log', 10);
+  store = ft.remember_dir(store, 'me@a:22', 'upload', '/srv/in', 11);
+  store = ft.remember_dir(store, 'me@b:22', 'download', '/tmp', 12);
+
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@a:22', 'download'),
+    {dir: '/var/log', at: 10});
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@a:22', 'upload'),
+    {dir: '/srv/in', at: 11});
+  assert.deepStrictEqual(ft.recall_dir(store, 'me@b:22', 'download'),
+    {dir: '/tmp', at: 12});
+  assert.strictEqual(ft.recall_dir(store, 'me@b:22', 'upload'), null);
+  assert.strictEqual(ft.recall_dir(store, 'me@c:22', 'download'), null);
+});
+
+test('remember_dir forgets the least recently used hosts past the cap', function () {
+  var store = {};
+  for (var i = 0; i < ft.MAX_REMEMBERED_HOSTS + 5; i++) {
+    store = ft.remember_dir(store, 'h' + i, 'download', '/d', i);
+  }
+  assert.strictEqual(Object.keys(store).length, ft.MAX_REMEMBERED_HOSTS);
+  assert.strictEqual(ft.recall_dir(store, 'h0', 'download'), null);
+  assert.notStrictEqual(
+    ft.recall_dir(store, 'h' + (ft.MAX_REMEMBERED_HOSTS + 4), 'download'), null);
+});
+
+test('recall_dir tolerates a corrupt or missing store', function () {
+  assert.strictEqual(ft.recall_dir(null, 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir('garbage', 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir({h: {download: {dir: 5}}}, 'h', 'download'), null);
+  assert.strictEqual(ft.recall_dir({h: 'x'}, 'h', 'download'), null);
+});
+
+test('host_key identifies a connection by user, host and port', function () {
+  assert.strictEqual(ft.host_key('ryan', 'nas.lan', '2222'), 'ryan@nas.lan:2222');
+  // A blank port is the server default, so it must share memory with 22.
+  assert.strictEqual(ft.host_key('ryan', 'nas.lan', ''), 'ryan@nas.lan:22');
+  assert.strictEqual(ft.host_key('ryan', 'NAS.lan', 22), 'ryan@nas.lan:22');
+});
+
+// --- Pasted images -------------------------------------------------------
+
+function clip(entries) {
+  // A stand-in for a paste event's clipboardData: entries are
+  // {type, file?}. 'file' entries carry a File-like object.
+  return {
+    types: entries.map(function (e) { return e.kind === 'file' ? 'Files' : e.type; }),
+    items: entries.map(function (e) {
+      return {
+        kind: e.kind || 'string',
+        type: e.type,
+        getAsFile: function () { return e.file || null; }
+      };
+    })
+  };
+}
+
+test('pasted_image returns the image from an image-only clipboard', function () {
+  var png = {type: 'image/png', size: 10};
+  assert.strictEqual(
+    ft.pasted_image(clip([{kind: 'file', type: 'image/png', file: png}])), png);
+});
+
+test('pasted_image leaves any paste with text to the terminal', function () {
+  // Copying an image from a web page also puts its URL or HTML on the
+  // clipboard. Text must win, so text paste never changes behaviour.
+  var png = {type: 'image/png', size: 10};
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'image/png', file: png},
+    {type: 'text/html'}
+  ])), null);
+  assert.strictEqual(ft.pasted_image(clip([{type: 'text/plain'}])), null);
+});
+
+test('pasted_image ignores non-image files and missing data', function () {
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'application/pdf', file: {type: 'application/pdf'}}
+  ])), null);
+  assert.strictEqual(ft.pasted_image(null), null);
+  assert.strictEqual(ft.pasted_image({types: [], items: []}), null);
+});
+
+test('pasted_image uses only the first image', function () {
+  var a = {type: 'image/png'};
+  var b = {type: 'image/jpeg'};
+  assert.strictEqual(ft.pasted_image(clip([
+    {kind: 'file', type: 'image/png', file: a},
+    {kind: 'file', type: 'image/jpeg', file: b}
+  ])), a);
+});
+
+test('pasted_image falls back to clipboardData.files', function () {
+  var png = {type: 'image/png'};
+  assert.strictEqual(ft.pasted_image({types: ['Files'], files: [png]}), png);
+});
+
+test('paste_filename stamps local time and keeps the image type', function () {
+  var when = new Date(2026, 9, 18, 9, 5, 7, 42);
+  assert.strictEqual(ft.paste_filename('image/png', when),
+                     'paste-20261018-090507-042.png');
+  assert.strictEqual(ft.paste_filename('image/jpeg', when),
+                     'paste-20261018-090507-042.jpg');
+  assert.strictEqual(ft.paste_filename('image/svg+xml', when),
+                     'paste-20261018-090507-042.svg');
+  assert.strictEqual(ft.paste_filename('', when),
+                     'paste-20261018-090507-042.png');
+});
+
+test('terminal_path escapes characters a shell would split on', function () {
+  assert.strictEqual(ft.terminal_path('/home/ryan/.cache/webssh-paste/p.png'),
+                     '/home/ryan/.cache/webssh-paste/p.png');
+  assert.strictEqual(ft.terminal_path('/Users/A B/x.png'), '/Users/A\\ B/x.png');
+  assert.strictEqual(ft.terminal_path("/h/it's.png"), "/h/it\\'s.png");
+});
+
+test('upload_url asks for the folder to be created only when told to', function () {
+  assert.strictEqual(ft.upload_url('d', 'f.png', false, true),
+                     '/transfer/upload?path=d&filename=f.png&mkdir=true');
+  assert.strictEqual(ft.upload_url('d', 'f.png', false),
+                     '/transfer/upload?path=d&filename=f.png');
+});

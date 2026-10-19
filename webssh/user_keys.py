@@ -1,13 +1,14 @@
 import io
+import logging
 import os
 import re
-import logging
 import tempfile
 
 import paramiko
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+logger = logging.getLogger(__name__)
 
 USERNAME_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
 
@@ -40,14 +41,14 @@ def has_stored_key(base_dir, username):
 def read_public_key(base_dir, username):
     user_dir = get_user_key_dir(base_dir, username)
     pub_path = os.path.join(user_dir, 'id_ed25519.pub')
-    with open(pub_path, 'r') as f:
+    with open(pub_path) as f:
         return f.read().strip()
 
 
 def read_private_key(base_dir, username):
     user_dir = get_user_key_dir(base_dir, username)
     priv_path = os.path.join(user_dir, 'id_ed25519')
-    with open(priv_path, 'r') as f:
+    with open(priv_path) as f:
         return f.read()
 
 
@@ -57,8 +58,8 @@ def generate_key_pair(base_dir, username):
         os.makedirs(user_dir, mode=0o700, exist_ok=True)
     except PermissionError:
         raise ValueError(
-            'Cannot create key directory for user {!r}: permission denied. '
-            'Check ownership of {!r}'.format(username, base_dir)
+            f'Cannot create key directory for user {username!r}: permission denied. '
+            f'Check ownership of {base_dir!r}'
         )
 
     priv_path = os.path.join(user_dir, 'id_ed25519')
@@ -73,9 +74,7 @@ def generate_key_pair(base_dir, username):
 
     # Load into paramiko to get public key components
     key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem.decode()))
-    pub_key_str = '{} {} {}@webssh-client'.format(
-        key.get_name(), key.get_base64(), username
-    )
+    pub_key_str = f'{key.get_name()} {key.get_base64()} {username}@webssh-client'
 
     # Write private key atomically with correct permissions from the start
     fd, tmp_priv = tempfile.mkstemp(dir=user_dir)
@@ -115,5 +114,5 @@ def generate_key_pair(base_dir, username):
             except OSError:
                 pass
 
-    logging.info('Generated SSH key pair for user {!r}'.format(username))
+    logger.info(f'Generated SSH key pair for user {username!r}')
     return pub_key_str
