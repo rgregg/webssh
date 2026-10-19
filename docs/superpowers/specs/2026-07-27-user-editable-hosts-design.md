@@ -234,3 +234,15 @@ dropdown without a reload.
 Note for whoever runs the suite: `settings.py` loads the real
 `~/.ssh/known_hosts`, so a malformed line in a developer's own file fails 53
 unrelated tests. This is an environment issue, not a regression.
+
+## Accepted behaviours
+
+Two points were raised in review, examined, and deliberately left as they are.
+Recorded here so they are not re-raised as defects:
+
+- **Hostname collision matching is exact-string, with no case folding.** Judged
+  *not* an invariant break: a user can already add the same machine under a
+  different name with their own pin, so case-folding buys nothing.
+- **A stored `cursor` preference beats a URL `fontcolor` fallback.** Defensible
+  and as specified, but worth knowing when reasoning about where a colour came
+  from.
