@@ -135,6 +135,7 @@ var webssh_hosts = (function () {
       }
     }
     settings.cursor_blink = ui.cursor_blink;
+    settings.suppress_browser_menu = ui.suppress_browser_menu === true;
     settings.key_source = ui.key_source;
     // The settings PUT replaces the whole stored blob and this pane only
     // knows appearance keys, so carry the roamed values forward. Only the
@@ -187,6 +188,15 @@ var webssh_hosts = (function () {
       return {key: roam_key, value: port};
     }
     return {key: roam_key, value: value};
+  }
+
+  // Whether a right-click in the terminal should skip the browser's own
+  // menu, leaving the click to the remote app (tmux's mouse menu, say).
+  // Shift+right-click always gets the browser menu, so copy, paste and the
+  // dev tools stay reachable.
+  function blocks_browser_menu(settings, event) {
+    return !!(settings && settings.suppress_browser_menu === true &&
+              !(event && event.shiftKey));
   }
 
   // Precedence: URL parameter, then stored preference, then built-in default.
@@ -296,6 +306,7 @@ var webssh_hosts = (function () {
     key_source_update: key_source_update,
     default_key_source: default_key_source,
     resolve_terminal_options: resolve_terminal_options,
+    blocks_browser_menu: blocks_browser_menu,
     resolve_encoding: resolve_encoding,
     save_error_text: save_error_text,
     parse_command_key: parse_command_key,

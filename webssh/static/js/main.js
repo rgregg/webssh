@@ -1035,6 +1035,7 @@ jQuery(function($){
       encoding: pane.find('#set-encoding').val(),
       term: pane.find('#set-term').val(),
       cursor_blink: pane.find('#set-cursor-blink').is(':checked'),
+      suppress_browser_menu: pane.find('#set-suppress-browser-menu').is(':checked'),
       key_source: pane.find('#set-key-source').val()
     });
   }
@@ -1065,6 +1066,8 @@ jQuery(function($){
     pane.find('#set-term').val(user_settings.term || '');
     pane.find('#set-cursor-blink').prop('checked',
                                         user_settings.cursor_blink !== false);
+    pane.find('#set-suppress-browser-menu').prop(
+      'checked', user_settings.suppress_browser_menu === true);
     // Never leave this select on its first option ('upload') just because
     // nothing is stored yet: collect_settings writes its value on every
     // save, so an untouched select would persist 'upload' for a user who
@@ -1393,6 +1396,19 @@ jQuery(function($){
         });
       };
       tab.containerEl.addEventListener('paste', tab._paste_handler, true);
+
+      // With the setting on, a right-click goes to the remote app alone, so
+      // a menu it draws (tmux mouse mode) is not buried under the
+      // browser's. Read at click time, so a saved change applies to open
+      // tabs at once. Bound once per pane: it needs nothing per-connection.
+      if (!tab._menu_handler) {
+        tab._menu_handler = function (e) {
+          if (webssh_hosts.blocks_browser_menu(user_settings, e)) {
+            e.preventDefault();
+          }
+        };
+        tab.containerEl.addEventListener('contextmenu', tab._menu_handler);
+      }
 
       console.log(url);
       if (!msg.encoding) {
