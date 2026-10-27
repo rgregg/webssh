@@ -89,18 +89,25 @@ var webssh_transfer = (function () {
   var PASTE_DIR = '.cache/webssh-paste';
 
   // The image a paste event carries, or null to leave the paste to xterm.
-  // Any text on the clipboard wins, so text paste behaves exactly as it
-  // did before this existed -- even when an image rides along with it, as
-  // it does when copying an image from a web page.
+  // Plain text on the clipboard wins, so text paste behaves exactly as it
+  // did before this existed. Only text/plain counts: it is all xterm ever
+  // pastes. "Copy image" in a browser adds the <img> tag as text/html
+  // beside the image, and treating that as text left the paste empty.
   function pasted_image(data) {
     if (!data) {
       return null;
     }
-    var types = data.types || [];
     var i;
-    for (i = 0; i < types.length; i++) {
-      if (String(types[i]).indexOf('text/') === 0) {
+    if (typeof data.getData === 'function') {
+      if (data.getData('text/plain')) {
         return null;
+      }
+    } else {
+      var types = data.types || [];
+      for (i = 0; i < types.length; i++) {
+        if (types[i] === 'text/plain') {
+          return null;
+        }
       }
     }
     var items = data.items || [];

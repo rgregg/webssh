@@ -362,6 +362,14 @@ function clip(entries) {
   // {type, file?}. 'file' entries carry a File-like object.
   return {
     types: entries.map(function (e) { return e.kind === 'file' ? 'Files' : e.type; }),
+    getData: function (type) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].kind !== 'file' && entries[i].type === type) {
+          return entries[i].text || '';
+        }
+      }
+      return '';
+    },
     items: entries.map(function (e) {
       return {
         kind: e.kind || 'string',
@@ -378,15 +386,32 @@ test('pasted_image returns the image from an image-only clipboard', function () 
     ft.pasted_image(clip([{kind: 'file', type: 'image/png', file: png}])), png);
 });
 
-test('pasted_image leaves any paste with text to the terminal', function () {
-  // Copying an image from a web page also puts its URL or HTML on the
-  // clipboard. Text must win, so text paste never changes behaviour.
+test('pasted_image leaves any paste with plain text to the terminal', function () {
+  // Plain text must win, so text paste never changes behaviour.
   var png = {type: 'image/png', size: 10};
   assert.strictEqual(ft.pasted_image(clip([
     {kind: 'file', type: 'image/png', file: png},
-    {type: 'text/html'}
+    {type: 'text/plain', text: 'https://example.com/a.png'}
   ])), null);
-  assert.strictEqual(ft.pasted_image(clip([{type: 'text/plain'}])), null);
+  assert.strictEqual(ft.pasted_image(clip([{type: 'text/plain', text: 'hi'}])), null);
+});
+
+test('pasted_image takes a browser-copied image that carries only HTML', function () {
+  // "Copy image" on a web page puts the <img> tag on the clipboard as
+  // text/html. xterm pastes only text/plain, so the image must win.
+  var webp = {type: 'image/webp', size: 10};
+  assert.strictEqual(ft.pasted_image(clip([
+    {type: 'text/html', text: '<img src="https://example.com/a.webp">'},
+    {kind: 'file', type: 'image/webp', file: webp}
+  ])), webp);
+});
+
+test('pasted_image takes the image when text/plain is empty', function () {
+  var png = {type: 'image/png', size: 10};
+  assert.strictEqual(ft.pasted_image(clip([
+    {type: 'text/plain', text: ''},
+    {kind: 'file', type: 'image/png', file: png}
+  ])), png);
 });
 
 test('pasted_image ignores non-image files and missing data', function () {
