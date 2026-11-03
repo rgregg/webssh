@@ -609,3 +609,31 @@ test('blocks_browser_menu lets Shift+right-click through to the browser', functi
 test('blocks_browser_menu survives missing settings', function () {
   assert.strictEqual(hosts.blocks_browser_menu(null, {shiftKey: false}), false);
 });
+
+test('make_link_handler opens http and https links', function () {
+  var opened = [];
+  var h = hosts.make_link_handler(function (u) { opened.push(u); }, function () {});
+  h.activate({}, 'https://example.com/a?b=1');
+  h.activate({}, 'http://example.com/');
+  assert.deepStrictEqual(opened, ['https://example.com/a?b=1', 'http://example.com/']);
+  assert.strictEqual(h.allowNonHttpProtocols, false);
+});
+
+test('make_link_handler refuses other schemes', function () {
+  // Terminal output is untrusted: an OSC 8 link can carry any URI.
+  var opened = [];
+  var h = hosts.make_link_handler(function (u) { opened.push(u); }, function () {});
+  h.activate({}, 'javascript:alert(1)');
+  h.activate({}, 'file:///etc/passwd');
+  h.activate({}, '');
+  h.activate({}, undefined);
+  assert.deepStrictEqual(opened, []);
+});
+
+test('make_link_handler shows the real target on hover and clears it on leave', function () {
+  var shown = [];
+  var h = hosts.make_link_handler(function () {}, function (u) { shown.push(u); });
+  h.hover({}, 'https://example.com/real', null);
+  h.leave({}, 'https://example.com/real', null);
+  assert.deepStrictEqual(shown, ['https://example.com/real', '']);
+});
