@@ -1319,6 +1319,14 @@ jQuery(function($){
           termOptions = webssh_hosts.resolve_terminal_options(
             url_opts_data, user_settings);
 
+      termOptions.linkHandler = webssh_hosts.make_link_handler(
+        function (uri) {
+          var w = window.open(uri, '_blank', 'noopener');
+          if (w) { w.opener = null; }
+        },
+        function (uri) {
+          if (term && term.element) { term.element.title = uri; }
+        });
       var term = new window.Terminal(termOptions);
       var fitAddon = new window.FitAddon.FitAddon();
       term.fitAddon = fitAddon;

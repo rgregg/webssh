@@ -199,6 +199,24 @@ var webssh_hosts = (function () {
               !(event && event.shiftKey));
   }
 
+  // Click handler for OSC 8 hyperlinks (the links programs like Claude Code and
+  // ls --hyperlink print). Without one, xterm.js falls back to a confirm()
+  // dialog, which browsers often suppress, so the click silently did nothing.
+  // Opens http(s) only, in a new tab with no opener, the same way plain URLs
+  // already open through the web-links addon. Since there is no confirm step,
+  // hovering shows the real target as a tooltip: link text can say anything.
+  function make_link_handler(open_url, show_target) {
+    return {
+      allowNonHttpProtocols: false,
+      activate: function (event, uri) {
+        if (!/^https?:\/\//i.test(uri || '')) { return; }
+        open_url(uri);
+      },
+      hover: function (event, uri) { show_target(uri); },
+      leave: function () { show_target(''); }
+    };
+  }
+
   // Precedence: URL parameter, then stored preference, then built-in default.
   function resolve_terminal_options(url_opts, stored) {
     var options = {
@@ -306,6 +324,7 @@ var webssh_hosts = (function () {
     key_source_update: key_source_update,
     default_key_source: default_key_source,
     resolve_terminal_options: resolve_terminal_options,
+    make_link_handler: make_link_handler,
     blocks_browser_menu: blocks_browser_menu,
     resolve_encoding: resolve_encoding,
     save_error_text: save_error_text,
