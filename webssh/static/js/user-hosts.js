@@ -52,10 +52,13 @@ var webssh_hosts = (function () {
   // text and asserts every one of these keys still appears there, which is
   // the only way to catch a rename on the main.js side: a pure module has
   // no way to observe its DOM-reading caller directly.
-  var HOST_ROW_KEYS = ['name', 'hostname', 'port_text', 'keys_text', 'username', 'default_command'];
+  var HOST_ROW_KEYS = ['name', 'hostname', 'port_text', 'keys_text', 'username', 'default_command',
+                       'transport', 'tailcat_address', 'tailcat_identity', 'id'];
 
-  // rows: [{name, hostname, port_text, keys_text, username, default_command}]
-  // (see HOST_ROW_KEYS above)
+  // rows: [{name, hostname, port_text, keys_text, username, default_command,
+  //         transport, tailcat_address, tailcat_identity, id}]
+  // (see HOST_ROW_KEYS above). The last four only matter for Tailcat rows;
+  // a row without a transport is plain SSH.
   // A row that is entirely blank (a fresh, untouched "Add host" row) is
   // silently skipped. A row with a blank hostname but *some* other field
   // filled in is a half-filled row the user is actively editing, so it is
@@ -64,6 +67,17 @@ var webssh_hosts = (function () {
     var result = [];
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
+      if (r.transport === 'tailcat') {
+        var tc = build_tailcat_host(r, i);
+        if (tc.error) {
+          return {hosts: result, error: tc.error, error_index: i,
+                  error_field: tc.error_field};
+        }
+        if (tc.host) {
+          result.push(tc.host);
+        }
+        continue;
+      }
       var hostname = trimmed(r.hostname);
       if (!hostname) {
         var has_other_data = trimmed(r.name) || trimmed(r.port_text) ||
@@ -108,6 +122,70 @@ var webssh_hosts = (function () {
       result.push(host);
     }
     return {hosts: result, error: null, error_index: -1};
+  }
+
+  // A Tailcat row. Its address is write-only: a saved host comes back from
+  // the server with an id and no address, and is sent back the same way;
+  // the server keeps the stored address for that id. So a blank address is
+  // fine for a saved row (one with an id) and required for a new one.
+  // Returns {host}, {error, error_field}, or {} for an untouched blank row.
+  function build_tailcat_host(r, i) {
+    var address = trimmed(r.tailcat_address);
+    var id = trimmed(r.id);
+    if (!address && !id) {
+      var has_other_data = trimmed(r.name) || trimmed(r.port_text) ||
+        trimmed(r.keys_text) || trimmed(r.username) || trimmed(r.default_command);
+      if (has_other_data) {
+        return {
+          error: 'Tailcat address is required for row ' + (i + 1) +
+                 ' (paste the "tc..." address the server printed, or delete the row).',
+          error_field: 'host-tailcat-address'
+        };
+      }
+      return {};
+    }
+    if (address && !/^tc[A-Za-z0-9_-]+$/.test(address)) {
+      // Never echo the value: it is a credential.
+      return {
+        error: 'Row ' + (i + 1) + ' does not have a valid Tailcat address ' +
+               '(expected the "tc..." value the server printed).',
+        error_field: 'host-tailcat-address'
+      };
+    }
+    var name = trimmed(r.name) || 'Tailcat host';
+    var host = {
+      transport: 'tailcat',
+      name: name,
+      host_key: split_keys(r.keys_text),
+      username: trimmed(r.username),
+      default_command: trimmed(r.default_command),
+      tailcat_identity: r.tailcat_identity === true
+    };
+    if (id) {
+      host.id = id;
+    }
+    if (address) {
+      host.tailcat_address = address;
+    }
+    var port_result = validate_port(r.port_text);
+    if (port_result.invalid) {
+      return {
+        error: 'Invalid port "' + trimmed(r.port_text) +
+               '" for host "' + name + '" (must be 1-65535).',
+        error_field: 'host-port'
+      };
+    }
+    if (port_result.port) {
+      host.port = port_result.port;
+    }
+    return {host: host};
+  }
+
+  // Whether a connect-form hostname value names a Tailcat host. Such a value
+  // is an opaque handle ("tailcat:<id>"), not something to parse as
+  // host:port or check against the hostname pattern.
+  function is_tailcat_value(value) {
+    return /^tailcat:[au][0-9a-f]{16}$/.test(trimmed(value));
   }
 
   // Form field name -> stored settings key. These three are the ONLY fields
@@ -302,6 +380,20 @@ var webssh_hosts = (function () {
     var payload = [];
     for (i = 0; i < stored_hosts.length; i++) {
       var h = stored_hosts[i];
+      if (h.transport === 'tailcat') {
+        // No address: the server never sent it, and keeps it by id.
+        payload.push({
+          transport: 'tailcat',
+          id: h.id,
+          name: h.name,
+          port: h.port,
+          host_key: h.host_keys || [],
+          username: h.username || '',
+          default_command: h.default_command || '',
+          tailcat_identity: h.tailcat_identity === true
+        });
+        continue;
+      }
       payload.push({
         name: h.name,
         hostname: h.hostname,
@@ -317,6 +409,7 @@ var webssh_hosts = (function () {
   return {
     validate_port: validate_port,
     build_host_payload: build_host_payload,
+    is_tailcat_value: is_tailcat_value,
     HOST_ROW_KEYS: HOST_ROW_KEYS,
     ROAMING_FIELDS: ROAMING_FIELDS,
     merge_settings: merge_settings,

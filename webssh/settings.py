@@ -6,6 +6,7 @@ import sys
 import yaml
 from tornado.options import define
 
+from webssh import tailcat
 from webssh._version import __version__
 from webssh.policy import check_policy_setting, get_policy_class, load_host_keys
 from webssh.utils import is_valid_encoding, parse_origin_from_url, to_ip_address
@@ -67,6 +68,17 @@ define('user_hosts', type=bool, default=False,
 define('shell_integration', type=bool, default=True,
        help='Ask the remote shell to report its working directory via OSC 7, '
             'so dropped files land in the directory you are in')
+define('user_tailcat_hosts', type=bool, default=False,
+       help='Also let users add their own Tailcat hosts (needs user_hosts)')
+define('tailcat_binary', default='tailcat',
+       help='Path or name of the tailcat binary used for Tailcat hosts')
+define('tailcat_timeout', type=float, default=30.0,
+       help='Seconds allowed to set up a Tailcat connection')
+define('tailcat_derpmap_url', default='',
+       help='DERP map URL passed to tailcat (default: tailcat\'s own)')
+define('tailcat_state_dir', default='',
+       help='Private directory for tailcat\'s cache and config '
+            '(default: <userdatadir>/.tailcat)')
 define('version', type=bool, help='Show version information',
        callback=print_version)
 
@@ -298,39 +310,131 @@ def _validate_host_key(host_key, hostname):
         )
 
 
-def parse_host_entry(entry):
-    if not isinstance(entry, dict):
-        # Deliberately ValueError, not TypeError: this is malformed request
-        # data, not a Python type-usage bug -- callers catch ValueError to
-        # return a 400.
-        raise ValueError('Each host entry must be a mapping')  # noqa: TRY004
-    if 'hostname' not in entry:
-        raise ValueError('Each host entry must have a "hostname" field')
+def _parse_port(entry, label):
+    try:
+        port = int(entry.get('port', 22))
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid port {entry.get('port')!r} for host {label!r}; must be 1-65535"
+        )
+    if port < 1 or port > 65535:
+        raise ValueError(
+            f"Invalid port {port!r} for host {label!r}; must be 1-65535"
+        )
+    return port
+
+
+def _parse_host_keys(entry, label):
     raw_keys = entry.get('host_key', [])
     if isinstance(raw_keys, str):
         raw_keys = [raw_keys] if raw_keys else []
     elif not isinstance(raw_keys, list):
         raise ValueError(  # noqa: TRY004
-            f"host_key for {entry['hostname']!r} must be a string or list"
+            f"host_key for {label!r} must be a string or list"
         )
     for k in raw_keys:
-        _validate_host_key(k, entry['hostname'])
-    try:
-        port = int(entry.get('port', 22))
-    except (TypeError, ValueError):
+        _validate_host_key(k, label)
+    return raw_keys
+
+
+def parse_host_entry(entry, scope='admin'):
+    """Validate one host entry from the config file or a user's host list.
+
+    scope is 'admin' for the config file and 'user' for a user's own list;
+    it only matters for Tailcat entries, where an administrator may name a
+    key file on the server and a user may not.
+    """
+    if not isinstance(entry, dict):
+        # Deliberately ValueError, not TypeError: this is malformed request
+        # data, not a Python type-usage bug -- callers catch ValueError to
+        # return a 400.
+        raise ValueError('Each host entry must be a mapping')  # noqa: TRY004
+    transport = entry.get('transport', 'ssh')
+    if transport == 'tailcat':
+        return _parse_tailcat_entry(entry, scope)
+    if transport != 'ssh':
         raise ValueError(
-            f"Invalid port {entry.get('port')!r} for host {entry['hostname']!r}; must be 1-65535"
-        )
-    if port < 1 or port > 65535:
-        raise ValueError(
-            f"Invalid port {port!r} for host {entry['hostname']!r}; must be 1-65535"
-        )
+            f'Unknown transport {transport!r}; must be "ssh" or "tailcat"')
+    if 'hostname' not in entry:
+        raise ValueError('Each host entry must have a "hostname" field')
+    raw_keys = _parse_host_keys(entry, entry['hostname'])
+    port = _parse_port(entry, entry['hostname'])
     return {
         'name': entry.get('name', entry['hostname']),
         'hostname': entry['hostname'],
         'port': port,
         'host_keys': raw_keys,
     }
+
+
+def _read_address_file(path, name):
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError(
+            f'tailcat_address_file for {name!r} must be an absolute path')
+    try:
+        with open(path) as f:
+            return f.read(8192).strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f'Cannot read tailcat_address_file for {name!r}: '
+            f'{getattr(exc, "strerror", None) or exc}')
+
+
+def _parse_tailcat_entry(entry, scope):
+    # Every message below names the host, never the address: the address
+    # is the credential, and these errors reach logs and (for users) the
+    # browser.
+    name = entry.get('name', tailcat.DEFAULT_NAME)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('Tailcat host name must be a non-empty string')
+    name = name.strip()
+    if entry.get('hostname'):
+        raise ValueError(
+            f'Tailcat host {name!r} must not set hostname; '
+            'it is reached by its tailcat_address')
+    address = entry.get('tailcat_address', '')
+    if scope == 'admin' and 'tailcat_address_file' in entry:
+        if address:
+            raise ValueError(
+                f'Tailcat host {name!r} sets both tailcat_address and '
+                'tailcat_address_file')
+        address = _read_address_file(entry['tailcat_address_file'], name)
+    elif 'tailcat_address_file' in entry:
+        raise ValueError('tailcat_address_file is not allowed here')
+    address = tailcat.validate_address(address, name)
+    port = _parse_port(entry, name)
+    host = {
+        'name': name,
+        'transport': 'tailcat',
+        'tailcat_address': address,
+        'port': port,
+        'host_keys': _parse_host_keys(entry, name),
+    }
+    if scope == 'admin':
+        if 'tailcat_identity' in entry:
+            raise ValueError(
+                f'Tailcat host {name!r}: use tailcat_key (a key file path) '
+                'in the config file, not tailcat_identity')
+        key_path = entry.get('tailcat_key', '')
+        if key_path:
+            tailcat.load_key_file(key_path)
+            host['tailcat_key'] = key_path
+        host['id'] = tailcat.admin_host_id(address, port)
+    else:
+        # A user must never be able to point tailcat at a file on the
+        # server; their key lives in their own data directory.
+        if 'tailcat_key' in entry:
+            raise ValueError('tailcat_key is not allowed here')
+        identity = entry.get('tailcat_identity', False)
+        if not isinstance(identity, bool):
+            raise ValueError('tailcat_identity must be a boolean')
+        host['tailcat_identity'] = identity
+        host_id = entry.get('id')
+        if not (isinstance(host_id, str)
+                and tailcat.USER_ID_RE.match(host_id)):
+            host_id = tailcat.new_user_host_id()
+        host['id'] = host_id
+    return host
 
 
 def parse_allowed_hosts(data):
@@ -392,6 +496,10 @@ def apply_config_settings(options):
         options.user_hosts = bool(config['user_hosts'])
     if options.shell_integration and 'shell_integration' in config:
         options.shell_integration = bool(config['shell_integration'])
+    if 'user_tailcat_hosts' in config and not options.user_tailcat_hosts:
+        options.user_tailcat_hosts = bool(config['user_tailcat_hosts'])
+    if 'tailcat' in config:
+        apply_tailcat_config(options, config['tailcat'])
     if 'idle_timeout' in config:
         raw = config['idle_timeout']
         try:
@@ -425,6 +533,53 @@ def apply_config_settings(options):
                 options.tdstream = existing + ',' + ','.join(proxy_entries)
             else:
                 options.tdstream = ','.join(proxy_entries)
+
+
+def apply_tailcat_config(options, block):
+    """Apply the config file's `tailcat:` mapping. CLI values win."""
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError('Config "tailcat" must be a mapping')  # noqa: TRY004
+    unknown = set(block) - {'binary', 'timeout', 'derpmap_url', 'state_dir'}
+    if unknown:
+        raise ValueError(
+            f'Unknown key(s) in config "tailcat": {", ".join(sorted(unknown))}')
+    if 'binary' in block and options.tailcat_binary == 'tailcat':
+        binary = block['binary']
+        if not isinstance(binary, str) or not binary.strip():
+            raise ValueError('tailcat.binary must be a non-empty string')
+        options.tailcat_binary = binary.strip()
+    if 'timeout' in block and options.tailcat_timeout == 30:
+        try:
+            timeout = float(block['timeout'])
+        except (TypeError, ValueError):
+            raise ValueError('tailcat.timeout must be a number of seconds')
+        if not 0 < timeout <= 600:
+            raise ValueError('tailcat.timeout must be between 0 and 600 seconds')
+        options.tailcat_timeout = timeout
+    if 'derpmap_url' in block and not options.tailcat_derpmap_url:
+        url = block['derpmap_url']
+        if (not isinstance(url, str)
+                or not url.startswith(('https://', 'http://'))
+                or any(c.isspace() or ord(c) < 32 for c in url)):
+            raise ValueError('tailcat.derpmap_url must be an http(s) URL')
+        options.tailcat_derpmap_url = url
+    if 'state_dir' in block and not options.tailcat_state_dir:
+        state_dir = block['state_dir']
+        if not isinstance(state_dir, str) or not os.path.isabs(state_dir):
+            raise ValueError('tailcat.state_dir must be an absolute path')
+        options.tailcat_state_dir = state_dir
+
+
+def get_tailcat_settings(options, user_data_dir=''):
+    return tailcat.TailcatSettings(
+        binary=options.tailcat_binary,
+        timeout=options.tailcat_timeout,
+        derpmap_url=options.tailcat_derpmap_url,
+        state_dir=(options.tailcat_state_dir
+                   or tailcat.default_state_dir(user_data_dir)),
+    )
 
 
 def check_user_key_dir(user_key_dir, tdstream=''):

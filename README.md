@@ -17,6 +17,8 @@ Built on Python, Tornado, Paramiko, and xterm.js.
 * Per-user server-side SSH key generation and storage
 * Per-user host lists and preferences that roam across browsers and machines
 * YAML configuration with host allowlisting and host key pinning
+* Tailcat hosts: reach SSH servers through a [tailcat](https://github.com/tailscale/tailcat)
+  tunnel, configured by the administrator or (opt-in) by users
 * Hostname:port shortcut in the connect form
 * Username pre-filled from auth proxy header
 * Fullscreen, resizable terminal with auto-detected encoding
@@ -144,6 +146,25 @@ it, any client can claim any username and reach that user's stored hosts.
 
 Secrets (passwords, TOTP codes, key passphrases) are never stored server-side,
 whether for administrator or personal hosts.
+
+### Tailcat hosts
+
+A host can be reached through a [tailcat](https://github.com/tailscale/tailcat)
+tunnel instead of a hostname: no open inbound port on the server, no Tailscale
+account. Administrators add `transport: tailcat` entries to `hosts:`; with
+`user_tailcat_hosts: true` (on top of `user_hosts`), users can add their own and
+keep a Tailcat client identity in Settings. The container image ships tailcat
+v0.7.0. Addresses are credentials and never reach the browser or the logs.
+Administrator hosts are configured only in the YAML file; there is no web
+administration page. See
+[docs/tailcat.md](docs/tailcat.md) for configuration, the security model and tests.
+
+```yaml
+hosts:
+  - name: "Lab box"
+    transport: tailcat
+    tailcat_address: "tcXXXXXXXX..."
+```
 
 ### File transfer
 

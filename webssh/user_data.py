@@ -6,6 +6,7 @@ import tempfile
 import time
 import uuid
 
+from webssh import tailcat
 from webssh.settings import parse_host_entry
 from webssh.user_keys import sanitize_username
 from webssh.utils import is_valid_encoding
@@ -19,6 +20,9 @@ MAX_CORRUPT_COPIES = 20
 
 HOSTS_FILENAME = 'hosts.json'
 SETTINGS_FILENAME = 'settings.json'
+# A user's Tailcat client identity. Written in the JSON form tailcat reads,
+# so the file can be handed straight to `tailcat --key=<path>`.
+TAILCAT_IDENTITY_FILENAME = 'tailcat-identity.private.json'
 
 COLOR_RE = re.compile(r'^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|[a-zA-Z]{1,20})$')
 TERM_RE = re.compile(r'^[a-zA-Z0-9._-]{1,32}$')
@@ -56,7 +60,15 @@ def _check_string(value, name, allow_empty=True):
     return value
 
 
-def validate_hosts(hosts):
+def validate_hosts(hosts, existing=None, allow_tailcat=False):
+    """Validate a user's whole host list.
+
+    A Tailcat entry's address is write-only: the browser never gets it back
+    (see tailcat.public_host), so an edit of a saved Tailcat host arrives
+    with its id and no address. `existing` -- the list currently on disk --
+    supplies the saved address for those. A Tailcat entry is rejected
+    outright unless allow_tailcat.
+    """
     if not isinstance(hosts, list):
         # See _check_string above: ValueError is intentional here too, for
         # the same 400-vs-500 reason.
@@ -64,9 +76,26 @@ def validate_hosts(hosts):
     if len(hosts) > MAX_HOSTS:
         raise ValueError(f'Too many hosts; the limit is {MAX_HOSTS}')
 
+    saved_addresses = {
+        h['id']: h['tailcat_address']
+        for h in (existing or [])
+        if tailcat.is_tailcat(h) and h.get('id') and h.get('tailcat_address')
+    }
+    seen_ids = set()
     result = []
     for entry in hosts:
-        host = parse_host_entry(entry)
+        if tailcat.is_tailcat(entry):
+            if not allow_tailcat:
+                raise ValueError('Tailcat hosts are not enabled on this server')
+            if not entry.get('tailcat_address'):
+                saved = saved_addresses.get(entry.get('id'))
+                if saved:
+                    entry = dict(entry, tailcat_address=saved)
+        host = parse_host_entry(entry, scope='user')
+        if tailcat.is_tailcat(host):
+            if host['id'] in seen_ids:
+                host['id'] = tailcat.new_user_host_id()
+            seen_ids.add(host['id'])
         host['username'] = _check_string(
             entry.get('username', ''), 'username')
         host['default_command'] = _check_string(
@@ -207,7 +236,8 @@ def _read_json(base_dir, username, filename, payload_key, empty):
     return payload
 
 
-def _write_json(base_dir, username, filename, payload_key, payload):
+def _write_file(base_dir, username, filename, body):
+    """Atomically replace one file in the user's directory, mode 0600."""
     user_dir = get_user_data_dir(base_dir, username)
     try:
         os.makedirs(user_dir, mode=0o700, exist_ok=True)
@@ -217,17 +247,14 @@ def _write_json(base_dir, username, filename, payload_key, payload):
             f'Check ownership of {base_dir!r}'
         )
 
-    body = json.dumps(
-        {'version': SCHEMA_VERSION, payload_key: payload}, indent=2
-    ).encode()
-
     path = os.path.join(user_dir, filename)
     fd, tmp_path = tempfile.mkstemp(dir=user_dir)
     try:
         # os.fdopen + file.write loops until every byte is written (or
         # raises), unlike a bare os.write, which is permitted to return
         # having written fewer bytes than asked and cannot be relied on
-        # for a single call over an arbitrary payload size.
+        # for a single call over an arbitrary payload size. mkstemp already
+        # created the file 0600, so a secret is never briefly readable.
         with os.fdopen(fd, 'wb') as f:
             f.write(body)
             f.flush()
@@ -238,20 +265,30 @@ def _write_json(base_dir, username, filename, payload_key, payload):
             os.unlink(tmp_path)
         except OSError:
             pass
-        # Every caller of write_hosts/write_settings only catches
-        # ValueError; an uncaught OSError here would otherwise escape as
-        # an unhandled 500 with no useful message for the client.
+        # Every caller only catches ValueError; an uncaught OSError here
+        # would otherwise escape as an unhandled 500 with no useful
+        # message for the client.
         raise ValueError(
             f'Could not write {filename} for user {username!r}: {exc}'
         )
+    return path
+
+
+def _write_json(base_dir, username, filename, payload_key, payload):
+    body = json.dumps(
+        {'version': SCHEMA_VERSION, payload_key: payload}, indent=2
+    ).encode()
+    _write_file(base_dir, username, filename, body)
 
 
 def read_hosts(base_dir, username):
     return _read_json(base_dir, username, HOSTS_FILENAME, 'hosts', [])
 
 
-def write_hosts(base_dir, username, hosts):
-    validated = validate_hosts(hosts)
+def write_hosts(base_dir, username, hosts, allow_tailcat=False):
+    validated = validate_hosts(
+        hosts, existing=read_hosts(base_dir, username),
+        allow_tailcat=allow_tailcat)
     _write_json(base_dir, username, HOSTS_FILENAME, 'hosts', validated)
     return validated
 
@@ -265,3 +302,42 @@ def write_settings(base_dir, username, settings):
     _write_json(
         base_dir, username, SETTINGS_FILENAME, 'settings', validated)
     return validated
+
+
+def tailcat_identity_path(base_dir, username):
+    return os.path.join(get_user_data_dir(base_dir, username),
+                        TAILCAT_IDENTITY_FILENAME)
+
+
+def read_tailcat_identity(base_dir, username):
+    """The user's Tailcat private key, or '' if none (or it is unreadable)."""
+    path = tailcat_identity_path(base_dir, username)
+    if not os.path.isfile(path):
+        return ''
+    try:
+        with open(path, 'rb') as f:
+            return tailcat.parse_private_key(
+                f.read(tailcat.MAX_KEY_FILE_SIZE + 1), require_json=True)
+    except (OSError, ValueError) as exc:
+        logger.error(
+            f'Unreadable Tailcat identity for user {username!r}: {exc}')
+        return ''
+
+
+def write_tailcat_identity(base_dir, username, private_key):
+    """Save a validated private key; return its public "nodekey:" half."""
+    private_key = tailcat.parse_private_key(private_key)
+    _write_file(base_dir, username, TAILCAT_IDENTITY_FILENAME,
+                tailcat.key_file_body(private_key))
+    return tailcat.public_key(private_key)
+
+
+def delete_tailcat_identity(base_dir, username):
+    path = tailcat_identity_path(base_dir, username)
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ValueError(
+            f'Could not delete Tailcat identity for user {username!r}: {exc}')
