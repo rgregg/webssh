@@ -21,6 +21,17 @@
 #   - name: "Database Server"
 #     hostname: "db.internal"
 #     port: 3022
+#   # A host reached through a tailcat tunnel instead of a hostname. The
+#   # address is a credential: keep this file private, or move the address
+#   # to a file with tailcat_address_file. See docs/tailcat.md.
+#   - name: "Lab box"
+#     transport: tailcat
+#     tailcat_address: "tcXXXXXXXX..."
+#     # tailcat_address_file: /run/secrets/lab-tailcat-address
+#     # port: 22    # port behind the tailcat server
+#     # Client identity for servers started with --allow=nodekey:...; the
+#     # JSON file `tailcat genkey --client --key=/path/x.private.json` writes.
+#     # tailcat_key: /data/tailcat/lab-client.private.json
 
 # Per-user SSH key management (optional)
 # When set, authenticated users can generate and store Ed25519 SSH key pairs
@@ -44,6 +55,18 @@
 # Requires an authenticated username via userheader. Set trusted_proxies so the
 # header cannot be spoofed.
 # user_hosts: true
+
+# Let users add their own Tailcat hosts and keep a Tailcat client identity
+# (optional, needs user_hosts). Off by default: like user_hosts, it lets users
+# reach destinations outside the hosts allowlist. See docs/tailcat.md.
+# user_tailcat_hosts: true
+
+# tailcat runtime settings (optional; all keys optional)
+# tailcat:
+#   binary: /usr/local/bin/tailcat   # default: tailcat on PATH
+#   timeout: 30                      # seconds to set up a connection
+#   derpmap_url: https://derp.example.com/derpmap.json
+#   state_dir: /data/tailcat         # default: <userdatadir>/.tailcat
 
 # Directory for per-user hosts and settings (optional)
 # Defaults to userkeydir when unset, placing hosts.json and settings.json

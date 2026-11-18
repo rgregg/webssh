@@ -1172,7 +1172,7 @@ class TestUserDataApi(UserDataTestBase):
             f'denied. Check ownership of {secret_path!r}'
         )
 
-        def boom(base_dir, username, hosts):
+        def boom(base_dir, username, hosts, **kwargs):
             raise ValueError(message)
 
         with (
@@ -2264,6 +2264,12 @@ class TestShellIntegrationSendSite(OptionsRestoreMixin, unittest.TestCase):
         fake_self.ssh_client = ssh_client
         fake_self.loop = mock.Mock()
         fake_self.get_argument.return_value = ''
+        # A plain SSH connection: no Tailcat host selected, and the real
+        # session setup (where the send site lives) rather than a Mock.
+        fake_self.tailcat_host = None
+        fake_self.start_session = (
+            lambda ssh, dst_addr: handler.IndexHandler.start_session(
+                fake_self, ssh, dst_addr))
         return fake_self
 
     def test_sends_snippet_when_shell_integration_is_enabled(self):

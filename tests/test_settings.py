@@ -256,6 +256,11 @@ class TestSettings(unittest.TestCase):
             'userdatadir': '',
             'user_hosts': False,
             'shell_integration': True,
+            'user_tailcat_hosts': False,
+            'tailcat_binary': 'tailcat',
+            'tailcat_timeout': 30,
+            'tailcat_derpmap_url': '',
+            'tailcat_state_dir': '',
         }
         defaults.update(overrides)
         return type('Options', (), defaults)()

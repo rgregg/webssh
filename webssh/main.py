@@ -8,12 +8,13 @@ import tornado.web
 from tornado.ioloop import PeriodicCallback
 from tornado.options import options
 
-from webssh import handler
+from webssh import handler, tailcat
 from webssh.handler import (
     AuthDoneHandler,
     IndexHandler,
     NotFoundHandler,
     SettingsPaneHandler,
+    TailcatIdentityHandler,
     TransferDownloadHandler,
     TransferListHandler,
     TransferTicketHandler,
@@ -35,6 +36,7 @@ from webssh.settings import (
     get_policy_setting,
     get_server_settings,
     get_ssl_context,
+    get_tailcat_settings,
     get_user_data_dir_setting,
     load_config_file,
     parse_allowed_hosts,
@@ -59,6 +61,9 @@ def make_handlers(loop, options, live_config=None):
 
     user_data_dir = get_user_data_dir_setting(options)
     user_hosts_enabled = bool(options.user_hosts and user_data_dir)
+    user_tailcat_enabled = bool(
+        user_hosts_enabled and options.user_tailcat_hosts)
+    tailcat_settings = get_tailcat_settings(options, user_data_dir)
 
     user_data_kwargs = {
         'loop': loop,
@@ -66,7 +71,8 @@ def make_handlers(loop, options, live_config=None):
         'user_header': user_header,
         'user_hosts_enabled': user_hosts_enabled,
         'allowed_hosts': allowed_hosts,
-        'live_config': live_config
+        'live_config': live_config,
+        'user_tailcat_enabled': user_tailcat_enabled,
     }
 
     index_kwargs = {
@@ -77,7 +83,9 @@ def make_handlers(loop, options, live_config=None):
         'user_header': user_header,
         'user_data_dir': user_data_dir,
         'user_hosts_enabled': user_hosts_enabled,
-        'live_config': live_config
+        'live_config': live_config,
+        'user_tailcat_enabled': user_tailcat_enabled,
+        'tailcat_settings': tailcat_settings,
     }
 
     transfer_kwargs = {'loop': loop}
@@ -93,6 +101,7 @@ def make_handlers(loop, options, live_config=None):
         (r'/api/hosts', UserHostsHandler, user_data_kwargs),
         (r'/api/settings', UserSettingsHandler, user_data_kwargs),
         (r'/settings-pane', SettingsPaneHandler, user_data_kwargs),
+        (r'/api/tailcat-identity', TailcatIdentityHandler, user_data_kwargs),
     ]
 
     if user_key_dir:
@@ -227,6 +236,18 @@ def check_user_hosts_configuration(user_hosts, user_data_dir, tdstream=''):
     check_user_data_dir(user_data_dir, tdstream)
 
 
+def check_tailcat_configuration(options, allowed_hosts):
+    """Warn at startup when Tailcat hosts are configured but cannot work."""
+    user_tailcat = bool(options.user_tailcat_hosts and options.user_hosts)
+    if options.user_tailcat_hosts and not options.user_hosts:
+        logger.warning(
+            'user_tailcat_hosts is set but user_hosts is not; users cannot '
+            'add Tailcat hosts.')
+    if not (user_tailcat or any(tailcat.is_tailcat(h) for h in allowed_hosts)):
+        return
+    tailcat.check_binary(options.tailcat_binary)
+
+
 def main():
     options.parse_command_line()
     if not options.config and os.path.isfile(DEFAULT_CONFIG_PATH):
@@ -242,6 +263,7 @@ def main():
     live_config = {}
     app = make_app(make_handlers(loop, options, live_config),
                    get_app_settings(options))
+    check_tailcat_configuration(options, live_config['allowed_hosts'])
     # Pre-compile the template so the first request doesn't pay the cost
     loader = tornado.template.Loader(app.settings['template_path'])
     loader.load('index.html')

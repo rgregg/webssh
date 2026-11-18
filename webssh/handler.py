@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import posixpath
 import struct
 import time
@@ -18,10 +19,10 @@ from tornado.ioloop import IOLoop
 from tornado.options import options
 from tornado.process import cpu_count
 
-from webssh import transfer, user_data, user_keys
+from webssh import tailcat, transfer, user_data, user_keys
 from webssh import worker as worker_module
 from webssh._version import __version__
-from webssh.settings import max_upload_size
+from webssh.settings import get_tailcat_settings, max_upload_size
 from webssh.utils import (
     UnicodeType,
     is_ascii_encoding,
@@ -110,6 +111,24 @@ class InvalidValueError(Exception):
 
 class SSHClient(paramiko.SSHClient):
 
+    # Set for Tailcat hosts only. A `tailcat serve no-auth-ssh` server takes
+    # the SSH "none" method and nothing else -- the tunnel is the
+    # credential -- so with no key and no password, try that first.
+    allow_auth_none = False
+    # The tailcat child process carrying this connection, if any.
+    tailcat_proxy = None
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            # paramiko closes its socket when the transport closes, but not
+            # on every failure path (Transport.close returns early once the
+            # transport is inactive). Closing again is a no-op.
+            proxy = self.tailcat_proxy
+            if proxy is not None:
+                proxy.close()
+
     def handler(self, title, instructions, prompt_list):
         answers = []
         for prompt_, _ in prompt_list:
@@ -133,6 +152,14 @@ class SSHClient(paramiko.SSHClient):
         two_factor = False
         allowed_types = set()
         two_factor_types = {'keyboard-interactive', 'password'}
+
+        if self.allow_auth_none and pkey is None and not password:
+            logger.info('Trying none authentication')
+            try:
+                self._transport.auth_none(username)
+                return
+            except paramiko.SSHException as e:
+                saved_exception = e
 
         if pkey is not None:
             logger.info('Trying publickey authentication')
@@ -420,11 +447,16 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     # Per-request cache for get_effective_hosts. See its comment.
     _effective_hosts = None
+    # The Tailcat host entry this connect POST selected, if any.
+    tailcat_host = None
+    tailcat_key_path = None
+    user_tailcat_enabled = False
 
     def initialize(self, loop, policy, host_keys_settings, allowed_hosts=None,
                    user_key_dir='', user_header='X-Authentik-Username',
                    user_data_dir='', user_hosts_enabled=False,
-                   live_config=None):
+                   live_config=None, user_tailcat_enabled=False,
+                   tailcat_settings=None):
         super().initialize(loop)
         self.live_config = live_config if live_config is not None else {}
         self.policy = self.live_config.get('policy', policy)
@@ -436,6 +468,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         self.user_header = user_header
         self.user_data_dir = user_data_dir
         self.user_hosts_enabled = user_hosts_enabled
+        self.user_tailcat_enabled = user_tailcat_enabled
+        self.tailcat_settings = tailcat_settings
         self.ssh_client = self.get_ssh_client()
         self.debug = self.settings.get('debug', False)
         self.font = self.settings.get('font', '')
@@ -540,9 +574,13 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         if not username:
             return []
         try:
-            return user_data.read_hosts(self.user_data_dir, username)
+            hosts = user_data.read_hosts(self.user_data_dir, username)
         except ValueError:
             return []
+        if not self.user_tailcat_enabled:
+            # Saved while the feature was on; kept on disk, but unusable.
+            hosts = [h for h in hosts if not tailcat.is_tailcat(h)]
+        return hosts
 
     def get_effective_hosts(self):
         # Memoized per request. A connect POST asks twice -- once for the
@@ -554,20 +592,27 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             return self._effective_hosts
 
         admin = self.allowed_hosts
-        seen = {(h['hostname'], h['port']) for h in admin}
+        seen = {tailcat.host_identity(h) for h in admin}
         merged = list(admin)
         for host in self.get_user_hosts():
             if not isinstance(host, dict):
                 logger.warning(
                     f'Skipping malformed user host entry: {host!r}')
                 continue
-            hostname = host.get('hostname')
-            port = host.get('port')
-            if hostname is None or port is None:
+            if tailcat.is_tailcat(host):
+                malformed = not (host.get('tailcat_address')
+                                 and host.get('id')
+                                 and host.get('port') is not None)
+            else:
+                malformed = (host.get('hostname') is None
+                             or host.get('port') is None)
+            if malformed:
+                # repr of the entry could include a tailcat address.
                 logger.warning(
-                    f'Skipping malformed user host entry: {host!r}')
+                    f'Skipping malformed user host entry: '
+                    f'{tailcat.redact(repr(host))}')
                 continue
-            if (hostname, port) not in seen:
+            if tailcat.host_identity(host) not in seen:
                 merged.append(host)
         self._effective_hosts = merged
         return merged
@@ -575,7 +620,13 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
     def check_allowed_hosts(self, hostname, port):
         if not self.allowed_hosts:
             return
+        # A Tailcat entry never matches here: it has no hostname, and a
+        # Tailcat host is only reachable through get_tailcat_host. A config
+        # whose hosts are all Tailcat therefore still restricts plain SSH --
+        # to nothing.
         for host in self.get_effective_hosts():
+            if tailcat.is_tailcat(host):
+                continue
             if host['hostname'] == hostname and host['port'] == port:
                 return
         raise tornado.web.HTTPError(
@@ -584,6 +635,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
 
     def load_configured_host_key(self, hostname, port):
         for host in self.get_effective_hosts():
+            if tailcat.is_tailcat(host):
+                continue
             if host['hostname'] == hostname and host['port'] == port:
                 for key_str in host.get('host_keys', []):
                     self._add_host_key(hostname, port, key_str)
@@ -619,9 +672,70 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             f'Loaded configured host key ({key_type}) for {host_entry}'
         )
 
+    def get_tailcat_host(self, value):
+        """The Tailcat host a "tailcat:<id>" form value names, or 403.
+
+        Unlike plain SSH there is no free-text fallback: a Tailcat host is
+        reachable only when the administrator's config, or (with
+        user_tailcat_hosts) the user's own saved list, defines it.
+        """
+        host_id = value[len(tailcat.HOST_PREFIX):]
+        if not tailcat.ID_RE.match(host_id):
+            raise InvalidValueError('Invalid Tailcat host.')
+        for host in self.get_effective_hosts():
+            if tailcat.is_tailcat(host) and host.get('id') == host_id:
+                return host
+        raise tornado.web.HTTPError(
+            403, 'Connection to this Tailcat host is not allowed.')
+
+    def get_tailcat_key_path(self, host):
+        if host['id'].startswith('a'):
+            return host.get('tailcat_key') or None
+        if not host.get('tailcat_identity'):
+            return None
+        username = self.request.headers.get(self.user_header, '')
+        try:
+            path = user_data.tailcat_identity_path(
+                self.user_data_dir, username)
+        except ValueError:
+            raise InvalidValueError('Invalid username.')
+        if not os.path.isfile(path):
+            raise InvalidValueError(
+                'This host uses your Tailcat identity, but none is saved. '
+                'Generate or import one in Settings.')
+        return path
+
+    def prepare_tailcat(self, host):
+        """Point this request's SSH client at a Tailcat host.
+
+        Host keys come from the entry's own pins only: known_hosts files
+        and the missing-host-key policy are for hostnames, and the tunnel
+        already authenticated the server (see TailcatHostKeyPolicy).
+        """
+        label = tailcat.host_label(host)
+        ssh = self.ssh_client
+        ssh._system_host_keys = paramiko.HostKeys()
+        ssh._host_keys = paramiko.HostKeys()
+        ssh._shared_host_keys = None
+        ssh._host_keys_filename = None
+        ssh.set_missing_host_key_policy(tailcat.TailcatHostKeyPolicy())
+        ssh.allow_auth_none = True
+        for key_str in host.get('host_keys', []):
+            self._add_host_key(label, host['port'], key_str)
+        self.tailcat_host = host
+        self.tailcat_key_path = self.get_tailcat_key_path(host)
+        return label, host['port']
+
     def get_args(self):
-        hostname = self.get_hostname()
-        port = self.get_port()
+        raw_hostname = self.get_value('hostname')
+        tailcat_host = None
+        if raw_hostname.startswith(tailcat.HOST_PREFIX):
+            tailcat_host = self.get_tailcat_host(raw_hostname)
+            hostname, port = tailcat.host_label(tailcat_host), \
+                tailcat_host['port']
+        else:
+            hostname = self.get_hostname()
+            port = self.get_port()
         username = self.get_value('username')
         password = self.get_argument('password', '')
         passphrase = self.get_argument('passphrase', '')
@@ -647,11 +761,14 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         else:
             privatekey, filename = self.get_privatekey()
 
-        self.check_allowed_hosts(hostname, port)
-        self.load_configured_host_key(hostname, port)
+        if tailcat_host is not None:
+            self.prepare_tailcat(tailcat_host)
+        else:
+            self.check_allowed_hosts(hostname, port)
+            self.load_configured_host_key(hostname, port)
 
-        if isinstance(self.policy, paramiko.RejectPolicy):
-            self.lookup_hostname(hostname, port)
+            if isinstance(self.policy, paramiko.RejectPolicy):
+                self.lookup_hostname(hostname, port)
 
         if privatekey:
             pkey = PrivateKey(privatekey, passphrase, filename).get_pkey_obj()
@@ -715,6 +832,9 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         return 'utf-8'
 
     def ssh_connect(self, args):
+        if self.tailcat_host is not None:
+            return self.tailcat_connect(args)
+
         ssh = self.ssh_client
         dst_addr = args[:2]
         logger.info(f'Connecting to {dst_addr[0]}:{dst_addr[1]}')
@@ -730,6 +850,66 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
         except paramiko.BadHostKeyException:
             raise ValueError('Bad host key.')
 
+        return self.start_session(ssh, dst_addr)
+
+    def tailcat_connect(self, args):
+        """Connect through a tailcat child process. Runs on the executor.
+
+        args[0] is the host's label, never its address, so everything
+        logged or raised from here names the host safely.
+        """
+        ssh = self.ssh_client
+        host = self.tailcat_host
+        dst_addr = args[:2]
+        label = dst_addr[0]
+        settings = self.tailcat_settings or get_tailcat_settings(options)
+        logger.info(f'Connecting to {label} ({host["name"]!r}) over Tailcat')
+
+        try:
+            proxy = tailcat.open_proxy(
+                settings, host['tailcat_address'], host['port'], label,
+                key_path=self.tailcat_key_path)
+        except OSError as exc:
+            logger.error(
+                f'Could not start tailcat for {label}: '
+                f'{tailcat.redact(exc)}')
+            raise ValueError('Tailcat is not available on this server.')
+        ssh.tailcat_proxy = proxy
+
+        timeout = settings.timeout
+        try:
+            ssh.connect(*args, sock=proxy, timeout=timeout,
+                        banner_timeout=timeout, auth_timeout=timeout)
+            return self.start_session(ssh, dst_addr)
+        except paramiko.BadAuthenticationType:
+            self.tailcat_cleanup(ssh, proxy, label)
+            raise ValueError('Bad authentication type.')
+        except paramiko.AuthenticationException:
+            self.tailcat_cleanup(ssh, proxy, label)
+            raise ValueError('Authentication failed.')
+        except paramiko.BadHostKeyException:
+            self.tailcat_cleanup(ssh, proxy, label)
+            raise ValueError('Bad host key.')
+        except (OSError, EOFError, paramiko.SSHException) as exc:
+            self.tailcat_cleanup(ssh, proxy, label)
+            logger.warning(
+                f'Tailcat connection to {label} failed: '
+                f'{tailcat.redact(exc)}')
+            raise ValueError(
+                f'Unable to connect to {host["name"]} over Tailcat.')
+        except BaseException:
+            self.tailcat_cleanup(ssh, proxy, label)
+            raise
+
+    @staticmethod
+    def tailcat_cleanup(ssh, proxy, label):
+        """Close a failed Tailcat connection, child process included."""
+        ssh.close()
+        detail = proxy.stderr_summary()
+        if detail:
+            logger.info(f'tailcat for {label} said: {detail}')
+
+    def start_session(self, ssh, dst_addr):
         transport = ssh.get_transport()
         if transport:
             transport.set_keepalive(30)
@@ -792,7 +972,10 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
             except ValueError:
                 pass
 
-        user_hosts = self.get_user_hosts()
+        # Public views only: a Tailcat entry's address and key path must
+        # never reach the page. See tailcat.public_host.
+        user_hosts = [tailcat.public_host(h, owner=True)
+                      for h in self.get_user_hosts()]
         user_settings = {}
         if self.user_hosts_enabled and auth_username:
             try:
@@ -802,7 +985,8 @@ class IndexHandler(MixinHandler, tornado.web.RequestHandler):
                 user_settings = {}
 
         self.render('index.html', debug=self.debug, font=self.font,
-                    allowed_hosts=self.allowed_hosts,
+                    allowed_hosts=[tailcat.public_host(h)
+                                   for h in self.allowed_hosts],
                     user_key_enabled=user_key_enabled,
                     has_stored_key=has_key,
                     public_key=public_key,
@@ -901,17 +1085,23 @@ class UserKeyHandler(MixinHandler, tornado.web.RequestHandler):
 class UserDataMixin:
 
     def initialize(self, loop, user_data_dir, user_header,
-                   user_hosts_enabled, allowed_hosts=None, live_config=None):
+                   user_hosts_enabled, allowed_hosts=None, live_config=None,
+                   user_tailcat_enabled=False):
         super().initialize(loop)
         self.user_data_dir = user_data_dir
         self.user_header = user_header
         self.user_hosts_enabled = user_hosts_enabled
+        self.user_tailcat_enabled = user_tailcat_enabled
         self.live_config = live_config if live_config is not None else {}
         self._allowed_hosts = allowed_hosts or []
 
     @property
     def allowed_hosts(self):
         return self.live_config.get('allowed_hosts', self._allowed_hosts) or []
+
+    @property
+    def public_admin_hosts(self):
+        return [tailcat.public_host(h) for h in self.allowed_hosts]
 
     def check_feature_enabled(self):
         # user_hosts_enabled already ANDs in user_data_dir (see main.py's
@@ -955,35 +1145,52 @@ class UserDataMixin:
 class UserHostsHandler(UserDataMixin, MixinHandler,
                        tornado.web.RequestHandler):
 
+    def visible_user_hosts(self, hosts):
+        return [tailcat.public_host(h, owner=True) for h in hosts
+                if self.user_tailcat_enabled or not tailcat.is_tailcat(h)]
+
     def get(self):
         self.check_feature_enabled()
         username = self.get_auth_username()
         self.write({
-            'admin_hosts': self.allowed_hosts,
-            'user_hosts': user_data.read_hosts(self.user_data_dir, username),
+            'admin_hosts': self.public_admin_hosts,
+            'user_hosts': self.visible_user_hosts(
+                user_data.read_hosts(self.user_data_dir, username)),
+            'tailcat_enabled': self.user_tailcat_enabled,
         })
 
     def put(self):
         self.check_feature_enabled()
         username = self.get_auth_username()
         hosts = self.get_json_body('hosts')
+        existing = user_data.read_hosts(self.user_data_dir, username)
         # Validate first: ValueErrors from validation describe the
         # caller's own input (bad hostname, bad port, ...) and are safe
-        # to return to the client as-is.
+        # to return to the client as-is. Tailcat validation messages name
+        # the host, never its address.
         try:
-            user_data.validate_hosts(hosts)
+            user_data.validate_hosts(
+                hosts, existing=existing,
+                allow_tailcat=self.user_tailcat_enabled)
         except ValueError as exc:
             raise tornado.web.HTTPError(400, str(exc))
+        if not self.user_tailcat_enabled and isinstance(hosts, list):
+            # The pane never showed these (see visible_user_hosts), so the
+            # list it sent cannot include them. Carry them forward rather
+            # than wipe them because the feature is switched off for now.
+            hosts = hosts + [h for h in existing if tailcat.is_tailcat(h)]
         # A failure here is about server state (disk permissions, a bad
         # data directory, ...), never the client's input. That detail
         # must never reach the client -- log it and return a generic 500.
         try:
-            stored = user_data.write_hosts(self.user_data_dir, username, hosts)
+            stored = user_data.write_hosts(
+                self.user_data_dir, username, hosts, allow_tailcat=True)
         except ValueError as exc:
             logger.error(
-                f'Failed to write hosts for user {username!r}: {exc}')
+                f'Failed to write hosts for user {username!r}: '
+                f'{tailcat.redact(exc)}')
             raise tornado.web.HTTPError(500, 'Failed to save hosts.')
-        self.write({'user_hosts': stored})
+        self.write({'user_hosts': self.visible_user_hosts(stored)})
 
 
 class UserSettingsHandler(UserDataMixin, MixinHandler,
@@ -1028,7 +1235,80 @@ class SettingsPaneHandler(UserDataMixin, MixinHandler,
         username = self.get_auth_username()
         self.render('settings.html',
                     auth_username=username,
-                    admin_hosts=self.allowed_hosts)
+                    admin_hosts=self.public_admin_hosts,
+                    tailcat_enabled=self.user_tailcat_enabled)
+
+
+class TailcatIdentityHandler(UserDataMixin, MixinHandler,
+                             tornado.web.RequestHandler):
+    """A user's Tailcat client identity: generate, import, show, delete.
+
+    The private key never leaves the server once saved; responses carry
+    only its public "nodekey:" half, which the user adds to a server's
+    `tailcat serve --allow=...`.
+    """
+
+    def check_feature_enabled(self):
+        super().check_feature_enabled()
+        if not self.user_tailcat_enabled:
+            raise tornado.web.HTTPError(
+                403, 'Tailcat hosts are not enabled.')
+
+    def describe(self, username):
+        private_key = user_data.read_tailcat_identity(
+            self.user_data_dir, username)
+        if not private_key:
+            return {'has_key': False, 'public_key': ''}
+        return {'has_key': True,
+                'public_key': tailcat.public_key(private_key)}
+
+    def get(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        self.set_header('Cache-Control', 'no-store')
+        self.write(self.describe(username))
+
+    def post(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        try:
+            data = json.loads(self.request.body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            raise tornado.web.HTTPError(400, 'Malformed JSON body.')
+        if not isinstance(data, dict):
+            raise tornado.web.HTTPError(400, 'Body must be a JSON object.')
+        if data.get('generate') is True:
+            private_key = tailcat.generate_private_key()
+        elif 'import' in data:
+            try:
+                private_key = tailcat.parse_private_key(data['import'])
+            except ValueError as exc:
+                # parse_private_key never echoes its input.
+                raise tornado.web.HTTPError(400, str(exc))
+        else:
+            raise tornado.web.HTTPError(
+                400, 'Send {"generate": true} or {"import": "<key>"}.')
+        try:
+            public = user_data.write_tailcat_identity(
+                self.user_data_dir, username, private_key)
+        except ValueError as exc:
+            logger.error(
+                f'Failed to save Tailcat identity for user {username!r}: '
+                f'{tailcat.redact(exc)}')
+            raise tornado.web.HTTPError(500, 'Failed to save the key.')
+        logger.info(f'Saved Tailcat identity {public} for user {username!r}')
+        self.set_header('Cache-Control', 'no-store')
+        self.write({'has_key': True, 'public_key': public})
+
+    def delete(self):
+        self.check_feature_enabled()
+        username = self.get_auth_username()
+        try:
+            user_data.delete_tailcat_identity(self.user_data_dir, username)
+        except ValueError as exc:
+            logger.error(str(exc))
+            raise tornado.web.HTTPError(500, 'Failed to delete the key.')
+        self.write({'has_key': False, 'public_key': ''})
 
 
 class AuthDoneHandler(MixinHandler, tornado.web.RequestHandler):

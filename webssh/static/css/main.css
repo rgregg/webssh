@@ -930,6 +930,17 @@ body.has-tabs .terminal-pane .xterm.fullscreen {
 
 .settings-checkbox { display: flex; align-items: center; gap: 8px; }
 
+/* A Tailcat row stacks its transport select, address and identity toggle
+   in the hostname column. [hidden] must win over .field-input's display. */
+.settings-table td > .host-transport,
+.settings-table td > .host-tailcat-identity-label { margin-bottom: 4px; }
+.settings-table td > .host-transport + .field-input { margin-top: 4px; }
+.settings-table [hidden] { display: none !important; }
+.host-tailcat-identity-label { font-size: 0.8em; margin-top: 4px; }
+
+.settings-hint { font-size: 0.85em; opacity: 0.75; margin: 0 0 8px; }
+.tailcat-identity { margin-bottom: 16px; }
+
 .settings-footer {
   display: flex;
   align-items: center;

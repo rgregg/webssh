@@ -27,7 +27,11 @@
           {% for host in admin_hosts %}
           <tr class="admin-host">
             <td>{{ host['name'] }}</td>
+            {% if host.get('transport') == 'tailcat' %}
+            <td><span class="host-badge">tailcat</span> address hidden</td>
+            {% else %}
             <td>{{ host['hostname'] }}</td>
+            {% end %}
             <td>{{ host['port'] }}</td>
             <td colspan="3"></td>
             <td><span class="host-badge">admin</span></td>
@@ -93,6 +97,26 @@
           <input class="field-input" type="text" id="set-term" placeholder="xterm-256color">
         </div>
       </div>
+      {% if tailcat_enabled %}
+      <div class="settings-subhead">Tailcat identity</div>
+      <div class="tailcat-identity" id="tailcat-identity">
+        <p class="settings-hint">
+          Tailcat hosts marked &ldquo;use my Tailcat identity&rdquo; connect
+          with this key. Add its public half to the server with
+          <code>tailcat serve --allow=nodekey:&hellip;</code>. The private key
+          stays on this server and is never shown again.
+        </p>
+        <textarea class="pubkey-display" id="tailcat-public-key" rows="2" readonly
+                  onclick="this.select()" placeholder="No Tailcat identity saved"></textarea>
+        <div class="stored-key-actions">
+          <button type="button" class="btn-generate" id="tailcat-generate-btn">Generate new identity</button>
+          <button type="button" class="btn-generate" id="tailcat-import-btn">Import key&hellip;</button>
+          <button type="button" class="btn-reset btn-danger" id="tailcat-delete-btn">Delete</button>
+          <input type="file" id="tailcat-import-file" accept=".json,application/json,text/plain" hidden>
+        </div>
+        <span class="settings-status" id="tailcat-identity-status"></span>
+      </div>
+      {% end %}
       <div class="field-row single">
         <div class="field-group">
           <span class="field-label">Preferred Key Source</span>
@@ -114,7 +138,23 @@
 <template id="host-row-template">
   <tr class="user-host">
     <td><input class="field-input host-name" type="text" placeholder="Name"></td>
-    <td><input class="field-input host-hostname" type="text" placeholder="hostname" required></td>
+    <td>
+      {% if tailcat_enabled %}
+      <select class="field-input host-transport" aria-label="Connection type">
+        <option value="ssh">SSH</option>
+        <option value="tailcat">Tailcat</option>
+      </select>
+      {% end %}
+      <input class="field-input host-hostname" type="text" placeholder="hostname" required>
+      {% if tailcat_enabled %}
+      <!-- type=password: the address is the credential for the host. -->
+      <input class="field-input host-tailcat-address" type="password" autocomplete="off"
+             spellcheck="false" placeholder="tc... tailcat address" hidden>
+      <label class="settings-checkbox host-tailcat-identity-label" hidden>
+        <input type="checkbox" class="host-tailcat-identity"> use my Tailcat identity
+      </label>
+      {% end %}
+    </td>
     <td><input class="field-input host-port" type="number" min="1" max="65535" placeholder="22"></td>
     <td><input class="field-input host-username" type="text" placeholder="login user"></td>
     <td><input class="field-input host-command" type="text" placeholder="default command"></td>

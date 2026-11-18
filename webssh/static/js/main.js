@@ -962,17 +962,51 @@ jQuery(function($){
   }
 
 
+  // Show the fields for the row's transport. The transport select only
+  // exists when the server allows user Tailcat hosts.
+  function apply_row_transport(row) {
+    var is_tailcat = row.find('.host-transport').val() === 'tailcat';
+    row.find('.host-hostname').prop('hidden', is_tailcat);
+    row.find('.host-tailcat-address').prop('hidden', !is_tailcat);
+    row.find('.host-tailcat-identity-label').prop('hidden', !is_tailcat);
+  }
+
+
   function add_host_row(pane, host) {
     host = host || {};
     var tpl = pane.find('#host-row-template')[0];
-    var row = $(document.importNode(tpl.content, true));
+    var fragment = $(document.importNode(tpl.content, true));
+    var row = fragment.find('tr.user-host');
+    var is_tailcat = host.transport === 'tailcat';
     row.find('.host-name').val(host.name || '');
-    row.find('.host-hostname').val(host.hostname || '');
+    // A Tailcat host's hostname is its "tailcat:<id>" handle, not
+    // something to edit.
+    row.find('.host-hostname').val(is_tailcat ? '' : (host.hostname || ''));
     row.find('.host-port').val(host.port || '');
     row.find('.host-username').val(host.username || '');
     row.find('.host-command').val(host.default_command || '');
     row.find('.host-keys').val((host.host_keys || []).join('\n'));
-    pane.find('#user-host-rows').append(row);
+    if (is_tailcat) {
+      row.find('.host-transport').val('tailcat');
+      row.attr('data-tailcat-id', host.id || '');
+      row.find('.host-tailcat-identity').prop('checked',
+                                              host.tailcat_identity === true);
+      // The saved address is never sent back; typing a new one replaces it.
+      if (host.tailcat_address_saved) {
+        row.find('.host-tailcat-address')
+          .attr('placeholder', 'address saved; paste a new one to replace it');
+      }
+    }
+    apply_row_transport(row);
+    pane.find('#user-host-rows').append(fragment);
+  }
+
+
+  function render_host_rows(pane, hosts) {
+    pane.find('#user-host-rows').empty();
+    for (var i = 0; i < hosts.length; i++) {
+      add_host_row(pane, hosts[i]);
+    }
   }
 
 
@@ -980,7 +1014,8 @@ jQuery(function($){
     var rows = [];
     var row_els = [];
     var bad_port_input_index = -1;
-    pane.find('#user-host-rows .host-port, #user-host-rows .host-hostname')
+    pane.find('#user-host-rows .host-port, #user-host-rows .host-hostname, ' +
+              '#user-host-rows .host-tailcat-address')
       .removeClass('input-error');
     pane.find('#user-host-rows tr.user-host').each(function() {
       var row = $(this);
@@ -1002,7 +1037,11 @@ jQuery(function($){
         port_text: row.find('.host-port').val(),
         keys_text: row.find('.host-keys').val(),
         username: row.find('.host-username').val(),
-        default_command: row.find('.host-command').val()
+        default_command: row.find('.host-command').val(),
+        transport: row.find('.host-transport').val() || 'ssh',
+        tailcat_address: row.find('.host-tailcat-address').val(),
+        tailcat_identity: row.find('.host-tailcat-identity').is(':checked'),
+        id: row.attr('data-tailcat-id') || ''
       });
     });
 
@@ -1058,6 +1097,12 @@ jQuery(function($){
       $(this).closest('tr').remove();
     });
 
+    pane.on('change', '.host-transport', function() {
+      apply_row_transport($(this).closest('tr'));
+    });
+
+    init_tailcat_identity(pane);
+
     pane.find('#set-font-size').val(user_settings.font_size || '');
     pane.find('#set-background').val(user_settings.background || '');
     pane.find('#set-foreground').val(user_settings.foreground || '');
@@ -1081,10 +1126,7 @@ jQuery(function($){
     // with an explicit error, if it fails).
     pane.find('#settings-save').prop('disabled', true);
     $.get('/api/hosts').done(function(data) {
-      var hosts = data.user_hosts || [];
-      for (var i = 0; i < hosts.length; i++) {
-        add_host_row(pane, hosts[i]);
-      }
+      render_host_rows(pane, data.user_hosts || []);
       pane.find('#settings-save').prop('disabled', false);
     }).fail(function() {
       settings_status(
@@ -1122,7 +1164,13 @@ jQuery(function($){
         url: '/api/hosts', type: 'PUT', contentType: 'application/json',
         headers: {'X-Xsrftoken': get_xsrf_token()},
         data: JSON.stringify({hosts: hosts})
-      }).done(function() {
+      }).done(function(saved) {
+        // Redraw from what the server stored: a new Tailcat host only gets
+        // its id here, and its address field must not keep the secret on
+        // screen once it is saved.
+        if (saved && saved.user_hosts) {
+          render_host_rows(pane, saved.user_hosts);
+        }
         // Hosts are now persisted regardless of what happens to settings
         // below, so refresh the dropdown now rather than only on full
         // success -- otherwise a settings failure leaves the dropdown
@@ -1148,6 +1196,83 @@ jQuery(function($){
         settings_status(pane, 'Hosts failed to save: ' + save_error_text(xhr), true);
         prefs.blocked = false;
       });
+    });
+  }
+
+
+  // The Tailcat identity controls in the Connection section. Absent from
+  // the pane unless the server allows user Tailcat hosts.
+  function init_tailcat_identity(pane) {
+    var box = pane.find('#tailcat-identity');
+    if (!box.length) return;
+    var display = box.find('#tailcat-public-key');
+    var status = box.find('#tailcat-identity-status');
+
+    function show(data) {
+      display.val(data && data.has_key ? data.public_key : '');
+      box.find('#tailcat-delete-btn').prop('disabled', !(data && data.has_key));
+    }
+
+    function report(message, is_error) {
+      status.text(message || '');
+      status.toggleClass('error', !!is_error);
+    }
+
+    function send(method, body) {
+      report('Saving...');
+      return $.ajax({
+        url: '/api/tailcat-identity', type: method,
+        contentType: 'application/json',
+        headers: {'X-Xsrftoken': get_xsrf_token()},
+        data: body ? JSON.stringify(body) : undefined
+      }).done(function(data) {
+        show(data);
+        report(method === 'DELETE' ? 'Deleted' : 'Saved');
+      }).fail(function(xhr) {
+        report(save_error_text(xhr), true);
+      });
+    }
+
+    $.get('/api/tailcat-identity').done(show).fail(function() {
+      report('Failed to load your Tailcat identity.', true);
+    });
+
+    box.find('#tailcat-generate-btn').on('click', function() {
+      if (display.val() && !window.confirm(
+          'Replace your Tailcat identity? Servers that allow the current ' +
+          'key will stop accepting you until you add the new one.')) {
+        return;
+      }
+      send('POST', {generate: true});
+    });
+
+    box.find('#tailcat-import-btn').on('click', function() {
+      box.find('#tailcat-import-file').val('').trigger('click');
+    });
+
+    box.find('#tailcat-import-file').on('change', function() {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      if (file.size > 65536) {
+        report('That file is too large to be a Tailcat key.', true);
+        return;
+      }
+      var reader = new window.FileReader();
+      reader.onload = function() {
+        send('POST', {'import': String(reader.result || '')});
+      };
+      reader.onerror = function() {
+        report('Could not read that file.', true);
+      };
+      reader.readAsText(file);
+    });
+
+    box.find('#tailcat-delete-btn').on('click', function() {
+      if (!window.confirm('Delete your Tailcat identity? Hosts that use it ' +
+                          'will not connect until you add a new one.')) {
+        return;
+      }
+      send('DELETE');
     });
   }
 
@@ -1673,8 +1798,11 @@ jQuery(function($){
         },
         errors = [], size;
 
+    var tailcat_host = webssh_hosts.is_tailcat_value(hostname);
+
     // Parse hostname:port shortcut (e.g. "foobar:2222")
-    if (hostname && !allowed_hosts_configured && hostname.indexOf(':') > 0) {
+    if (hostname && !tailcat_host && !allowed_hosts_configured &&
+        hostname.indexOf(':') > 0) {
       var parts = hostname.split(':');
       var parsed_port = parseInt(parts[parts.length - 1], 10);
       if (parsed_port > 0 && parsed_port <= 65535) {
@@ -1689,7 +1817,7 @@ jQuery(function($){
 
     if (!hostname) {
       errors.push('Value of hostname is required.');
-    } else if (!allowed_hosts_configured) {
+    } else if (!allowed_hosts_configured && !tailcat_host) {
       if (!hostname_tester.test(hostname)) {
          errors.push('Invalid hostname: ' + hostname);
       }
@@ -1717,7 +1845,15 @@ jQuery(function($){
 
     if (!errors.length || debug) {
       result.valid = true;
-      result.title = username + '@' + hostname + ':'  + port;
+      if (tailcat_host) {
+        // The handle means nothing to a person; the host's name does.
+        var option = $('#hostname option').filter(function() {
+          return $(this).attr('value') === hostname;
+        });
+        result.title = username + '@' + (option.text() || 'tailcat');
+      } else {
+        result.title = username + '@' + hostname + ':'  + port;
+      }
     }
     result.errors = errors;
 
